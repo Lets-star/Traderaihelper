@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import random
@@ -54,6 +55,11 @@ _TIMEFRAME_TO_MINUTES: Dict[str, int] = {
     "1d": 1440,
     "1w": 10080,
 }
+
+
+def _stable_hash(value: str) -> int:
+    digest = hashlib.sha256(value.encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big")
 
 
 def parse_symbol(symbol: str) -> str:
@@ -123,10 +129,12 @@ def generate_synthetic_candles(symbol: str, timeframe: str, limit: int) -> List[
     limit = max(1, limit)
     end_time = int(time.time() * 1000)
     start_time = end_time - interval_ms * limit
-    seed = (hash(symbol) ^ hash(interval)) & 0xFFFFFFFF
+    seed_material = f"{symbol.upper()}|{interval}"
+    seed = _stable_hash(seed_material) & 0xFFFFFFFF
     rng = random.Random(seed)
 
-    base_price = max(5.0, 100 + (abs(hash(symbol)) % 500) / 10)
+    base_hash = _stable_hash(symbol.upper())
+    base_price = max(5.0, 100 + (base_hash % 500) / 10)
     price = base_price
     candles: List[Candle] = []
 

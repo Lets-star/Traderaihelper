@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.dylib
+*.egg-info/
+.eggs/
+.dist/
+build/
+dist/
+.venv/
+venv/
+.env
+.env.*
+.idea/
+.vscode/
+.DS_Store
+*.log
+*.sqlite3

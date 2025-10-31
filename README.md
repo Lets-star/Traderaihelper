@@ -1,34 +1,58 @@
 # TradingView Indicator Metrics Collector
 
-This project provides a local command line utility that emulates the logic of the "FVG & Order Block Sync Pro - Enhanced" TradingView indicator. It collects the indicator's derived metrics for a chosen symbol, timeframe, and analysis period, making the results available in a machine-friendly JSON payload that can be forwarded to an AI service for further processing.
+This project provides both a **web-based dashboard** and a **command line utility** that emulates the logic of the "FVG & Order Block Sync Pro - Enhanced" TradingView indicator. It collects the indicator's derived metrics for a chosen symbol, timeframe, and analysis period, visualizes the results with interactive charts, and makes them available as a machine-friendly JSON payload.
 
 ## Features
 
-- Fetches historical OHLCV data directly from Binance for the selected symbol and timeframe.
-- Reproduces the indicator's calculations, including:
-  - Multi-timeframe trend strength and directional alignment
-  - Market structure (BOS/CHOCH) detection
-  - Fair Value Gaps (FVG) and Order Block (OB) zone tracking
-  - Pattern recognition and sentiment estimation
-  - Signal generation with weighted confluence scoring
-  - Trade performance statistics and signal success rates
-- Optional multi-symbol confirmation across up to three additional pairs.
-- Outputs a comprehensive JSON document with both raw metric values and human-readable definitions for each group of metrics.
+- **📊 Interactive Web Dashboard**: Visualize token charts with indicators, zones, and signals in real-time
+  - Candlestick charts with Bollinger Bands, RSI, and MACD indicators
+  - Fair Value Gaps (FVG) and Order Block (OB) zones displayed on charts
+  - Multi-timeframe trend analysis with visual strength indicators
+  - Trading signals with confluence scores
+  - Export data in JSON and CSV formats
+  - Easy token, timeframe, and period selection
+
+- **🔧 Command Line Interface**: Batch processing and automation
+  - Fetches historical OHLCV data directly from Binance for the selected symbol and timeframe
+  - Reproduces the indicator's calculations, including:
+    - Multi-timeframe trend strength and directional alignment
+    - Market structure (BOS/CHOCH) detection
+    - Fair Value Gaps (FVG) and Order Block (OB) zone tracking
+    - Pattern recognition and sentiment estimation
+    - Signal generation with weighted confluence scoring
+    - Trade performance statistics and signal success rates
+  - Optional multi-symbol confirmation across up to three additional pairs
+  - Outputs a comprehensive JSON document with both raw metric values and human-readable definitions
 
 ## Requirements
 
-- Python 3.10 or higher (standard library only; no third-party dependencies required).
-- Internet access to reach the Binance public REST API for market data.
+- Python 3.10 or higher
+- Dependencies: `streamlit`, `plotly`, `pandas` (installed automatically with requirements.txt)
+- Internet access to reach the Binance public REST API for market data (or use offline mode with synthetic data)
 
 ## Installation
 
-Clone or download the repository, then run the tool using Python:
+1. (Optional) Create and activate a virtual environment
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate
+   ```
+2. Install project dependencies
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+## Running the Web Dashboard
+
+Start the dashboard with the helper script:
 
 ```bash
-python3 main.py --token YOUR_TOKEN
+./run_web_ui.sh
 ```
 
-## Usage
+Once Streamlit launches, open the provided URL (defaults to [http://localhost:8501](http://localhost:8501)). Configure the token, timeframe, and analysis period from the sidebar, then press **Analyze** to load charts, indicators, and export options. Enable *Offline Mode* if Binance data is not accessible.
+
+## Command Line Usage
 
 ```
 usage: main.py [-h] [--symbol SYMBOL] [--timeframe TIMEFRAME] [--period PERIOD]

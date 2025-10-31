@@ -4,13 +4,14 @@ import json
 import math
 import random
 import time
-from typing import Dict, Iterable, List, Sequence
+from typing import Dict, Iterable, List, Sequence, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
 from .math_utils import Candle
 
 BINANCE_BASE_URL = "https://api.binance.com/api/v3/klines"
+BINANCE_DEPTH_URL = "https://api.binance.com/api/v3/depth"
 
 _TIMEFRAME_ALIASES: Dict[str, str] = {
     "1": "1m",
@@ -167,4 +168,152 @@ def latest_common_timestamp(series: Iterable[Candle]) -> int:
         if candle.close_time > latest:
             latest = candle.close_time
     return latest
+
+
+def _section_stats(levels_list: Sequence[Tuple[float, float]], levels: int) -> Dict[str, object]:
+    selected = list(levels_list[:levels])
+    total_volume = sum(quantity for _, quantity in selected)
+    weighted_price = sum(price * quantity for price, quantity in selected)
+    average_price = weighted_price / total_volume if total_volume else None
+    return {
+        "levels": min(levels, len(levels_list)),
+        "total_volume": total_volume,
+        "weighted_price": average_price,
+    }
+
+
+def _aggregate_order_book_depth(bids: Sequence[Tuple[float, float]], asks: Sequence[Tuple[float, float]]) -> Dict[str, object]:
+    bids_sorted = sorted(bids, key=lambda item: item[0], reverse=True)
+    asks_sorted = sorted(asks, key=lambda item: item[0])
+
+    best_bid = bids_sorted[0][0] if bids_sorted else None
+    best_ask = asks_sorted[0][0] if asks_sorted else None
+
+    spread = best_ask - best_bid if best_bid is not None and best_ask is not None else None
+    mid_price = (best_bid + best_ask) / 2 if spread is not None else None
+
+    total_bid_volume = sum(quantity for _, quantity in bids_sorted)
+    total_ask_volume = sum(quantity for _, quantity in asks_sorted)
+
+    sections = {"bids": {}, "asks": {}}
+    for section_size in (5, 10, 20):
+        key = f"top_{section_size}"
+        sections["bids"][key] = _section_stats(bids_sorted, section_size)
+        sections["asks"][key] = _section_stats(asks_sorted, section_size)
+
+    price_levels = {
+        "1%": {"bid_volume": 0.0, "ask_volume": 0.0},
+        "2%": {"bid_volume": 0.0, "ask_volume": 0.0},
+        "5%": {"bid_volume": 0.0, "ask_volume": 0.0},
+    }
+    if mid_price is not None and mid_price > 0:
+        for price, volume in bids_sorted:
+            distance_pct = abs((mid_price - price) / mid_price) * 100
+            if distance_pct <= 1:
+                price_levels["1%"]["bid_volume"] += volume
+            if distance_pct <= 2:
+                price_levels["2%"]["bid_volume"] += volume
+            if distance_pct <= 5:
+                price_levels["5%"]["bid_volume"] += volume
+        for price, volume in asks_sorted:
+            distance_pct = abs((price - mid_price) / mid_price) * 100
+            if distance_pct <= 1:
+                price_levels["1%"]["ask_volume"] += volume
+            if distance_pct <= 2:
+                price_levels["2%"]["ask_volume"] += volume
+            if distance_pct <= 5:
+                price_levels["5%"]["ask_volume"] += volume
+    else:
+        price_levels = {}
+
+    top10_bid = sections["bids"]["top_10"]["total_volume"]
+    top10_ask = sections["asks"]["top_10"]["total_volume"]
+    bid_ask_ratio_top10 = (top10_bid / top10_ask) if top10_ask else None
+    imbalance_top10 = top10_bid - top10_ask if (top10_bid or top10_ask) else None
+
+    return {
+        "best_bid": best_bid,
+        "best_ask": best_ask,
+        "spread": spread,
+        "mid_price": mid_price,
+        "total_bid_volume": total_bid_volume,
+        "total_ask_volume": total_ask_volume,
+        "sections": sections,
+        "price_levels": price_levels,
+        "bid_ask_ratio_top10": bid_ask_ratio_top10,
+        "volume_imbalance_top10": imbalance_top10,
+        "raw_levels": {
+            "bids": bids_sorted[:20],
+            "asks": asks_sorted[:20],
+        },
+        "total_levels": {
+            "bids": len(bids_sorted),
+            "asks": len(asks_sorted),
+        },
+    }
+
+
+def fetch_order_book(symbol: str, limit: int = 100) -> Dict[str, object]:
+    parsed_symbol = parse_symbol(symbol)
+    constrained_limit = max(5, min(limit, 500))
+    url = f"{BINANCE_DEPTH_URL}?symbol={parsed_symbol}&limit={constrained_limit}"
+
+    try:
+        with urlopen(url) as response:
+            raw_data = response.read()
+    except HTTPError as exc:
+        raise RuntimeError(f"HTTP error while fetching order book: {exc.code} {exc.reason}") from exc
+    except URLError as exc:
+        raise RuntimeError(f"Network error while fetching order book: {exc.reason}") from exc
+
+    try:
+        data = json.loads(raw_data)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Failed to decode Binance depth response") from exc
+
+    bids = [(float(price), float(volume)) for price, volume in data.get("bids", [])]
+    asks = [(float(price), float(volume)) for price, volume in data.get("asks", [])]
+
+    aggregates = _aggregate_order_book_depth(bids, asks)
+    aggregates.update(
+        {
+            "symbol": parsed_symbol,
+            "limit": constrained_limit,
+            "last_update_id": data.get("lastUpdateId"),
+            "snapshot_time": int(time.time() * 1000),
+            "source": "binance",
+        }
+    )
+    return aggregates
+
+
+def generate_synthetic_order_book(symbol: str, reference_price: float, limit: int = 100) -> Dict[str, object]:
+    constrained_limit = max(5, min(limit, 500))
+    base_price = reference_price if reference_price and reference_price > 0 else 100.0
+    seed = (hash(symbol) ^ int(base_price * 100)) & 0xFFFFFFFF
+    rng = random.Random(seed)
+    price_step = max(base_price * 0.0008, 0.05)
+
+    bids: List[Tuple[float, float]] = []
+    asks: List[Tuple[float, float]] = []
+    for i in range(constrained_limit):
+        offset = price_step * (i + 1)
+        bid_price = max(0.01, base_price - offset)
+        ask_price = base_price + offset
+        bid_qty = rng.uniform(0.8, 3.2) * (1 + 0.05 * i)
+        ask_qty = rng.uniform(0.8, 3.2) * (1 + 0.05 * i)
+        bids.append((round(bid_price, 4), round(bid_qty, 3)))
+        asks.append((round(ask_price, 4), round(ask_qty, 3)))
+
+    aggregates = _aggregate_order_book_depth(bids, asks)
+    aggregates.update(
+        {
+            "symbol": parse_symbol(symbol),
+            "limit": constrained_limit,
+            "last_update_id": rng.randint(1, 1_000_000_000),
+            "snapshot_time": int(time.time() * 1000),
+            "source": "synthetic",
+        }
+    )
+    return aggregates
 

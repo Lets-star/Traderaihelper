@@ -119,6 +119,26 @@ def create_candlestick_chart(summary: SimulationSummary, main_series: TimeframeS
             row=1, col=1,
         )
         
+        atr_colors = {
+            "atr_trend_3x": ("rgba(0, 255, 0, 0.6)", 1),
+            "atr_trend_8x": ("rgba(255, 165, 0, 0.6)", 2),
+            "atr_trend_21x": ("rgba(255, 0, 0, 0.6)", 3),
+        }
+        
+        for atr_key, (color, width) in atr_colors.items():
+            atr_values = [s.atr_channels.get(atr_key) if s.atr_channels else None for s in summary.snapshots]
+            if any(v is not None for v in atr_values):
+                fig.add_trace(
+                    go.Scatter(
+                        x=df["timestamp"],
+                        y=atr_values,
+                        name=f"ATR {atr_key.replace('atr_trend_', '').replace('x', '')}x",
+                        line=dict(color=color, width=width),
+                        mode="lines",
+                    ),
+                    row=1, col=1,
+                )
+        
         rsi_values = [s.rsi if s.rsi is not None else 50 for s in summary.snapshots]
         fig.add_trace(
             go.Scatter(
@@ -408,6 +428,8 @@ def main():
         st.subheader("Latest Market Snapshot")
         
         latest = payload.get("latest", {})
+        atr_channels = payload.get("atr_channels", {})
+        orderbook_data = payload.get("orderbook")
         
         col1, col2, col3, col4 = st.columns(4)
         
@@ -447,6 +469,14 @@ def main():
                 {"Indicator": "Bollinger Lower", "Value": f"{latest.get('bollinger_lower', 0):.4f}" if latest.get('bollinger_lower') else "N/A"},
             ])
             st.dataframe(indicators_df, use_container_width=True, hide_index=True)
+            
+            if atr_channels:
+                st.markdown("### ATR Channels")
+                atr_df = pd.DataFrame([
+                    {"ATR Level": k.replace("atr_trend_", "ATR ").upper(), "Value": f"{v:.4f}" if v is not None else "N/A"}
+                    for k, v in atr_channels.items()
+                ])
+                st.dataframe(atr_df, use_container_width=True, hide_index=True)
         
         with col2:
             st.markdown("### Performance Statistics")
@@ -462,6 +492,68 @@ def main():
                 {"Metric": "Trades Closed", "Value": f"{pnl_stats.get('trades_closed', 0)}"},
             ])
             st.dataframe(stats_df, use_container_width=True, hide_index=True)
+        
+        if orderbook_data:
+            st.markdown("---")
+            st.markdown("### 📊 Order Book Analysis (Binance)")
+            
+            ob_col1, ob_col2, ob_col3 = st.columns(3)
+            
+            with ob_col1:
+                best_bid = orderbook_data.get('best_bid')
+                st.metric("Best Bid", f"${best_bid:.4f}" if best_bid is not None else "N/A")
+                best_ask = orderbook_data.get('best_ask')
+                st.metric("Best Ask", f"${best_ask:.4f}" if best_ask is not None else "N/A")
+            
+            with ob_col2:
+                spread = orderbook_data.get('spread')
+                st.metric("Spread", f"${spread:.4f}" if spread is not None else "N/A")
+                mid_price = orderbook_data.get('mid_price')
+                st.metric("Mid Price", f"${mid_price:.4f}" if mid_price is not None else "N/A")
+            
+            with ob_col3:
+                ratio = orderbook_data.get('bid_ask_ratio_top10')
+                st.metric("Bid/Ask Ratio (Top 10)", f"{ratio:.2f}" if ratio is not None else "N/A")
+                imbalance = orderbook_data.get('volume_imbalance_top10')
+                st.metric("Volume Imbalance", f"{imbalance:.2f}" if imbalance is not None else "N/A")
+            
+            st.markdown("#### Volume at Price Levels")
+            price_levels = orderbook_data.get('price_levels', {})
+            if price_levels:
+                levels_data = []
+                for level, data in price_levels.items():
+                    ratio_val = None
+                    ask_volume = data.get('ask_volume', 0)
+                    bid_volume = data.get('bid_volume', 0)
+                    if ask_volume:
+                        ratio_val = bid_volume / ask_volume
+                    levels_data.append({
+                        "Level": level,
+                        "Bid Volume": f"{bid_volume:.2f}",
+                        "Ask Volume": f"{ask_volume:.2f}",
+                        "Ratio": f"{ratio_val:.2f}" if ratio_val is not None else "N/A"
+                    })
+                ob_levels_df = pd.DataFrame(levels_data)
+                st.dataframe(ob_levels_df, use_container_width=True, hide_index=True)
+            
+            sections = orderbook_data.get('sections', {})
+            if sections:
+                st.markdown("#### Aggregated Depth (Top Levels)")
+                section_rows = []
+                bids_sections = sections.get('bids', {})
+                asks_sections = sections.get('asks', {})
+                for key, label in (('top_5', 'Top 5'), ('top_10', 'Top 10'), ('top_20', 'Top 20')):
+                    bid_info = bids_sections.get(key, {})
+                    ask_info = asks_sections.get(key, {})
+                    section_rows.append({
+                        "Levels": label,
+                        "Bid Volume": f"{bid_info.get('total_volume', 0):.2f}",
+                        "Bid W. Price": f"{bid_info.get('weighted_price'):.4f}" if bid_info.get('weighted_price') is not None else "N/A",
+                        "Ask Volume": f"{ask_info.get('total_volume', 0):.2f}",
+                        "Ask W. Price": f"{ask_info.get('weighted_price'):.4f}" if ask_info.get('weighted_price') is not None else "N/A",
+                    })
+                ob_sections_df = pd.DataFrame(section_rows)
+                st.dataframe(ob_sections_df, use_container_width=True, hide_index=True)
     
     with tab4:
         st.subheader("Signals & Zones")

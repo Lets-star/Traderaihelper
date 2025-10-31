@@ -8,6 +8,7 @@ from typing import Dict, List, Literal, Optional, Sequence, Tuple
 from .data_fetcher import timeframe_to_minutes
 from .math_utils import (
     Candle,
+    atr,
     bollinger_bands,
     ema,
     highest,
@@ -21,6 +22,15 @@ from .math_utils import (
 from .time_series import MetricPoint, TimeframeMetricSeries, TimeframeSeries
 
 ZoneType = Literal["BullFVG", "BearFVG", "BullOB", "BearOB"]
+
+ATR_CHANNEL_MULTIPLIERS: Dict[str, int] = {
+    "atr_trend_1x": 1,
+    "atr_trend_3x": 3,
+    "atr_trend_8x": 8,
+    "atr_trend_21x": 21,
+    "atr_trend_55x": 55,
+    "atr_trend_144x": 144,
+}
 
 
 @dataclass
@@ -157,6 +167,7 @@ class MarketSnapshot:
     bollinger_upper: Optional[float] = None
     bollinger_middle: Optional[float] = None
     bollinger_lower: Optional[float] = None
+    atr_channels: Dict[str, Optional[float]] = field(default_factory=dict)
 
 
 @dataclass
@@ -179,6 +190,7 @@ class SimulationSummary:
     market_sentiment: float
     pattern_prediction: float
     multi_symbol: Optional[MultiSymbolSnapshot]
+    orderbook_data: Optional[Dict] = None
 
 
 def _clamp(value: float, lower: float, upper: float) -> float:
@@ -226,9 +238,14 @@ class IndicatorSimulator:
             self.settings.bollinger_length,
             self.settings.bollinger_multiplier,
         )
+        atr_series = atr(highs, lows, closes, 7)
         trend_strength_series = self._calculate_trend_strength_series(closes, self.settings.trend_strength_period)
         sentiment_series = self._calculate_sentiment_series(opens, closes, volumes, self.settings.sentiment_period, rsi_values=rsi(closes, self.settings.sentiment_period))
         pattern_scores = self._calculate_pattern_scores(opens, highs, closes, volumes, ema_fast_series, ema_slow_series, rsi_series, momentum14, volume_sma20)
+
+        atr_channel_series: Dict[str, List[float]] = {}
+        for key, multiplier in ATR_CHANNEL_MULTIPLIERS.items():
+            atr_channel_series[key] = self._calculate_atr_channel_series(atr_series, highs, lows, closes, multiplier)
 
         def safe_series_value(series: Sequence[float], idx: int) -> Optional[float]:
             if idx >= len(series):
@@ -416,6 +433,10 @@ class IndicatorSimulator:
             else:
                 struct_state_label = "neutral"
 
+            atr_channels_at_i = {
+                key: safe_series_value(series, i) for key, series in atr_channel_series.items()
+            }
+
             snapshots.append(
                 MarketSnapshot(
                     timestamp=timestamps[i],
@@ -440,6 +461,7 @@ class IndicatorSimulator:
                     bollinger_upper=safe_series_value(bollinger_upper, i),
                     bollinger_middle=safe_series_value(bollinger_middle, i),
                     bollinger_lower=safe_series_value(bollinger_lower, i),
+                    atr_channels=atr_channels_at_i,
                 )
             )
 
@@ -490,6 +512,64 @@ class IndicatorSimulator:
         )
 
     # --- Helper methods -------------------------------------------------
+
+    def _calculate_atr_channel_series(
+        self,
+        atr_values: Sequence[float],
+        highs: Sequence[float],
+        lows: Sequence[float],
+        closes: Sequence[float],
+        multiplier: float,
+    ) -> List[float]:
+        series: List[float] = []
+        trend_up: List[float] = []
+        trend_down: List[float] = []
+        trend_dir: List[int] = []
+
+        for i in range(len(closes)):
+            atr_value = atr_values[i]
+            if math.isnan(atr_value):
+                series.append(float("nan"))
+                trend_up.append(float("nan"))
+                trend_down.append(float("nan"))
+                trend_dir.append(trend_dir[-1] if trend_dir else 1)
+                continue
+
+            hl2 = (highs[i] + lows[i]) / 2.0
+            up_val = hl2 - multiplier * atr_value
+            down_val = hl2 + multiplier * atr_value
+
+            if i == 0:
+                trend_up_val = up_val
+                trend_down_val = down_val
+                trend_value = 1
+            else:
+                prev_trend_up = trend_up[-1]
+                prev_trend_down = trend_down[-1]
+                prev_trend_val = trend_dir[-1]
+                prev_close = closes[i - 1]
+
+                if math.isnan(prev_trend_up):
+                    prev_trend_up = up_val
+                if math.isnan(prev_trend_down):
+                    prev_trend_down = down_val
+
+                trend_up_val = max(up_val, prev_trend_up) if prev_close > prev_trend_up else up_val
+                trend_down_val = min(down_val, prev_trend_down) if prev_close < prev_trend_down else down_val
+
+                if closes[i] > prev_trend_down:
+                    trend_value = 1
+                elif closes[i] < prev_trend_up:
+                    trend_value = -1
+                else:
+                    trend_value = prev_trend_val
+
+            trend_up.append(trend_up_val)
+            trend_down.append(trend_down_val)
+            trend_dir.append(trend_value)
+            series.append(trend_up_val if trend_value == 1 else trend_down_val)
+
+        return series
 
     def _calculate_trend_strength_series(self, closes: Sequence[float], length: int) -> List[float]:
         up_moves: List[float] = [0.0]
@@ -942,6 +1022,8 @@ def summary_to_payload(
         "bollinger_lower": "Lower Bollinger Band (basis minus multiplier times standard deviation).",
         "success_rates": "Historical win rates for bullish/bearish signals based on look-ahead evaluation.",
         "pnl_stats": "Cumulative PnL stats assuming CHOCH-based exits.",
+        "atr_channels": "ATR-based trailing channels derived from multiple volatility multipliers.",
+        "orderbook": "Aggregated Binance order book snapshot highlighting depth totals and imbalance.",
     }
 
     payload: Dict[str, object] = {
@@ -977,6 +1059,7 @@ def summary_to_payload(
             "bollinger_upper": latest_snapshot.bollinger_upper,
             "bollinger_middle": latest_snapshot.bollinger_middle,
             "bollinger_lower": latest_snapshot.bollinger_lower,
+            "atr_channels": latest_snapshot.atr_channels,
         },
         "multi_timeframe": {
             "trend_strength": summary.multi_timeframe_trend,
@@ -988,6 +1071,8 @@ def summary_to_payload(
         "pnl_stats": pnl_payload,
         "last_structure_levels": summary.last_structure_levels,
         "multi_symbol": multi_symbol_payload,
+        "atr_channels": latest_snapshot.atr_channels if latest_snapshot.atr_channels else {},
+        "orderbook": summary.orderbook_data,
         "definitions": definitions,
     }
 

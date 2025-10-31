@@ -6,8 +6,10 @@ This project provides both a **web-based dashboard** and a **command line utilit
 
 - **📊 Interactive Web Dashboard**: Visualize token charts with indicators, zones, and signals in real-time
   - Candlestick charts with Bollinger Bands, RSI, and MACD indicators
+  - **ATR-based trailing channels** (3x, 8x, 21x multipliers) overlaid on price chart
   - Fair Value Gaps (FVG) and Order Block (OB) zones displayed on charts
   - Multi-timeframe trend analysis with visual strength indicators
+  - **Live Binance orderbook analysis** showing bid/ask depth, price levels, and volume imbalance
   - Trading signals with confluence scores
   - Export data in JSON and CSV formats
   - Easy token, timeframe, and period selection

@@ -6,7 +6,12 @@ import sys
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence
 
-from .data_fetcher import fetch_klines, generate_synthetic_candles
+from .data_fetcher import (
+    fetch_klines,
+    fetch_order_book,
+    generate_synthetic_candles,
+    generate_synthetic_order_book,
+)
 from .indicator_metrics import (
     IndicatorSettings,
     IndicatorSimulator,
@@ -69,6 +74,7 @@ def collect_metrics(
         )
     main_slice = main_candles[-period:]
     main_series = TimeframeSeries(main_slice)
+    reference_price = main_series.candles[-1].close if main_series.candles else 0.0
 
     timeframe_keys = list(DEFAULT_MULTI_TIMEFRAMES)
     if additional_timeframes:
@@ -111,6 +117,18 @@ def collect_metrics(
         multi_timeframe_strength[f"{sym}_trend"] = metric_series
 
     summary = simulator.run()
+    
+    orderbook_data = None
+    if offline:
+        orderbook_data = generate_synthetic_order_book(symbol, reference_price, limit=100)
+    else:
+        try:
+            orderbook_data = fetch_order_book(symbol, limit=100)
+        except RuntimeError as exc:
+            print(f"[warning] Failed to fetch orderbook: {exc}", file=sys.stderr)
+            orderbook_data = generate_synthetic_order_book(symbol, reference_price, limit=100)
+    
+    summary.orderbook_data = orderbook_data
     payload = summary_to_payload(summary, symbol, timeframe, period, token)
 
     return CollectionResult(

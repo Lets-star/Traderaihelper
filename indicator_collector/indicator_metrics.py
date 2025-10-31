@@ -8,9 +8,11 @@ from typing import Dict, List, Literal, Optional, Sequence, Tuple
 from .data_fetcher import timeframe_to_minutes
 from .math_utils import (
     Candle,
+    bollinger_bands,
     ema,
     highest,
     lowest,
+    macd,
     mom,
     rma,
     rsi,
@@ -62,6 +64,12 @@ class IndicatorSettings:
     trend_strength_period: int = 14
     ma_fast: int = 20
     ma_slow: int = 50
+    rsi_length: int = 14
+    macd_fast_length: int = 12
+    macd_slow_length: int = 26
+    macd_signal_length: int = 9
+    bollinger_length: int = 20
+    bollinger_multiplier: float = 2.0
     banker_volume_threshold: float = 2.0
     banker_wick_ratio: float = 0.6
     banker_body_ratio: float = 0.3
@@ -142,6 +150,13 @@ class MarketSnapshot:
     volume_ratio: Optional[float]
     confluence_score: Optional[float]
     signal: Optional[str]
+    rsi: Optional[float] = None
+    macd: Optional[float] = None
+    macd_signal: Optional[float] = None
+    macd_histogram: Optional[float] = None
+    bollinger_upper: Optional[float] = None
+    bollinger_middle: Optional[float] = None
+    bollinger_lower: Optional[float] = None
 
 
 @dataclass
@@ -196,13 +211,32 @@ class IndicatorSimulator:
 
         ema_fast_series = ema(closes, self.settings.ma_fast)
         ema_slow_series = ema(closes, self.settings.ma_slow)
-        rsi14 = rsi(closes, 14)
+        rsi_series = rsi(closes, self.settings.rsi_length)
         momentum14 = mom(closes, 14)
         volume_sma = sma(volumes, self.settings.volume_lookback)
         volume_sma20 = sma(volumes, 20)
+        macd_line, macd_signal_line, macd_histogram = macd(
+            closes,
+            self.settings.macd_fast_length,
+            self.settings.macd_slow_length,
+            self.settings.macd_signal_length,
+        )
+        bollinger_upper, bollinger_middle, bollinger_lower = bollinger_bands(
+            closes,
+            self.settings.bollinger_length,
+            self.settings.bollinger_multiplier,
+        )
         trend_strength_series = self._calculate_trend_strength_series(closes, self.settings.trend_strength_period)
         sentiment_series = self._calculate_sentiment_series(opens, closes, volumes, self.settings.sentiment_period, rsi_values=rsi(closes, self.settings.sentiment_period))
-        pattern_scores = self._calculate_pattern_scores(opens, highs, closes, volumes, ema_fast_series, ema_slow_series, rsi14, momentum14, volume_sma20)
+        pattern_scores = self._calculate_pattern_scores(opens, highs, closes, volumes, ema_fast_series, ema_slow_series, rsi_series, momentum14, volume_sma20)
+
+        def safe_series_value(series: Sequence[float], idx: int) -> Optional[float]:
+            if idx >= len(series):
+                return None
+            value = series[idx]
+            if isinstance(value, float) and math.isnan(value):
+                return None
+            return value
 
         snapshots: List[MarketSnapshot] = []
         signals: List[SignalRecord] = []
@@ -399,6 +433,13 @@ class IndicatorSimulator:
                     volume_ratio=volume_ratio,
                     confluence_score=confluence_score,
                     signal=signal_label,
+                    rsi=safe_series_value(rsi_series, i),
+                    macd=safe_series_value(macd_line, i),
+                    macd_signal=safe_series_value(macd_signal_line, i),
+                    macd_histogram=safe_series_value(macd_histogram, i),
+                    bollinger_upper=safe_series_value(bollinger_upper, i),
+                    bollinger_middle=safe_series_value(bollinger_middle, i),
+                    bollinger_lower=safe_series_value(bollinger_lower, i),
                 )
             )
 
@@ -892,6 +933,13 @@ def summary_to_payload(
         "volume_confirmed": "Whether current volume exceeds average volume by the configured multiplier.",
         "confluence_score": "Weighted confluence score (0-10) aggregating structure, volume, timeframe alignment, pattern and sentiment.",
         "signal": "Latest signal classification derived from FVG and Order Block overlap logic.",
+        "rsi": "Relative Strength Index calculated over the configurable period.",
+        "macd": "MACD line derived from the difference between fast and slow EMAs.",
+        "macd_signal": "Signal line representing the EMA of the MACD line.",
+        "macd_histogram": "MACD histogram measuring the distance between MACD and signal lines.",
+        "bollinger_upper": "Upper Bollinger Band (basis plus multiplier times standard deviation).",
+        "bollinger_middle": "Middle Bollinger Band (basis moving average).",
+        "bollinger_lower": "Lower Bollinger Band (basis minus multiplier times standard deviation).",
         "success_rates": "Historical win rates for bullish/bearish signals based on look-ahead evaluation.",
         "pnl_stats": "Cumulative PnL stats assuming CHOCH-based exits.",
     }
@@ -922,6 +970,13 @@ def summary_to_payload(
             "volume_ratio": latest_snapshot.volume_ratio,
             "confluence_score": latest_snapshot.confluence_score,
             "signal": latest_snapshot.signal,
+            "rsi": latest_snapshot.rsi,
+            "macd": latest_snapshot.macd,
+            "macd_signal": latest_snapshot.macd_signal,
+            "macd_histogram": latest_snapshot.macd_histogram,
+            "bollinger_upper": latest_snapshot.bollinger_upper,
+            "bollinger_middle": latest_snapshot.bollinger_middle,
+            "bollinger_lower": latest_snapshot.bollinger_lower,
         },
         "multi_timeframe": {
             "trend_strength": summary.multi_timeframe_trend,

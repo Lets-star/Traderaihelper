@@ -121,6 +121,65 @@ def lowest(values: Sequence[float], length: int, index: int) -> float:
     return min(values[start:end])
 
 
+def macd(
+    values: Sequence[float],
+    fast_length: int = 12,
+    slow_length: int = 26,
+    signal_length: int = 9,
+) -> tuple[List[float], List[float], List[float]]:
+    """
+    Calculate MACD (Moving Average Convergence Divergence).
+    
+    Returns:
+        tuple of (macd_line, signal_line, histogram)
+    """
+    _validate_length(fast_length)
+    _validate_length(slow_length)
+    _validate_length(signal_length)
+    
+    fast_ema = ema(values, fast_length)
+    slow_ema = ema(values, slow_length)
+    
+    macd_line = [fast - slow for fast, slow in zip(fast_ema, slow_ema)]
+    signal_line = ema(macd_line, signal_length)
+    histogram = [macd - signal for macd, signal in zip(macd_line, signal_line)]
+    
+    return macd_line, signal_line, histogram
+
+
+def bollinger_bands(
+    values: Sequence[float],
+    length: int = 20,
+    mult: float = 2.0,
+) -> tuple[List[float], List[float], List[float]]:
+    """
+    Calculate Bollinger Bands.
+    
+    Returns:
+        tuple of (upper_band, middle_band, lower_band)
+    """
+    _validate_length(length)
+    
+    middle_band = sma(values, length)
+    
+    # Calculate standard deviation
+    std_dev: List[float] = []
+    for i in range(len(values)):
+        if i + 1 < length:
+            std_dev.append(float("nan"))
+        else:
+            window_start = i - length + 1
+            window = values[window_start : i + 1]
+            mean = middle_band[i]
+            variance = sum((x - mean) ** 2 for x in window) / length
+            std_dev.append(variance ** 0.5)
+    
+    upper_band = [middle + mult * std for middle, std in zip(middle_band, std_dev)]
+    lower_band = [middle - mult * std for middle, std in zip(middle_band, std_dev)]
+    
+    return upper_band, middle_band, lower_band
+
+
 @dataclass(frozen=True)
 class Candle:
     open_time: int

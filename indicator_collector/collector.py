@@ -13,6 +13,8 @@ from .data_fetcher import (
     generate_synthetic_order_book,
 )
 from .advanced_metrics import compute_advanced_metrics
+from .cme_gap import get_nearest_cme_gaps
+from .astrology import get_astrology_metrics
 from .indicator_metrics import (
     IndicatorSettings,
     IndicatorSimulator,
@@ -133,6 +135,15 @@ def collect_metrics(
     advanced_data = compute_advanced_metrics(summary, main_series.candles)
     payload = summary_to_payload(summary, symbol, timeframe, period, token)
     payload["advanced"] = advanced_data
+
+    if main_candles:
+        cme_gap_data = get_nearest_cme_gaps(main_candles, reference_price)
+        payload.setdefault("latest", {})["cme_gaps"] = cme_gap_data
+    
+    latest_timestamp = main_series.candles[-1].close_time if main_series.candles else None
+    if latest_timestamp:
+        astrology_data = get_astrology_metrics(latest_timestamp)
+        payload["astrology"] = astrology_data
 
     return CollectionResult(
         payload=payload,

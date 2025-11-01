@@ -299,6 +299,20 @@ def get_astrology_metrics(timestamp_ms: int) -> Dict[str, object]:
         overall_signal = "bearish"
         signal_color = "🔴🔴"
     
+    trading_recommendation = ""
+    if overall_signal == "strongly bullish":
+        trading_recommendation = "Strong bullish alignment across celestial cycles. Consider accumulation and long positions with proper risk management."
+    elif overall_signal == "bullish":
+        trading_recommendation = "Bullish celestial alignment supports growth. Look for long opportunities on pullbacks."
+    elif overall_signal == "mildly bullish":
+        trading_recommendation = "Slightly bullish bias. Favor longs but remain cautious with position sizing."
+    elif overall_signal == "neutral":
+        trading_recommendation = "Neutral celestial influence. Trade based on technical signals only."
+    elif overall_signal == "mildly bearish":
+        trading_recommendation = "Slightly bearish bias. Consider reducing leverage and taking profits on longs."
+    else:
+        trading_recommendation = "Bearish celestial alignment. Exercise caution and consider defensive positioning."
+    
     return {
         "moon": moon_data,
         "mercury": mercury_data,
@@ -308,5 +322,6 @@ def get_astrology_metrics(timestamp_ms: int) -> Dict[str, object]:
             "signal": overall_signal,
             "signal_color": signal_color,
             "factors": factors,
+            "recommendation": trading_recommendation,
         },
     }

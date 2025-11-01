@@ -519,47 +519,50 @@ def main():
             st.dataframe(stats_df, use_container_width=True, hide_index=True)
         
         cme_gaps = latest.get("cme_gaps", {})
-        if cme_gaps and cme_gaps.get("total_unfilled_gaps", 0) > 0:
+        if cme_gaps:
             st.markdown("---")
-            st.markdown("### 📊 CME Gap Analysis")
+            st.markdown("### 📊 CME Gap Analysis (CME Futures)")
             
-            gap_col1, gap_col2 = st.columns(2)
-            
-            with gap_col1:
-                st.markdown("#### Nearest Gaps Above Current Price")
-                gaps_above = cme_gaps.get("nearest_gaps_above", [])
-                if gaps_above:
-                    gaps_above_df = pd.DataFrame([
-                        {
-                            "Type": gap["type"].replace("_", " ").upper(),
-                            "Top": f"${gap['gap_top']:.2f}",
-                            "Bottom": f"${gap['gap_bottom']:.2f}",
-                            "Distance": f"{gap['distance_pct']:.2f}%",
-                            "Size": f"{gap['gap_size_pct']:.2f}%"
-                        }
-                        for gap in gaps_above[:5]
-                    ])
-                    st.dataframe(gaps_above_df, use_container_width=True, hide_index=True)
-                else:
-                    st.info("No unfilled gaps above current price")
-            
-            with gap_col2:
-                st.markdown("#### Nearest Gaps Below Current Price")
-                gaps_below = cme_gaps.get("nearest_gaps_below", [])
-                if gaps_below:
-                    gaps_below_df = pd.DataFrame([
-                        {
-                            "Type": gap["type"].replace("_", " ").upper(),
-                            "Top": f"${gap['gap_top']:.2f}",
-                            "Bottom": f"${gap['gap_bottom']:.2f}",
-                            "Distance": f"{gap['distance_pct']:.2f}%",
-                            "Size": f"{gap['gap_size_pct']:.2f}%"
-                        }
-                        for gap in gaps_below[:5]
-                    ])
-                    st.dataframe(gaps_below_df, use_container_width=True, hide_index=True)
-                else:
-                    st.info("No unfilled gaps below current price")
+            if cme_gaps.get("total_unfilled_gaps", 0) == 0:
+                st.info("All CME gaps are currently filled. No outstanding gaps detected near the current price.")
+            else:
+                gap_col1, gap_col2 = st.columns(2)
+                
+                with gap_col1:
+                    st.markdown("#### Nearest Gaps Above Current Price")
+                    gaps_above = cme_gaps.get("nearest_gaps_above", [])
+                    if gaps_above:
+                        gaps_above_df = pd.DataFrame([
+                            {
+                                "Type": gap["type"].replace("_", " ").upper(),
+                                "Top": f"${gap['gap_top']:.2f}",
+                                "Bottom": f"${gap['gap_bottom']:.2f}",
+                                "Distance": f"{gap['distance_pct']:.2f}%",
+                                "Size": f"{gap['gap_size_pct']:.2f}%"
+                            }
+                            for gap in gaps_above[:5]
+                        ])
+                        st.dataframe(gaps_above_df, use_container_width=True, hide_index=True)
+                    else:
+                        st.info("No unfilled gaps above current price")
+                
+                with gap_col2:
+                    st.markdown("#### Nearest Gaps Below Current Price")
+                    gaps_below = cme_gaps.get("nearest_gaps_below", [])
+                    if gaps_below:
+                        gaps_below_df = pd.DataFrame([
+                            {
+                                "Type": gap["type"].replace("_", " ").upper(),
+                                "Top": f"${gap['gap_top']:.2f}",
+                                "Bottom": f"${gap['gap_bottom']:.2f}",
+                                "Distance": f"{gap['distance_pct']:.2f}%",
+                                "Size": f"{gap['gap_size_pct']:.2f}%"
+                            }
+                            for gap in gaps_below[:5]
+                        ])
+                        st.dataframe(gaps_below_df, use_container_width=True, hide_index=True)
+                    else:
+                        st.info("No unfilled gaps below current price")
         
         if orderbook_data:
             st.markdown("---")
@@ -1252,14 +1255,24 @@ def main():
             mercury = astrology.get("mercury", {})
             jupiter = astrology.get("jupiter", {})
             
-            st.metric(
-                "Astro Confluence",
-                f"{confluence.get('score', 0):.2f}",
-                delta=f"{confluence.get('signal_color', '')} {confluence.get('signal', 'neutral').upper()}"
-            )
+            st.markdown("### Overall Celestial Confluence")
+            
+            conf_col1, conf_col2 = st.columns([1, 2])
+            
+            with conf_col1:
+                st.metric(
+                    "Confluence Score",
+                    f"{confluence.get('score', 0):.2f}",
+                    delta=f"{confluence.get('signal', 'neutral').upper()}"
+                )
+                st.markdown(f"### {confluence.get('signal_color', '⚪')}")
+            
+            with conf_col2:
+                recommendation = confluence.get("recommendation", "No specific recommendation available.")
+                st.info(f"**Trading Recommendation:** {recommendation}")
             
             if confluence.get("factors"):
-                st.markdown("**Key Factors**")
+                st.markdown("#### Active Celestial Factors")
                 for factor in confluence["factors"]:
                     st.write(f"• {factor}")
             
@@ -1268,26 +1281,133 @@ def main():
             moon_col, mercury_col = st.columns(2)
             
             with moon_col:
-                st.markdown("### 🌕 Moon Cycle")
-                st.metric("Phase", moon.get("phase_name", "Unknown"))
-                st.metric("Volatility", moon.get("volatility_indication", "neutral").title())
-                st.metric("Next Full Moon", moon.get("next_full_moon", "N/A")[:19])
-                st.metric("Next New Moon", moon.get("next_new_moon", "N/A")[:19])
+                st.markdown("### 🌕 Moon Cycle Analysis")
+                st.metric("Current Phase", moon.get("phase_name", "Unknown"))
+                st.metric("Illumination", f"{moon.get('illumination_pct', 0):.1f}%")
+                
+                volatility_ind = moon.get("volatility_indication", "moderate")
+                if volatility_ind == "high":
+                    vol_color = "🔴"
+                    vol_text = "HIGH (expect increased volatility)"
+                elif volatility_ind == "moderate":
+                    vol_color = "🟡"
+                    vol_text = "MODERATE (normal volatility expected)"
+                else:
+                    vol_color = "🟢"
+                    vol_text = "LOW (reduced volatility expected)"
+                
+                st.markdown(f"**Volatility Indication:** {vol_color} {vol_text}")
+                st.markdown(f"**Trading Bias:** {moon.get('trading_bias', 'neutral').title()}")
+                
+                st.markdown("---")
+                st.markdown("**Upcoming Moon Events:**")
+                st.write(f"• Full Moon in **{moon.get('days_to_full_moon', 0):.1f}** days ({moon.get('next_full_moon', 'N/A')[:10]})")
+                st.write(f"• New Moon in **{moon.get('days_to_new_moon', 0):.1f}** days ({moon.get('next_new_moon', 'N/A')[:10]})")
+                
+                st.markdown("---")
+                with st.expander("ℹ️ Moon Cycle Trading Context"):
+                    st.markdown("""
+                    **Full Moon & New Moon periods** often coincide with volatility peaks in crypto markets.
+                    - **Full Moon**: Peak emotions, potential tops
+                    - **New Moon**: Fresh starts, potential bottoms
+                    - **Waxing Moon**: Growing phase, accumulation
+                    - **Waning Moon**: Declining phase, distribution
+                    """)
             
             with mercury_col:
-                st.markdown("### ☿ Mercury Cycle")
-                st.metric("Phase", mercury.get("phase_name", "Unknown"))
-                st.metric("Volume Indication", mercury.get("volume_indication", "neutral").title())
-                st.metric("Next Peak", mercury.get("next_peak_date", "N/A")[:19])
-                st.metric("Days to Peak", mercury.get("days_to_peak_activity", 0))
+                st.markdown("### ☿ Mercury Cycle (Trading Planet)")
+                st.metric("Current Phase", mercury.get("phase_name", "Unknown"))
+                st.metric("Cycle Position", f"{mercury.get('cycle_position_pct', 0):.1f}%")
+                
+                volume_ind = mercury.get("volume_indication", "moderate")
+                if volume_ind == "high":
+                    vol_color = "🟢"
+                    vol_text = "HIGH (peak trading activity)"
+                elif volume_ind == "increasing":
+                    vol_color = "🟡"
+                    vol_text = "INCREASING (building momentum)"
+                elif volume_ind == "decreasing":
+                    vol_color = "🟠"
+                    vol_text = "DECREASING (slowing activity)"
+                else:
+                    vol_color = "🔴"
+                    vol_text = "LOW (reduced trading)"
+                
+                st.markdown(f"**Volume Indication:** {vol_color} {vol_text}")
+                st.markdown(f"**Recommendation:** {mercury.get('trading_recommendation', 'No specific recommendation')}")
+                
+                st.markdown("---")
+                st.markdown("**Next Mercury Peak:**")
+                st.write(f"• In **{mercury.get('days_to_peak_activity', 0):.1f}** days")
+                st.write(f"• Date: {mercury.get('next_peak_date', 'N/A')[:10]}")
+                
+                st.markdown("---")
+                with st.expander("ℹ️ Mercury Cycle Trading Context"):
+                    st.markdown("""
+                    **Mercury's 88-day cycle** correlates with trading volume patterns:
+                    - **Direct Motion Peak**: Highest trading activity, good liquidity
+                    - **Retrograde**: Lower activity, consolidation periods
+                    - **Post-Retrograde**: Recovery, new opportunities emerging
+                    """)
             
             st.markdown("---")
             
-            st.markdown("### ♃ Jupiter & Bitcoin Halving Cycle")
-            st.metric("Jupiter Phase", jupiter.get("jupiter_phase", "Unknown"))
-            st.metric("Market Correlation", jupiter.get("market_correlation", "neutral").title())
-            st.metric("Halving Phase", jupiter.get("halving_phase", "Unknown"))
-            st.metric("Days to Next Halving", jupiter.get("days_to_next_halving", 0))
+            st.markdown("### ♃ Jupiter 12-Year Cycle & Bitcoin Halvings")
+            
+            jup_col1, jup_col2, jup_col3 = st.columns(3)
+            
+            with jup_col1:
+                st.markdown("#### Jupiter Cycle")
+                st.metric("Phase", jupiter.get("jupiter_phase", "Unknown"))
+                st.metric("Position", f"{jupiter.get('jupiter_cycle_position_pct', 0):.1f}%")
+                
+                correlation = jupiter.get("market_correlation", "neutral")
+                if "strongly bullish" in correlation:
+                    corr_emoji = "🟢🟢🟢"
+                elif "bullish" in correlation:
+                    corr_emoji = "🟢🟢"
+                elif "bearish" in correlation:
+                    corr_emoji = "🔴"
+                else:
+                    corr_emoji = "⚪"
+                
+                st.markdown(f"**Market Correlation:** {corr_emoji} {correlation.title()}")
+            
+            with jup_col2:
+                st.markdown("#### Bitcoin Halving Cycle")
+                st.metric("Current Epoch", f"#{jupiter.get('current_halving_epoch', 0)}")
+                st.metric("Halving Phase", jupiter.get("halving_phase", "Unknown"))
+                st.metric("Phase Progress", f"{jupiter.get('halving_cycle_position_pct', 0):.1f}%")
+            
+            with jup_col3:
+                st.markdown("#### Timeline")
+                st.metric("Days Since Halving", f"{jupiter.get('days_since_last_halving', 0):,}")
+                st.metric("Days to Next", f"{jupiter.get('days_to_next_halving', 0):,}")
+                st.write(f"**Next Halving:** {jupiter.get('next_halving_date', 'N/A')[:10]}")
+            
+            st.markdown("---")
+            st.markdown(f"**Jupiter Recommendation:** {jupiter.get('recommendation', 'No specific recommendation')}")
+            
+            st.markdown("---")
+            with st.expander("ℹ️ Jupiter & Bitcoin Halving Correlation"):
+                st.markdown("""
+                **Jupiter's 12-year cycle** aligns remarkably with Bitcoin's 4-year halving cycles:
+                
+                - **Jupiter Expansion (Year 1-6)**: Coincides with post-halving bull markets
+                - **Jupiter Peak**: Often aligns with cycle tops
+                - **Jupiter Contraction (Year 7-12)**: Coincides with bear markets and accumulation
+                
+                **Bitcoin Halving Phases:**
+                - **Post-Halving Accumulation (0-12 months)**: Build positions
+                - **Bull Market Phase (12-24 months)**: Major uptrend
+                - **Euphoria & Distribution (24-36 months)**: Take profits
+                - **Pre-Halving Bear (36-48 months)**: Accumulation opportunity
+                
+                This pattern has repeated across 3+ cycles, making it a useful contextual indicator.
+                """)
+            
+            st.markdown("---")
+            st.warning("⚠️ **Disclaimer:** Astrology-based analysis is provided for contextual reference only and should not be the sole basis for trading decisions. Always combine with technical analysis, fundamental research, and proper risk management.")
         
     with tab12:
         st.subheader("💾 Export Analysis Data")

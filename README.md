@@ -9,8 +9,13 @@ This project provides both a **web-based dashboard** and a **command line utilit
   - **ATR-based trailing channels** (3x, 8x, 21x multipliers) overlaid on price chart
   - Fair Value Gaps (FVG) and Order Block (OB) zones displayed on charts
   - Multi-timeframe trend analysis with visual strength indicators
-  - **Live Binance orderbook analysis** showing bid/ask depth, price levels, and volume imbalance
-  - Trading signals with confluence scores
+  - **Enhanced Confluence Score** calculation showing both bullish and bearish bias components
+  - **Live Binance orderbook analysis** with 2% aggregated bins for 5%, 10%, 20% ranges
+  - **CME Gap Analysis** tracking unfilled CME futures gaps above and below current price
+  - **Advanced Trade Signal Statistics** with TP1/TP2/TP3 success rates and SL hit rates
+  - **Position Size Calculator** with adjustable leverage and real-time commission calculation
+  - **Astrology & Celestial Cycles** integration (Moon phases, Mercury trading cycles, Jupiter/Bitcoin halving correlation)
+  - Trading signals with weighted confluence scores
   - Export data in JSON and CSV formats
   - Easy token, timeframe, and period selection
 

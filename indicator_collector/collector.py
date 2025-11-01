@@ -12,6 +12,7 @@ from .data_fetcher import (
     generate_synthetic_candles,
     generate_synthetic_order_book,
 )
+from .advanced_metrics import compute_advanced_metrics
 from .indicator_metrics import (
     IndicatorSettings,
     IndicatorSimulator,
@@ -129,7 +130,9 @@ def collect_metrics(
             orderbook_data = generate_synthetic_order_book(symbol, reference_price, limit=100)
     
     summary.orderbook_data = orderbook_data
+    advanced_data = compute_advanced_metrics(summary, main_series.candles)
     payload = summary_to_payload(summary, symbol, timeframe, period, token)
+    payload["advanced"] = advanced_data
 
     return CollectionResult(
         payload=payload,

@@ -562,6 +562,7 @@ def calculate_trade_signal_plan(
             "position_size": round(position_size, 4),
             "notional": round(position_notional, 2),
             "commission_estimate": round(commission, 2),
+            "commission_rate": commission_rate,
             "reward_risk": round(reward_risk, 2),
         },
         "targets": targets,
@@ -572,6 +573,8 @@ def compute_advanced_metrics(
     summary: SimulationSummary,
     candles: Sequence[Candle],
 ) -> Dict[str, object]:
+    from .trade_signals import evaluate_signal_performance, format_stats_to_dict
+    
     candles = list(candles)
     volume_analysis = calculate_volume_analysis(candles)
     market_structure = calculate_market_structure(candles)
@@ -582,6 +585,31 @@ def compute_advanced_metrics(
     trade_plan = calculate_trade_signal_plan(summary, candles)
 
     market_structure["liquidity_zones"] = liquidity_zones
+    
+    signal_analysis = {}
+    if summary and summary.signals and candles:
+        from .math_utils import atr as calc_atr
+        highs = [c.high for c in candles]
+        lows = [c.low for c in candles]
+        closes = [c.close for c in candles]
+        atr_values = calc_atr(highs, lows, closes, 14)
+        
+        signals_data = [
+            {
+                "bar_index": sig.bar_index,
+                "type": sig.signal_type,
+                "price": sig.price,
+            }
+            for sig in summary.signals
+        ]
+        
+        bull_stats, bear_stats = evaluate_signal_performance(signals_data, candles, atr_values)
+        
+        signal_analysis = {
+            "bullish": format_stats_to_dict(bull_stats, "bullish"),
+            "bearish": format_stats_to_dict(bear_stats, "bearish"),
+            "total_analyzed": len(signals_data),
+        }
 
     return {
         "volume_analysis": volume_analysis,
@@ -590,4 +618,5 @@ def compute_advanced_metrics(
         "breadth": breadth,
         "patterns": patterns,
         "trade_plan": trade_plan,
+        "signal_analysis": signal_analysis,
     }

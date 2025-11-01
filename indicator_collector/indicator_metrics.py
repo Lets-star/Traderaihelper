@@ -160,6 +160,9 @@ class MarketSnapshot:
     volume_ratio: Optional[float]
     confluence_score: Optional[float]
     signal: Optional[str]
+    confluence_bias: Optional[Literal["bullish", "bearish", "neutral"]] = None
+    confluence_bullish: Optional[float] = None
+    confluence_bearish: Optional[float] = None
     rsi: Optional[float] = None
     macd: Optional[float] = None
     macd_signal: Optional[float] = None
@@ -167,6 +170,7 @@ class MarketSnapshot:
     bollinger_upper: Optional[float] = None
     bollinger_middle: Optional[float] = None
     bollinger_lower: Optional[float] = None
+    atr: Optional[float] = None
     atr_channels: Dict[str, Optional[float]] = field(default_factory=dict)
 
 
@@ -344,7 +348,39 @@ class IndicatorSimulator:
 
             multi_tf_flags, _ = self._multi_timeframe_context(timestamps[i])
 
-            confluence_score = None
+            bullish_ctx = ConfluenceContext(
+                is_bullish=True,
+                struct_bull=struct_bullish,
+                struct_bear=struct_bearish,
+                struct_neutral=struct_neutral,
+                volume_confirmed=volume_confirmed,
+                multi_tf_bools=multi_tf_flags,
+                pattern_prediction=pattern_score if self.settings.enable_pattern_recognition else None,
+                market_sentiment=sentiment_value if self.settings.enable_sentiment else None,
+            )
+            bearish_ctx = ConfluenceContext(
+                is_bullish=False,
+                struct_bull=struct_bullish,
+                struct_bear=struct_bearish,
+                struct_neutral=struct_neutral,
+                volume_confirmed=volume_confirmed,
+                multi_tf_bools=multi_tf_flags,
+                pattern_prediction=pattern_score if self.settings.enable_pattern_recognition else None,
+                market_sentiment=sentiment_value if self.settings.enable_sentiment else None,
+            )
+
+            bullish_confluence_value = self._calculate_confluence_score(bullish_ctx)
+            bearish_confluence_value = self._calculate_confluence_score(bearish_ctx)
+
+            current_confluence_score = bullish_confluence_value
+            current_confluence_bias: Literal["bullish", "bearish", "neutral"] = "bullish"
+            if bearish_confluence_value > current_confluence_score:
+                current_confluence_score = bearish_confluence_value
+                current_confluence_bias = "bearish"
+            if current_confluence_score < 1.0:
+                current_confluence_bias = "neutral"
+
+            confluence_score_signal: Optional[float] = None
             signal_label: Optional[str] = None
 
             bullish_sync = False
@@ -364,22 +400,9 @@ class IndicatorSimulator:
                     if in_fvg and in_ob and prev_close < prev_open and self._structure_filter(False, struct_bullish, struct_bearish, struct_neutral):
                         bearish_sync = True
 
-            if bullish_sync or bearish_sync:
-                confluence_score = self._calculate_confluence_score(
-                    ConfluenceContext(
-                        is_bullish=bullish_sync,
-                        struct_bull=struct_bullish,
-                        struct_bear=struct_bearish,
-                        struct_neutral=struct_neutral,
-                        volume_confirmed=volume_confirmed,
-                        multi_tf_bools=multi_tf_flags,
-                        pattern_prediction=pattern_score if self.settings.enable_pattern_recognition else None,
-                        market_sentiment=sentiment_value if self.settings.enable_sentiment else None,
-                    )
-                )
-
             if bullish_sync:
                 signal_label = "BUY"
+                confluence_score_signal = bullish_confluence_value
                 success.total_bull_signals += 1
                 bull_signal_queue.append(i)
                 if len(bull_signal_queue) > self.settings.max_array_size:
@@ -390,11 +413,12 @@ class IndicatorSimulator:
                         timestamp=timestamps[i],
                         signal_type="bullish",
                         price=closes[i],
-                        strength=confluence_score,
+                        strength=confluence_score_signal,
                     )
                 )
             elif bearish_sync:
                 signal_label = "SELL"
+                confluence_score_signal = bearish_confluence_value
                 success.total_bear_signals += 1
                 bear_signal_queue.append(i)
                 if len(bear_signal_queue) > self.settings.max_array_size:
@@ -405,12 +429,12 @@ class IndicatorSimulator:
                         timestamp=timestamps[i],
                         signal_type="bearish",
                         price=closes[i],
-                        strength=confluence_score,
+                        strength=confluence_score_signal,
                     )
                 )
 
             # Update trade stats
-            self._update_trades(pnl, bullish_sync, bearish_sync, confluence_score, closes[i], i, choch_bull, choch_bear)
+            self._update_trades(pnl, bullish_sync, bearish_sync, confluence_score_signal, closes[i], i, choch_bull, choch_bear)
 
             # Success evaluation window
             self._evaluate_signal_success(i, closes, success, bull_signal_queue, bear_signal_queue)
@@ -452,8 +476,11 @@ class IndicatorSimulator:
                     structure_event=structure_event,
                     volume_confirmed=volume_confirmed,
                     volume_ratio=volume_ratio,
-                    confluence_score=confluence_score,
+                    confluence_score=confluence_score_signal if (bullish_sync or bearish_sync) else current_confluence_score,
                     signal=signal_label,
+                    confluence_bias=current_confluence_bias,
+                    confluence_bullish=bullish_confluence_value,
+                    confluence_bearish=bearish_confluence_value,
                     rsi=safe_series_value(rsi_series, i),
                     macd=safe_series_value(macd_line, i),
                     macd_signal=safe_series_value(macd_signal_line, i),
@@ -461,6 +488,7 @@ class IndicatorSimulator:
                     bollinger_upper=safe_series_value(bollinger_upper, i),
                     bollinger_middle=safe_series_value(bollinger_middle, i),
                     bollinger_lower=safe_series_value(bollinger_lower, i),
+                    atr=safe_series_value(atr_series, i),
                     atr_channels=atr_channels_at_i,
                 )
             )
@@ -1012,6 +1040,9 @@ def summary_to_payload(
         "structure_state": "Overall market structure bias derived from BOS/CHOCH analysis.",
         "volume_confirmed": "Whether current volume exceeds average volume by the configured multiplier.",
         "confluence_score": "Weighted confluence score (0-10) aggregating structure, volume, timeframe alignment, pattern and sentiment.",
+        "confluence_bias": "Directional bias derived from comparing bullish and bearish confluence components.",
+        "confluence_bullish": "Bullish-side confluence strength component (0-10).",
+        "confluence_bearish": "Bearish-side confluence strength component (0-10).",
         "signal": "Latest signal classification derived from FVG and Order Block overlap logic.",
         "rsi": "Relative Strength Index calculated over the configurable period.",
         "macd": "MACD line derived from the difference between fast and slow EMAs.",
@@ -1020,10 +1051,13 @@ def summary_to_payload(
         "bollinger_upper": "Upper Bollinger Band (basis plus multiplier times standard deviation).",
         "bollinger_middle": "Middle Bollinger Band (basis moving average).",
         "bollinger_lower": "Lower Bollinger Band (basis minus multiplier times standard deviation).",
+        "atr": "Average True Range value for the latest bar (volatility gauge).",
         "success_rates": "Historical win rates for bullish/bearish signals based on look-ahead evaluation.",
         "pnl_stats": "Cumulative PnL stats assuming CHOCH-based exits.",
         "atr_channels": "ATR-based trailing channels derived from multiple volatility multipliers.",
         "orderbook": "Aggregated Binance order book snapshot highlighting depth totals and imbalance.",
+        "cme_gaps": "Nearest unfilled CME futures gaps relative to current price.",
+        "astrology": "Celestial cycle analysis (moon, Mercury, Jupiter) for contextual recommendations.",
     }
 
     payload: Dict[str, object] = {
@@ -1051,6 +1085,9 @@ def summary_to_payload(
             "volume_confirmed": latest_snapshot.volume_confirmed,
             "volume_ratio": latest_snapshot.volume_ratio,
             "confluence_score": latest_snapshot.confluence_score,
+            "confluence_bias": latest_snapshot.confluence_bias,
+            "confluence_bullish": latest_snapshot.confluence_bullish,
+            "confluence_bearish": latest_snapshot.confluence_bearish,
             "signal": latest_snapshot.signal,
             "rsi": latest_snapshot.rsi,
             "macd": latest_snapshot.macd,
@@ -1059,6 +1096,7 @@ def summary_to_payload(
             "bollinger_upper": latest_snapshot.bollinger_upper,
             "bollinger_middle": latest_snapshot.bollinger_middle,
             "bollinger_lower": latest_snapshot.bollinger_lower,
+            "atr": latest_snapshot.atr,
             "atr_channels": latest_snapshot.atr_channels,
         },
         "multi_timeframe": {

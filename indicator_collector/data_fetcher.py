@@ -206,6 +206,8 @@ def _aggregate_order_book_depth(bids: Sequence[Tuple[float, float]], asks: Seque
         "2%": {"bid_volume": 0.0, "ask_volume": 0.0},
         "5%": {"bid_volume": 0.0, "ask_volume": 0.0},
     }
+    
+    aggregated_bins = {}
     if mid_price is not None and mid_price > 0:
         for price, volume in bids_sorted:
             distance_pct = abs((mid_price - price) / mid_price) * 100
@@ -223,6 +225,53 @@ def _aggregate_order_book_depth(bids: Sequence[Tuple[float, float]], asks: Seque
                 price_levels["2%"]["ask_volume"] += volume
             if distance_pct <= 5:
                 price_levels["5%"]["ask_volume"] += volume
+        
+        for range_pct in [5, 10, 20]:
+            aggregated_bins[f"{range_pct}%"] = {}
+            
+            bid_bins = []
+            ask_bins = []
+            
+            for price, volume in bids_sorted:
+                distance_pct = abs((mid_price - price) / mid_price) * 100
+                if distance_pct <= range_pct:
+                    bin_index = int(distance_pct / 2.0)
+                    while len(bid_bins) <= bin_index:
+                        bid_bins.append({"volume": 0.0, "count": 0, "weighted_price": 0.0})
+                    bid_bins[bin_index]["volume"] += volume
+                    bid_bins[bin_index]["count"] += 1
+                    bid_bins[bin_index]["weighted_price"] += price * volume
+            
+            for price, volume in asks_sorted:
+                distance_pct = abs((price - mid_price) / mid_price) * 100
+                if distance_pct <= range_pct:
+                    bin_index = int(distance_pct / 2.0)
+                    while len(ask_bins) <= bin_index:
+                        ask_bins.append({"volume": 0.0, "count": 0, "weighted_price": 0.0})
+                    ask_bins[bin_index]["volume"] += volume
+                    ask_bins[bin_index]["count"] += 1
+                    ask_bins[bin_index]["weighted_price"] += price * volume
+            
+            for bin_data in bid_bins:
+                if bin_data["volume"] > 0:
+                    bin_data["avg_price"] = bin_data["weighted_price"] / bin_data["volume"]
+                else:
+                    bin_data["avg_price"] = None
+                del bin_data["weighted_price"]
+            
+            for bin_data in ask_bins:
+                if bin_data["volume"] > 0:
+                    bin_data["avg_price"] = bin_data["weighted_price"] / bin_data["volume"]
+                else:
+                    bin_data["avg_price"] = None
+                del bin_data["weighted_price"]
+            
+            aggregated_bins[f"{range_pct}%"] = {
+                "bid_bins_2pct": bid_bins,
+                "ask_bins_2pct": ask_bins,
+                "total_bid_volume": sum(b["volume"] for b in bid_bins),
+                "total_ask_volume": sum(b["volume"] for b in ask_bins),
+            }
     else:
         price_levels = {}
 
@@ -240,6 +289,7 @@ def _aggregate_order_book_depth(bids: Sequence[Tuple[float, float]], asks: Seque
         "total_ask_volume": total_ask_volume,
         "sections": sections,
         "price_levels": price_levels,
+        "aggregated_bins": aggregated_bins,
         "bid_ask_ratio_top10": bid_ask_ratio_top10,
         "volume_imbalance_top10": imbalance_top10,
         "raw_levels": {

@@ -10,6 +10,7 @@ from plotly.subplots import make_subplots
 from indicator_collector.collector import collect_metrics
 from indicator_collector.indicator_metrics import SimulationSummary
 from indicator_collector.time_series import TimeframeSeries
+from indicator_collector.trade_signals import calculate_position_metrics, calculate_tp_sl_levels
 
 st.set_page_config(
     page_title="Token Charts & Indicators",
@@ -373,7 +374,7 @@ def main():
     payload = st.session_state.payload
     main_series = st.session_state.main_series
     
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12 = st.tabs([
         "📊 Charts", 
         "📈 Multi-Timeframe", 
         "📋 Latest Metrics", 
@@ -384,6 +385,7 @@ def main():
         "🌐 Breadth Indicators",
         "🌊 Patterns & Waves",
         "🎯 Trade Signals",
+        "🔮 Astrology",
         "💾 Export"
     ])
     
@@ -459,8 +461,19 @@ def main():
         
         with col4:
             confluence = latest.get('confluence_score', 0)
-            confluence_color = "🟢" if confluence and confluence > 6 else "🟡" if confluence and confluence > 4 else "🔴"
+            confluence_bias = latest.get('confluence_bias', 'neutral')
+            confluence_bull = latest.get('confluence_bullish', 0)
+            confluence_bear = latest.get('confluence_bearish', 0)
+            
+            if confluence_bias == 'bullish':
+                confluence_color = "🟢"
+            elif confluence_bias == 'bearish':
+                confluence_color = "🔴"
+            else:
+                confluence_color = "⚪"
+            
             st.metric("Confluence Score", f"{confluence_color} {confluence:.2f}" if confluence else "N/A")
+            st.markdown(f"**Bull:** {confluence_bull:.2f} | **Bear:** {confluence_bear:.2f}")
             
             structure = latest.get('structure_state', 'neutral')
             structure_emoji = "🟢" if structure == "bullish" else "🔴" if structure == "bearish" else "⚪"
@@ -504,6 +517,49 @@ def main():
                 {"Metric": "Trades Closed", "Value": f"{pnl_stats.get('trades_closed', 0)}"},
             ])
             st.dataframe(stats_df, use_container_width=True, hide_index=True)
+        
+        cme_gaps = latest.get("cme_gaps", {})
+        if cme_gaps and cme_gaps.get("total_unfilled_gaps", 0) > 0:
+            st.markdown("---")
+            st.markdown("### 📊 CME Gap Analysis")
+            
+            gap_col1, gap_col2 = st.columns(2)
+            
+            with gap_col1:
+                st.markdown("#### Nearest Gaps Above Current Price")
+                gaps_above = cme_gaps.get("nearest_gaps_above", [])
+                if gaps_above:
+                    gaps_above_df = pd.DataFrame([
+                        {
+                            "Type": gap["type"].replace("_", " ").upper(),
+                            "Top": f"${gap['gap_top']:.2f}",
+                            "Bottom": f"${gap['gap_bottom']:.2f}",
+                            "Distance": f"{gap['distance_pct']:.2f}%",
+                            "Size": f"{gap['gap_size_pct']:.2f}%"
+                        }
+                        for gap in gaps_above[:5]
+                    ])
+                    st.dataframe(gaps_above_df, use_container_width=True, hide_index=True)
+                else:
+                    st.info("No unfilled gaps above current price")
+            
+            with gap_col2:
+                st.markdown("#### Nearest Gaps Below Current Price")
+                gaps_below = cme_gaps.get("nearest_gaps_below", [])
+                if gaps_below:
+                    gaps_below_df = pd.DataFrame([
+                        {
+                            "Type": gap["type"].replace("_", " ").upper(),
+                            "Top": f"${gap['gap_top']:.2f}",
+                            "Bottom": f"${gap['gap_bottom']:.2f}",
+                            "Distance": f"{gap['distance_pct']:.2f}%",
+                            "Size": f"{gap['gap_size_pct']:.2f}%"
+                        }
+                        for gap in gaps_below[:5]
+                    ])
+                    st.dataframe(gaps_below_df, use_container_width=True, hide_index=True)
+                else:
+                    st.info("No unfilled gaps below current price")
         
         if orderbook_data:
             st.markdown("---")
@@ -566,6 +622,57 @@ def main():
                     })
                 ob_sections_df = pd.DataFrame(section_rows)
                 st.dataframe(ob_sections_df, use_container_width=True, hide_index=True)
+            
+            aggregated_bins = orderbook_data.get('aggregated_bins', {})
+            if aggregated_bins:
+                st.markdown("#### Depth by 2% Aggregated Bins")
+                summary_rows = []
+                for range_label, data in aggregated_bins.items():
+                    summary_rows.append({
+                        "Range": range_label,
+                        "Bid Volume": f"{data.get('total_bid_volume', 0):.2f}",
+                        "Ask Volume": f"{data.get('total_ask_volume', 0):.2f}",
+                        "Imbalance": f"{(data.get('total_bid_volume', 0) - data.get('total_ask_volume', 0)):.2f}"
+                    })
+                if summary_rows:
+                    agg_summary_df = pd.DataFrame(summary_rows)
+                    st.dataframe(agg_summary_df, use_container_width=True, hide_index=True)
+                
+                for range_label, data in aggregated_bins.items():
+                    with st.expander(f"{range_label} Range Breakdown", expanded=False):
+                        bid_bins = data.get('bid_bins_2pct', [])
+                        ask_bins = data.get('ask_bins_2pct', [])
+                        bid_df = pd.DataFrame([
+                            {
+                                "Bin": f"{idx * 2}-{(idx + 1) * 2}%",
+                                "Orders": bin_info.get('count', 0),
+                                "Volume": round(bin_info.get('volume', 0), 2),
+                                "Avg Price": f"${bin_info.get('avg_price', 0):.4f}" if bin_info.get('avg_price') else "N/A"
+                            }
+                            for idx, bin_info in enumerate(bid_bins)
+                        ])
+                        ask_df = pd.DataFrame([
+                            {
+                                "Bin": f"{idx * 2}-{(idx + 1) * 2}%",
+                                "Orders": bin_info.get('count', 0),
+                                "Volume": round(bin_info.get('volume', 0), 2),
+                                "Avg Price": f"${bin_info.get('avg_price', 0):.4f}" if bin_info.get('avg_price') else "N/A"
+                            }
+                            for idx, bin_info in enumerate(ask_bins)
+                        ])
+                        b_col, a_col = st.columns(2)
+                        with b_col:
+                            st.markdown("**Bid Bins**")
+                            if not bid_df.empty:
+                                st.dataframe(bid_df, use_container_width=True, hide_index=True)
+                            else:
+                                st.info("No bid volume in this range")
+                        with a_col:
+                            st.markdown("**Ask Bins**")
+                            if not ask_df.empty:
+                                st.dataframe(ask_df, use_container_width=True, hide_index=True)
+                            else:
+                                st.info("No ask volume in this range")
     
     with tab4:
         st.subheader("Signals & Zones")
@@ -981,6 +1088,43 @@ def main():
     with tab10:
         st.subheader("🎯 Trade Signal Calculator")
         trade_plan = advanced.get("trade_plan", {})
+        signal_analysis = advanced.get("signal_analysis", {})
+        
+        if signal_analysis:
+            st.markdown("### 📊 Historical Signal Performance")
+            
+            bullish_stats = signal_analysis.get("bullish", {})
+            bearish_stats = signal_analysis.get("bearish", {})
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("#### 🟢 Bullish Signals")
+                bull_df = pd.DataFrame([
+                    {"Metric": "Total Signals", "Value": bullish_stats.get("total_signals", 0)},
+                    {"Metric": "TP1 Hit Rate", "Value": f"{bullish_stats.get('tp1_rate_pct', 0):.2f}%"},
+                    {"Metric": "TP2 Hit Rate", "Value": f"{bullish_stats.get('tp2_rate_pct', 0):.2f}%"},
+                    {"Metric": "TP3 Hit Rate", "Value": f"{bullish_stats.get('tp3_rate_pct', 0):.2f}%"},
+                    {"Metric": "SL Hit Rate", "Value": f"{bullish_stats.get('sl_rate_pct', 0):.2f}%"},
+                    {"Metric": "Win Rate", "Value": f"{bullish_stats.get('overall_win_rate_pct', 0):.2f}%"},
+                    {"Metric": "Avg Bars to TP1", "Value": f"{bullish_stats.get('avg_bars_to_tp1', 0):.1f}"},
+                ])
+                st.dataframe(bull_df, use_container_width=True, hide_index=True)
+            
+            with col2:
+                st.markdown("#### 🔴 Bearish Signals")
+                bear_df = pd.DataFrame([
+                    {"Metric": "Total Signals", "Value": bearish_stats.get("total_signals", 0)},
+                    {"Metric": "TP1 Hit Rate", "Value": f"{bearish_stats.get('tp1_rate_pct', 0):.2f}%"},
+                    {"Metric": "TP2 Hit Rate", "Value": f"{bearish_stats.get('tp2_rate_pct', 0):.2f}%"},
+                    {"Metric": "TP3 Hit Rate", "Value": f"{bearish_stats.get('tp3_rate_pct', 0):.2f}%"},
+                    {"Metric": "SL Hit Rate", "Value": f"{bearish_stats.get('sl_rate_pct', 0):.2f}%"},
+                    {"Metric": "Win Rate", "Value": f"{bearish_stats.get('overall_win_rate_pct', 0):.2f}%"},
+                    {"Metric": "Avg Bars to TP1", "Value": f"{bearish_stats.get('avg_bars_to_tp1', 0):.1f}"},
+                ])
+                st.dataframe(bear_df, use_container_width=True, hide_index=True)
+            
+            st.markdown("---")
         
         if not trade_plan:
             st.warning("No trade plan available. Generate signals first.")
@@ -999,49 +1143,153 @@ def main():
                 st.info(f"### ⚪ NO ACTIVE SIGNAL")
             
             st.markdown("---")
-            st.markdown("### Entry & Risk Parameters")
+            st.markdown("### 🎛️ Position Size Calculator")
             
             col1, col2, col3 = st.columns(3)
             with col1:
-                st.metric("Entry Price", f"${signal.get('entry_price', 0):.4f}")
-                st.metric("Stop Loss", f"${risk.get('stop_loss', 0):.4f}")
+                custom_position_size = st.number_input(
+                    "Position Size (USD)",
+                    min_value=10.0,
+                    max_value=100000.0,
+                    value=float(risk.get('risk_amount', 100)),
+                    step=10.0,
+                    key="custom_position_size"
+                )
             with col2:
-                st.metric("ATR Value", f"${risk.get('atr', 0):.4f}")
-                st.metric("Risk Amount", f"${risk.get('risk_amount', 0):.2f}")
+                custom_leverage = st.slider(
+                    "Leverage",
+                    min_value=1,
+                    max_value=125,
+                    value=int(position.get('leverage', 10)),
+                    step=1,
+                    key="custom_leverage"
+                )
             with col3:
-                st.metric("Max Loss", f"${risk.get('max_loss', 0):.2f}")
-                st.metric("Reward/Risk", f"{position.get('reward_risk', 0):.2f}x")
+                commission_rate = position.get('commission_rate', 0.0006)
+                st.metric("Commission Rate", f"{commission_rate * 100:.02f}%")
             
-            st.markdown("---")
-            st.markdown("### Position Details (10x Leverage)")
+            entry_price = signal.get('entry_price', 0)
+            stop_loss = risk.get('stop_loss', 0)
+            atr_value = risk.get('atr', 0)
             
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Position Size", f"{position.get('position_size', 0):.4f}")
-            with col2:
-                st.metric("Notional Value", f"${position.get('notional', 0):.2f}")
-            with col3:
-                st.metric("Est. Commission", f"${position.get('commission_estimate', 0):.2f}")
-            
-            st.markdown("---")
-            st.markdown("### Take Profit Targets")
-            
-            if targets:
-                targets_df = pd.DataFrame([
-                    {
-                        "Target": f"TP{idx+1}",
-                        "Price": f"${target['price']:.4f}",
-                        "Gross P&L": f"${target['gross_pnl']:.2f}",
-                        "Net P&L": f"${target['net_pnl']:.2f}"
-                    }
-                    for idx, target in enumerate(targets)
-                ])
-                st.dataframe(targets_df, use_container_width=True, hide_index=True)
+            if entry_price and stop_loss and atr_value:
+                is_long = entry_price > stop_loss
+                custom_metrics = calculate_position_metrics(
+                    entry_price,
+                    custom_position_size,
+                    custom_leverage,
+                    commission_rate
+                )
+                
+                custom_levels = calculate_tp_sl_levels(
+                    entry_price,
+                    is_long,
+                    atr_value
+                )
+                
+                risk_per_unit = abs(entry_price - stop_loss)
+                quantity = custom_metrics['quantity']
+                max_loss = risk_per_unit * quantity + custom_metrics['entry_commission']
+                
+                st.markdown("---")
+                st.markdown("### Entry & Risk Parameters")
+                
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Entry Price", f"${entry_price:.4f}")
+                    st.metric("Stop Loss", f"${custom_levels['sl']:.4f}")
+                with col2:
+                    st.metric("ATR Value", f"${atr_value:.4f}")
+                    st.metric("Risk Amount", f"${custom_position_size:.2f}")
+                with col3:
+                    st.metric("Max Loss", f"${max_loss:.2f}")
+                    st.metric("Quantity", f"{quantity:.4f}")
+                
+                st.markdown("---")
+                st.markdown(f"### Position Details ({custom_leverage}x Leverage)")
+                
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Position Size", f"${custom_position_size:.2f}")
+                with col2:
+                    st.metric("Notional Value", f"${custom_metrics['notional_value']:.2f}")
+                with col3:
+                    st.metric("Est. Commission", f"${custom_metrics['entry_commission']:.2f}")
+                
+                st.markdown("---")
+                st.markdown("### Take Profit Targets (ATR-based)")
+                
+                custom_targets = []
+                for tp_key in ['tp1', 'tp2', 'tp3']:
+                    tp_price = custom_levels.get(tp_key)
+                    if tp_price:
+                        gross = abs(tp_price - entry_price) * quantity
+                        net = gross - custom_metrics['entry_commission'] * 2
+                        custom_targets.append({
+                            "Target": tp_key.upper(),
+                            "Price": f"${tp_price:.4f}",
+                            "Gross P&L": f"${gross:.2f}",
+                            "Net P&L": f"${net:.2f}",
+                            "R:R": f"{(gross / max_loss):.2f}x" if max_loss else "N/A"
+                        })
+                
+                if custom_targets:
+                    custom_targets_df = pd.DataFrame(custom_targets)
+                    st.dataframe(custom_targets_df, use_container_width=True, hide_index=True)
             
             st.markdown("---")
             st.info("⚠️ **Disclaimer:** This is a calculated trade plan based on ATR channels. Always manage your risk and use proper position sizing.")
     
     with tab11:
+        st.subheader("🔮 Astrology & Celestial Cycles")
+        astrology = payload.get("astrology", {})
+        
+        if not astrology:
+            st.info("Astrology metrics are not available for this analysis.")
+        else:
+            confluence = astrology.get("confluence", {})
+            moon = astrology.get("moon", {})
+            mercury = astrology.get("mercury", {})
+            jupiter = astrology.get("jupiter", {})
+            
+            st.metric(
+                "Astro Confluence",
+                f"{confluence.get('score', 0):.2f}",
+                delta=f"{confluence.get('signal_color', '')} {confluence.get('signal', 'neutral').upper()}"
+            )
+            
+            if confluence.get("factors"):
+                st.markdown("**Key Factors**")
+                for factor in confluence["factors"]:
+                    st.write(f"• {factor}")
+            
+            st.markdown("---")
+            
+            moon_col, mercury_col = st.columns(2)
+            
+            with moon_col:
+                st.markdown("### 🌕 Moon Cycle")
+                st.metric("Phase", moon.get("phase_name", "Unknown"))
+                st.metric("Volatility", moon.get("volatility_indication", "neutral").title())
+                st.metric("Next Full Moon", moon.get("next_full_moon", "N/A")[:19])
+                st.metric("Next New Moon", moon.get("next_new_moon", "N/A")[:19])
+            
+            with mercury_col:
+                st.markdown("### ☿ Mercury Cycle")
+                st.metric("Phase", mercury.get("phase_name", "Unknown"))
+                st.metric("Volume Indication", mercury.get("volume_indication", "neutral").title())
+                st.metric("Next Peak", mercury.get("next_peak_date", "N/A")[:19])
+                st.metric("Days to Peak", mercury.get("days_to_peak_activity", 0))
+            
+            st.markdown("---")
+            
+            st.markdown("### ♃ Jupiter & Bitcoin Halving Cycle")
+            st.metric("Jupiter Phase", jupiter.get("jupiter_phase", "Unknown"))
+            st.metric("Market Correlation", jupiter.get("market_correlation", "neutral").title())
+            st.metric("Halving Phase", jupiter.get("halving_phase", "Unknown"))
+            st.metric("Days to Next Halving", jupiter.get("days_to_next_halving", 0))
+        
+    with tab12:
         st.subheader("💾 Export Analysis Data")
         
         st.markdown("### Current Session")

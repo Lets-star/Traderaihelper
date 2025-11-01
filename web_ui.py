@@ -373,7 +373,19 @@ def main():
     payload = st.session_state.payload
     main_series = st.session_state.main_series
     
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Charts", "📈 Multi-Timeframe", "📋 Latest Metrics", "🎯 Signals & Zones", "💾 Export"])
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11 = st.tabs([
+        "📊 Charts", 
+        "📈 Multi-Timeframe", 
+        "📋 Latest Metrics", 
+        "🎯 Signals & Zones", 
+        "📊 Volume Analysis",
+        "🏗️ Market Structure",
+        "📈 Fundamentals",
+        "🌐 Breadth Indicators",
+        "🌊 Patterns & Waves",
+        "🎯 Trade Signals",
+        "💾 Export"
+    ])
     
     with tab1:
         st.subheader(f"Price Chart with Indicators - {selected_token}")
@@ -609,6 +621,427 @@ def main():
                 st.metric("Structure Low", f"${low_level:.4f}" if low_level else "N/A")
     
     with tab5:
+        st.subheader("📊 Volume Analysis")
+        advanced = payload.get("advanced", {})
+        volume_analysis = advanced.get("volume_analysis", {})
+        
+        st.markdown("### Volume Profile (VPVR)")
+        vpvr = volume_analysis.get("vpvr", {})
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            poc = vpvr.get("poc")
+            st.metric("Point of Control (POC)", f"${poc:.4f}" if poc else "N/A")
+        with col2:
+            va_high = vpvr.get("value_area", {}).get("high")
+            st.metric("Value Area High", f"${va_high:.4f}" if va_high else "N/A")
+        with col3:
+            va_low = vpvr.get("value_area", {}).get("low")
+            st.metric("Value Area Low", f"${va_low:.4f}" if va_low else "N/A")
+        
+        levels = vpvr.get("levels", [])
+        if levels:
+            st.markdown("#### Top Volume Levels")
+            vpvr_df = pd.DataFrame([
+                {
+                    "Price": f"${level['price']:.4f}",
+                    "Volume": f"{level['volume']:,.0f}",
+                    "Percentage": f"{level['percentage']:.2f}%"
+                }
+                for level in levels[:10]
+            ])
+            st.dataframe(vpvr_df, use_container_width=True, hide_index=True)
+        
+        st.markdown("---")
+        st.markdown("### Cumulative Volume Delta (CVD)")
+        cvd = volume_analysis.get("cvd", {})
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Latest CVD", f"{cvd.get('latest', 0):,.0f}")
+        with col2:
+            st.metric("CVD Change", f"{cvd.get('change', 0):,.0f}")
+        
+        cvd_series = cvd.get("series", [])
+        if cvd_series:
+            recent_cvd = cvd_series[-10:]
+            cvd_df = pd.DataFrame([
+                {
+                    "Time": entry.get("time_iso", "")[:19],
+                    "CVD": f"{entry.get('value', 0):,.0f}",
+                    "Delta": f"{entry.get('delta', 0):,.0f}",
+                    "Buy Volume": f"{entry.get('buy_volume', 0):,.0f}",
+                    "Sell Volume": f"{entry.get('sell_volume', 0):,.0f}"
+                }
+                for entry in recent_cvd
+            ])
+            st.dataframe(cvd_df, use_container_width=True, hide_index=True)
+        
+        st.markdown("---")
+        st.markdown("### Delta Volume (Market vs Limit Orders)")
+        delta = volume_analysis.get("delta", {})
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Latest Delta", f"{delta.get('latest', 0):,.0f}")
+        with col2:
+            st.metric("Average Delta", f"{delta.get('average', 0):,.0f}")
+        
+        delta_series = delta.get("series", [])
+        if delta_series:
+            delta_df = pd.DataFrame([
+                {
+                    "Time": entry.get("time_iso", "")[:19],
+                    "Delta": f"{entry.get('delta', 0):,.0f}",
+                    "Market Orders": f"{entry.get('market_orders', 0):,.0f}",
+                    "Limit Orders": f"{entry.get('limit_orders', 0):,.0f}",
+                    "Imbalance Ratio": "N/A" if entry.get('imbalance_ratio') is None else f"{entry.get('imbalance_ratio', 0):.2f}"
+                }
+                for entry in delta_series[-10:]
+            ])
+            st.dataframe(delta_df, use_container_width=True, hide_index=True)
+    
+    with tab6:
+        st.subheader("🏗️ Market Structure")
+        market_structure = advanced.get("market_structure", {})
+        
+        trend = market_structure.get("trend", "neutral")
+        trend_emoji = "🟢" if trend == "bullish" else "🔴" if trend == "bearish" else "⚪"
+        st.markdown(f"### Current Trend: {trend_emoji} **{trend.upper()}**")
+        
+        st.markdown("---")
+        st.markdown("### Swing Points")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("#### Higher Highs (HH)")
+            swing_points = market_structure.get("swing_points", {})
+            hh = swing_points.get("hh", [])
+            if hh:
+                hh_df = pd.DataFrame([
+                    {
+                        "Time": point.get("time_iso", "")[:19],
+                        "Price": f"${point.get('price', 0):.4f}",
+                        "Type": point.get("structure", "")
+                    }
+                    for point in hh
+                ])
+                st.dataframe(hh_df, use_container_width=True, hide_index=True)
+            else:
+                st.info("No HH detected")
+            
+            st.markdown("#### Lower Highs (LH)")
+            lh = swing_points.get("lh", [])
+            if lh:
+                lh_df = pd.DataFrame([
+                    {
+                        "Time": point.get("time_iso", "")[:19],
+                        "Price": f"${point.get('price', 0):.4f}",
+                        "Type": point.get("structure", "")
+                    }
+                    for point in lh
+                ])
+                st.dataframe(lh_df, use_container_width=True, hide_index=True)
+            else:
+                st.info("No LH detected")
+        
+        with col2:
+            st.markdown("#### Higher Lows (HL)")
+            hl = swing_points.get("hl", [])
+            if hl:
+                hl_df = pd.DataFrame([
+                    {
+                        "Time": point.get("time_iso", "")[:19],
+                        "Price": f"${point.get('price', 0):.4f}",
+                        "Type": point.get("structure", "")
+                    }
+                    for point in hl
+                ])
+                st.dataframe(hl_df, use_container_width=True, hide_index=True)
+            else:
+                st.info("No HL detected")
+            
+            st.markdown("#### Lower Lows (LL)")
+            ll = swing_points.get("ll", [])
+            if ll:
+                ll_df = pd.DataFrame([
+                    {
+                        "Time": point.get("time_iso", "")[:19],
+                        "Price": f"${point.get('price', 0):.4f}",
+                        "Type": point.get("structure", "")
+                    }
+                    for point in ll
+                ])
+                st.dataframe(ll_df, use_container_width=True, hide_index=True)
+            else:
+                st.info("No LL detected")
+        
+        st.markdown("---")
+        st.markdown("### Key Support & Resistance Levels")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("#### Support Levels")
+            key_levels = market_structure.get("key_levels", {})
+            support = key_levels.get("support", [])
+            if support:
+                support_df = pd.DataFrame([
+                    {
+                        "Price": f"${level['price']:.4f}",
+                        "Strength": f"{level['strength']:.2f}"
+                    }
+                    for level in support
+                ])
+                st.dataframe(support_df, use_container_width=True, hide_index=True)
+            else:
+                st.info("No support levels detected")
+        
+        with col2:
+            st.markdown("#### Resistance Levels")
+            resistance = key_levels.get("resistance", [])
+            if resistance:
+                resistance_df = pd.DataFrame([
+                    {
+                        "Price": f"${level['price']:.4f}",
+                        "Strength": f"{level['strength']:.2f}"
+                    }
+                    for level in resistance
+                ])
+                st.dataframe(resistance_df, use_container_width=True, hide_index=True)
+            else:
+                st.info("No resistance levels detected")
+        
+        st.markdown("---")
+        st.markdown("### Liquidity Zones")
+        liquidity_zones = market_structure.get("liquidity_zones", [])
+        if liquidity_zones:
+            liq_df = pd.DataFrame([
+                {
+                    "Type": zone["type"].upper(),
+                    "Price": f"${zone['price']:.4f}",
+                    "Volume Ratio": f"{zone['volume_ratio']:.4f}"
+                }
+                for zone in liquidity_zones
+            ])
+            st.dataframe(liq_df, use_container_width=True, hide_index=True)
+        else:
+            st.info("No significant liquidity zones detected")
+    
+    with tab7:
+        st.subheader("📈 Fundamental Metrics")
+        fundamentals = advanced.get("fundamentals", {})
+        
+        st.markdown("### Funding Rate")
+        funding_rate = fundamentals.get("funding_rate", {})
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Current Rate", f"{funding_rate.get('current', 0):.4%}")
+        with col2:
+            st.metric("Predicted Rate", f"{funding_rate.get('predicted', 0):.4%}")
+        with col3:
+            st.metric("Annualized Rate", f"{funding_rate.get('annualized', 0):.2f}%")
+        
+        st.markdown("---")
+        st.markdown("### Open Interest")
+        oi = fundamentals.get("open_interest", {})
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Current OI", f"${oi.get('current', 0):,.0f}")
+        with col2:
+            st.metric("OI Change %", f"{oi.get('change_pct', 0):.2f}%")
+        
+        st.markdown("---")
+        st.markdown("### Long/Short Ratio")
+        ls_ratio = fundamentals.get("long_short_ratio", {})
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Long Ratio", f"{ls_ratio.get('long', 0):.3f}")
+        with col2:
+            st.metric("Short Ratio", f"{ls_ratio.get('short', 0):.3f}")
+        with col3:
+            ratio_val = ls_ratio.get('ratio', 0)
+            st.metric("L/S Ratio", f"{ratio_val:.2f}")
+        
+        st.markdown("---")
+        st.markdown("### Block Trades")
+        block_trades = fundamentals.get("block_trades", [])
+        if block_trades:
+            bt_df = pd.DataFrame([
+                {
+                    "Time": trade.get("time_iso", "")[:19],
+                    "Price": f"${trade['price']:.4f}",
+                    "Volume": f"{trade['volume']:,.0f}",
+                    "Side": trade["side"].upper()
+                }
+                for trade in block_trades
+            ])
+            st.dataframe(bt_df, use_container_width=True, hide_index=True)
+        else:
+            st.info("No significant block trades detected")
+    
+    with tab8:
+        st.subheader("🌐 Breadth Indicators")
+        breadth = advanced.get("breadth", {})
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("### Market Dominance & Correlations")
+            st.metric("BTC Dominance", f"{breadth.get('btc_dominance', 0):.2f}%")
+            st.metric("S&P500 Correlation", f"{breadth.get('sp500_correlation', 0):.2f}")
+            st.metric("NASDAQ Correlation", f"{breadth.get('nasdaq_correlation', 0):.2f}")
+        
+        with col2:
+            st.markdown("### Fear & Greed Index")
+            fear_greed = breadth.get("fear_greed_index", 50)
+            regime = breadth.get("regime", "Neutral")
+            
+            if fear_greed >= 70:
+                emoji = "😱"
+                color = "green"
+            elif fear_greed >= 55:
+                emoji = "🤑"
+                color = "lightgreen"
+            elif fear_greed <= 30:
+                emoji = "😨"
+                color = "red"
+            elif fear_greed <= 45:
+                emoji = "😟"
+                color = "orange"
+            else:
+                emoji = "😐"
+                color = "gray"
+            
+            st.markdown(f"## {emoji} {fear_greed:.1f}")
+            st.markdown(f"**Regime: {regime}**")
+            
+            st.progress(fear_greed / 100)
+    
+    with tab9:
+        st.subheader("🌊 Patterns & Waves")
+        patterns = advanced.get("patterns", {})
+        
+        st.markdown("### Elliott Wave Analysis")
+        elliott = patterns.get("elliott", {})
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Wave Count", elliott.get("wave_count", 0))
+        with col2:
+            st.metric("Current Wave", elliott.get("label", "Unknown"))
+        with col3:
+            st.metric("Structure Type", elliott.get("structure", "Unknown").upper())
+        
+        pivot_points = elliott.get("pivot_points", [])
+        if pivot_points:
+            st.markdown("#### Pivot Points")
+            pivot_df = pd.DataFrame([
+                {
+                    "Time": point.get("time_iso", "")[:19],
+                    "Price": f"${point.get('price', 0):.4f}",
+                    "Type": point.get("type", "")
+                }
+                for point in pivot_points
+            ])
+            st.dataframe(pivot_df, use_container_width=True, hide_index=True)
+        
+        st.markdown("---")
+        st.markdown("### Orderbook Clusters")
+        clusters = patterns.get("orderbook_clusters", [])
+        if clusters:
+            cluster_df = pd.DataFrame([
+                {
+                    "Side": cluster["side"].upper(),
+                    "Price": f"${cluster['price']:.4f}",
+                    "Volume": f"{cluster['volume']:,.2f}",
+                    "Strength": f"{cluster['strength']:.2f}x"
+                }
+                for cluster in clusters
+            ])
+            st.dataframe(cluster_df, use_container_width=True, hide_index=True)
+        else:
+            st.info("No significant orderbook clusters detected")
+        
+        st.markdown("---")
+        st.markdown("### Liquidity Anomalies")
+        anomalies = patterns.get("liquidity_anomalies", [])
+        if anomalies:
+            anom_df = pd.DataFrame([
+                {
+                    "Time": anom.get("time_iso", "")[:19],
+                    "Type": anom["type"].upper().replace("_", " "),
+                    "Price": f"${anom['price']:.4f}",
+                    "Severity": f"{anom['severity']:.2f}x",
+                    "Description": anom["description"]
+                }
+                for anom in anomalies
+            ])
+            st.dataframe(anom_df, use_container_width=True, hide_index=True)
+        else:
+            st.info("No liquidity anomalies detected")
+    
+    with tab10:
+        st.subheader("🎯 Trade Signal Calculator")
+        trade_plan = advanced.get("trade_plan", {})
+        
+        if not trade_plan:
+            st.warning("No trade plan available. Generate signals first.")
+        else:
+            signal = trade_plan.get("signal", {})
+            risk = trade_plan.get("risk", {})
+            position = trade_plan.get("position", {})
+            targets = trade_plan.get("targets", [])
+            
+            signal_type = signal.get("type", "NEUTRAL")
+            if signal_type == "BUY":
+                st.success(f"### 🟢 BUY SIGNAL")
+            elif signal_type == "SELL":
+                st.error(f"### 🔴 SELL SIGNAL")
+            else:
+                st.info(f"### ⚪ NO ACTIVE SIGNAL")
+            
+            st.markdown("---")
+            st.markdown("### Entry & Risk Parameters")
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Entry Price", f"${signal.get('entry_price', 0):.4f}")
+                st.metric("Stop Loss", f"${risk.get('stop_loss', 0):.4f}")
+            with col2:
+                st.metric("ATR Value", f"${risk.get('atr', 0):.4f}")
+                st.metric("Risk Amount", f"${risk.get('risk_amount', 0):.2f}")
+            with col3:
+                st.metric("Max Loss", f"${risk.get('max_loss', 0):.2f}")
+                st.metric("Reward/Risk", f"{position.get('reward_risk', 0):.2f}x")
+            
+            st.markdown("---")
+            st.markdown("### Position Details (10x Leverage)")
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Position Size", f"{position.get('position_size', 0):.4f}")
+            with col2:
+                st.metric("Notional Value", f"${position.get('notional', 0):.2f}")
+            with col3:
+                st.metric("Est. Commission", f"${position.get('commission_estimate', 0):.2f}")
+            
+            st.markdown("---")
+            st.markdown("### Take Profit Targets")
+            
+            if targets:
+                targets_df = pd.DataFrame([
+                    {
+                        "Target": f"TP{idx+1}",
+                        "Price": f"${target['price']:.4f}",
+                        "Gross P&L": f"${target['gross_pnl']:.2f}",
+                        "Net P&L": f"${target['net_pnl']:.2f}"
+                    }
+                    for idx, target in enumerate(targets)
+                ])
+                st.dataframe(targets_df, use_container_width=True, hide_index=True)
+            
+            st.markdown("---")
+            st.info("⚠️ **Disclaimer:** This is a calculated trade plan based on ATR channels. Always manage your risk and use proper position sizing.")
+    
+    with tab11:
         st.subheader("💾 Export Analysis Data")
         
         st.markdown("### Current Session")
@@ -628,7 +1061,7 @@ def main():
         
         st.markdown("### Download Options")
         
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns(3)
         
         with col1:
             json_str = json.dumps(payload, indent=2)
@@ -652,6 +1085,52 @@ def main():
                 mime="text/csv",
                 use_container_width=True,
             )
+        
+        with col3:
+            advanced = payload.get("advanced", {})
+            advanced_rows = []
+            if advanced:
+                volume_analysis = advanced.get("volume_analysis", {})
+                vpvr = volume_analysis.get("vpvr", {})
+                advanced_rows.append(("VPVR POC", vpvr.get("poc")))
+                advanced_rows.append(("Value Area High", vpvr.get("value_area", {}).get("high")))
+                advanced_rows.append(("Value Area Low", vpvr.get("value_area", {}).get("low")))
+                advanced_rows.append(("CVD Latest", volume_analysis.get("cvd", {}).get("latest")))
+                advanced_rows.append(("CVD Change", volume_analysis.get("cvd", {}).get("change")))
+                advanced_rows.append(("Delta Latest", volume_analysis.get("delta", {}).get("latest")))
+                advanced_rows.append(("Delta Average", volume_analysis.get("delta", {}).get("average")))
+                market_structure = advanced.get("market_structure", {})
+                advanced_rows.append(("Structure Trend", market_structure.get("trend")))
+                fundamentals = advanced.get("fundamentals", {})
+                advanced_rows.append(("Funding Rate", fundamentals.get("funding_rate", {}).get("current")))
+                advanced_rows.append(("Open Interest", fundamentals.get("open_interest", {}).get("current")))
+                advanced_rows.append(("OI Change %", fundamentals.get("open_interest", {}).get("change_pct")))
+                advanced_rows.append(("Long/Short Ratio", fundamentals.get("long_short_ratio", {}).get("ratio")))
+                breadth = advanced.get("breadth", {})
+                advanced_rows.append(("BTC Dominance", breadth.get("btc_dominance")))
+                advanced_rows.append(("Fear & Greed", breadth.get("fear_greed_index")))
+                trade_plan = advanced.get("trade_plan", {})
+                signal = trade_plan.get("signal", {})
+                risk = trade_plan.get("risk", {})
+                advanced_rows.append(("Signal Type", signal.get("type")))
+                advanced_rows.append(("Entry Price", signal.get("entry_price")))
+                advanced_rows.append(("Stop Loss", risk.get("stop_loss")))
+                advanced_rows.append(("ATR", risk.get("atr")))
+            
+            if advanced_rows:
+                adv_csv = "Metric,Value\n" + "\n".join([
+                    f"{metric},{value if value is not None else ''}"
+                    for metric, value in advanced_rows
+                ])
+                st.download_button(
+                    label="📥 Download CSV (Advanced Summary)",
+                    data=adv_csv,
+                    file_name=f"{selected_token.replace(':', '_')}_{selected_timeframe}_advanced.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                )
+            else:
+                st.caption("Advanced metrics unavailable for export.")
         
         st.markdown("---")
         

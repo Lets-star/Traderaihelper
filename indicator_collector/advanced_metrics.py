@@ -135,6 +135,35 @@ def calculate_volume_analysis(candles: Sequence[Candle]) -> Dict[str, object]:
     if len(cvd_series) >= 2:
         cvd_change = cvd_series[-1]["value"] - cvd_series[-2]["value"]
 
+    lookback_range = candles[-min(120, len(candles)) :]
+    lookback_volumes = [c.volume for c in lookback_range]
+    latest_volume = candles[-1].volume
+    avg_volume = statistics.fmean(lookback_volumes) if lookback_volumes else 0
+    median_volume = statistics.median(lookback_volumes) if lookback_volumes else 0
+    stdev_volume = statistics.pstdev(lookback_volumes) if len(lookback_volumes) > 1 else 0
+    latest_ratio = (latest_volume / avg_volume) if avg_volume else 0
+    outlier_score = ((latest_volume - median_volume) / stdev_volume) if stdev_volume else 0
+    outlier_score = round(outlier_score, 2)
+
+    smart_money_threshold = median_volume * 2 if median_volume else avg_volume * 1.8
+    smart_money_events: List[Dict[str, object]] = []
+    if smart_money_threshold:
+        for candle in candles[-40:]:
+            if candle.volume >= smart_money_threshold:
+                smart_money_events.append(
+                    {
+                        "timestamp": candle.close_time,
+                        "time_iso": _format_timestamp(candle.close_time),
+                        "price": candle.close,
+                        "volume": candle.volume,
+                        "direction": "buy" if candle.close > candle.open else "sell",
+                        "volume_ratio": round(candle.volume / smart_money_threshold, 2),
+                    }
+                )
+    smart_money_events = smart_money_events[:10]
+
+    volume_confidence = _clamp((latest_ratio - 0.9) / 0.6, 0.0, 1.0) if latest_ratio else 0.0
+
     return {
         "vpvr": {
             "levels": sorted_levels[:15],
@@ -152,6 +181,15 @@ def calculate_volume_analysis(candles: Sequence[Candle]) -> Dict[str, object]:
             "average": average_delta,
             "series": delta_series[-30:],
         },
+        "context": {
+            "latest_volume": round(latest_volume, 2),
+            "average_volume": round(avg_volume, 2) if avg_volume else 0,
+            "median_volume": round(median_volume, 2) if median_volume else 0,
+            "volume_ratio": round(latest_ratio, 2) if latest_ratio else 0,
+            "outlier_score": outlier_score,
+            "volume_confidence": round(volume_confidence, 3),
+        },
+        "smart_money": smart_money_events,
     }
 
 
@@ -574,6 +612,16 @@ def compute_advanced_metrics(
     candles: Sequence[Candle],
 ) -> Dict[str, object]:
     from .trade_signals import evaluate_signal_performance, format_stats_to_dict
+    from .market_context import (
+        calculate_vwap_levels,
+        calculate_cumulative_delta_24h,
+        calculate_liquidation_heatmap,
+        analyze_trading_session,
+        analyze_stablecoin_flows,
+        analyze_eth_network_activity,
+        analyze_orderbook_context,
+    )
+    from .math_utils import detect_divergence, rsi as calc_rsi, macd as calc_macd
     
     candles = list(candles)
     volume_analysis = calculate_volume_analysis(candles)
@@ -585,6 +633,50 @@ def compute_advanced_metrics(
     trade_plan = calculate_trade_signal_plan(summary, candles)
 
     market_structure["liquidity_zones"] = liquidity_zones
+    
+    vwap_data = calculate_vwap_levels(candles) if candles else {}
+    
+    cumulative_delta_data = calculate_cumulative_delta_24h(candles) if candles else {}
+    
+    current_price = candles[-1].close if candles else 0
+    liquidation_data = calculate_liquidation_heatmap(current_price, candles, summary.orderbook_data if summary else None)
+    
+    session_data = analyze_trading_session(candles) if candles else {}
+    
+    stablecoin_data = analyze_stablecoin_flows(candles) if candles else {}
+    
+    eth_network_data = analyze_eth_network_activity(candles) if candles else {}
+    
+    fundamentals["stablecoin_flows"] = stablecoin_data
+    fundamentals["eth_network"] = eth_network_data
+    
+    orderbook_context = analyze_orderbook_context(
+        summary.orderbook_data if summary else None,
+        candles
+    )
+    
+    divergences = {}
+    if candles and len(candles) >= 30:
+        closes = [c.close for c in candles]
+        rsi_values = calc_rsi(closes, 14)
+        macd_line, _, _ = calc_macd(closes, 12, 26, 9)
+        
+        rsi_divergence = detect_divergence(closes, rsi_values, 14)
+        macd_divergence = detect_divergence(closes, macd_line, 14)
+        
+        latest_rsi_div = rsi_divergence[-1] if rsi_divergence else "none"
+        latest_macd_div = macd_divergence[-1] if macd_divergence else "none"
+        
+        divergences = {
+            "rsi_divergence": {
+                "current": latest_rsi_div,
+                "series": [{"index": i, "type": div} for i, div in enumerate(rsi_divergence[-20:]) if div != "none"],
+            },
+            "macd_divergence": {
+                "current": latest_macd_div,
+                "series": [{"index": i, "type": div} for i, div in enumerate(macd_divergence[-20:]) if div != "none"],
+            },
+        }
     
     signal_analysis = {}
     if summary and summary.signals and candles:
@@ -619,4 +711,12 @@ def compute_advanced_metrics(
         "patterns": patterns,
         "trade_plan": trade_plan,
         "signal_analysis": signal_analysis,
+        "market_context": {
+            "vwap": vwap_data,
+            "cumulative_delta_24h": cumulative_delta_data,
+            "liquidation_heatmap": liquidation_data,
+            "trading_sessions": session_data,
+            "orderbook_context": orderbook_context,
+        },
+        "divergences": divergences,
     }

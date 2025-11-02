@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import statistics
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Dict, List, Literal, Optional, Sequence, Tuple
@@ -10,6 +11,7 @@ from .math_utils import (
     Candle,
     atr,
     bollinger_bands,
+    detect_divergence,
     ema,
     highest,
     lowest,
@@ -18,6 +20,7 @@ from .math_utils import (
     rma,
     rsi,
     sma,
+    vwap,
 )
 from .time_series import MetricPoint, TimeframeMetricSeries, TimeframeSeries
 
@@ -160,6 +163,7 @@ class MarketSnapshot:
     volume_ratio: Optional[float]
     confluence_score: Optional[float]
     signal: Optional[str]
+    volume_confidence: Optional[float] = None
     confluence_bias: Optional[Literal["bullish", "bearish", "neutral"]] = None
     confluence_bullish: Optional[float] = None
     confluence_bearish: Optional[float] = None
@@ -172,6 +176,11 @@ class MarketSnapshot:
     bollinger_lower: Optional[float] = None
     atr: Optional[float] = None
     atr_channels: Dict[str, Optional[float]] = field(default_factory=dict)
+    vwap: Optional[float] = None
+    sma_fast: Optional[float] = None
+    sma_slow: Optional[float] = None
+    rsi_divergence: Optional[str] = None
+    macd_divergence: Optional[str] = None
 
 
 @dataclass
@@ -227,6 +236,10 @@ class IndicatorSimulator:
 
         ema_fast_series = ema(closes, self.settings.ma_fast)
         ema_slow_series = ema(closes, self.settings.ma_slow)
+        sma_fast_series = sma(closes, self.settings.ma_fast)
+        sma_slow_series = sma(closes, self.settings.ma_slow)
+        typical_prices = [(highs[i] + lows[i] + closes[i]) / 3 for i in range(len(closes))]
+        vwap_series = vwap(typical_prices, volumes)
         rsi_series = rsi(closes, self.settings.rsi_length)
         momentum14 = mom(closes, 14)
         volume_sma = sma(volumes, self.settings.volume_lookback)
@@ -246,6 +259,9 @@ class IndicatorSimulator:
         trend_strength_series = self._calculate_trend_strength_series(closes, self.settings.trend_strength_period)
         sentiment_series = self._calculate_sentiment_series(opens, closes, volumes, self.settings.sentiment_period, rsi_values=rsi(closes, self.settings.sentiment_period))
         pattern_scores = self._calculate_pattern_scores(opens, highs, closes, volumes, ema_fast_series, ema_slow_series, rsi_series, momentum14, volume_sma20)
+        
+        rsi_divergence_series = detect_divergence(closes, rsi_series, 14)
+        macd_divergence_series = detect_divergence(closes, macd_line, 14)
 
         atr_channel_series: Dict[str, List[float]] = {}
         for key, multiplier in ATR_CHANNEL_MULTIPLIERS.items():
@@ -340,8 +356,22 @@ class IndicatorSimulator:
 
             volume_confirmed = self._volume_confirmed(i, volumes, volume_sma)
             volume_ratio = None
-            if i < len(volume_sma) and not math.isnan(volume_sma[i]) and volume_sma[i] != 0:
-                volume_ratio = volumes[i] / volume_sma[i]
+            baseline_volume = None
+            if i < len(volume_sma):
+                baseline_candidate = volume_sma[i]
+                if not math.isnan(baseline_candidate) and baseline_candidate > 0:
+                    baseline_volume = baseline_candidate
+            if baseline_volume is None:
+                window = volumes[max(0, i - self.settings.volume_lookback + 1) : i + 1]
+                if window:
+                    baseline_volume = statistics.fmean(window)
+            if baseline_volume:
+                volume_ratio = volumes[i] / baseline_volume
+
+            volume_confidence_score = None
+            if volume_ratio is not None:
+                threshold_span = max(self.settings.volume_multiplier - 0.9, 0.5)
+                volume_confidence_score = _clamp((volume_ratio - 0.9) / threshold_span, 0.0, 1.0)
 
             sentiment_value = sentiment_series[i] if i < len(sentiment_series) else 50.0
             pattern_score = pattern_scores[i] if i < len(pattern_scores) else 50.0
@@ -476,6 +506,7 @@ class IndicatorSimulator:
                     structure_event=structure_event,
                     volume_confirmed=volume_confirmed,
                     volume_ratio=volume_ratio,
+                    volume_confidence=volume_confidence_score,
                     confluence_score=confluence_score_signal if (bullish_sync or bearish_sync) else current_confluence_score,
                     signal=signal_label,
                     confluence_bias=current_confluence_bias,
@@ -490,6 +521,19 @@ class IndicatorSimulator:
                     bollinger_lower=safe_series_value(bollinger_lower, i),
                     atr=safe_series_value(atr_series, i),
                     atr_channels=atr_channels_at_i,
+                    vwap=safe_series_value(vwap_series, i),
+                    sma_fast=safe_series_value(sma_fast_series, i),
+                    sma_slow=safe_series_value(sma_slow_series, i),
+                    rsi_divergence=(
+                        rsi_divergence_series[i]
+                        if i < len(rsi_divergence_series) and rsi_divergence_series[i] != "none"
+                        else None
+                    ),
+                    macd_divergence=(
+                        macd_divergence_series[i]
+                        if i < len(macd_divergence_series) and macd_divergence_series[i] != "none"
+                        else None
+                    ),
                 )
             )
 
@@ -807,7 +851,21 @@ class IndicatorSimulator:
         avg = volume_sma[index]
         if math.isnan(avg) or avg == 0:
             return False
-        return volumes[index] > avg * self.settings.volume_multiplier
+        volume_ratio = volumes[index] / avg
+        if volume_ratio > self.settings.volume_multiplier:
+            return True
+        recent_volumes = volumes[max(0, index - 5):index]
+        if len(recent_volumes) >= 3:
+            recent_avg = sum(recent_volumes) / len(recent_volumes)
+            dynamic_threshold = max(self.settings.volume_multiplier * 0.7, 1.05)
+            if recent_avg > 0 and volumes[index] >= recent_avg * dynamic_threshold:
+                return True
+            recent_std = statistics.pstdev(recent_volumes) if len(recent_volumes) > 1 else 0
+            if recent_std > 0:
+                z_score = (volumes[index] - recent_avg) / recent_std
+                if z_score >= 1.2:
+                    return True
+        return False
 
     def _multi_timeframe_context(self, timestamp: int) -> Tuple[Dict[str, bool], Dict[str, float]]:
         direction_flags: Dict[str, bool] = {}
@@ -1052,6 +1110,12 @@ def summary_to_payload(
         "bollinger_middle": "Middle Bollinger Band (basis moving average).",
         "bollinger_lower": "Lower Bollinger Band (basis minus multiplier times standard deviation).",
         "atr": "Average True Range value for the latest bar (volatility gauge).",
+        "vwap": "Volume Weighted Average Price derived from intraday ticks.",
+        "sma_fast": "Simple moving average using the fast MA length (default 20).",
+        "sma_slow": "Simple moving average using the slow MA length (default 50).",
+        "volume_confidence": "Normalized volume confidence score between 0 and 1 based on recent distribution.",
+        "rsi_divergence": "Detected RSI divergence type (if any) on the latest bar.",
+        "macd_divergence": "Detected MACD divergence type (if any) on the latest bar.",
         "success_rates": "Historical win rates for bullish/bearish signals based on look-ahead evaluation.",
         "pnl_stats": "Cumulative PnL stats assuming CHOCH-based exits.",
         "atr_channels": "ATR-based trailing channels derived from multiple volatility multipliers.",
@@ -1084,6 +1148,7 @@ def summary_to_payload(
             "structure_event": latest_snapshot.structure_event,
             "volume_confirmed": latest_snapshot.volume_confirmed,
             "volume_ratio": latest_snapshot.volume_ratio,
+            "volume_confidence": latest_snapshot.volume_confidence,
             "confluence_score": latest_snapshot.confluence_score,
             "confluence_bias": latest_snapshot.confluence_bias,
             "confluence_bullish": latest_snapshot.confluence_bullish,
@@ -1098,6 +1163,11 @@ def summary_to_payload(
             "bollinger_lower": latest_snapshot.bollinger_lower,
             "atr": latest_snapshot.atr,
             "atr_channels": latest_snapshot.atr_channels,
+            "vwap": latest_snapshot.vwap,
+            "sma_fast": latest_snapshot.sma_fast,
+            "sma_slow": latest_snapshot.sma_slow,
+            "rsi_divergence": latest_snapshot.rsi_divergence,
+            "macd_divergence": latest_snapshot.macd_divergence,
         },
         "multi_timeframe": {
             "trend_strength": summary.multi_timeframe_trend,

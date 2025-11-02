@@ -303,9 +303,9 @@ def _aggregate_order_book_depth(bids: Sequence[Tuple[float, float]], asks: Seque
     }
 
 
-def fetch_order_book(symbol: str, limit: int = 100) -> Dict[str, object]:
+def fetch_order_book(symbol: str, limit: int = 500) -> Dict[str, object]:
     parsed_symbol = parse_symbol(symbol)
-    constrained_limit = max(5, min(limit, 500))
+    constrained_limit = max(5, min(limit, 1000))
     url = f"{BINANCE_DEPTH_URL}?symbol={parsed_symbol}&limit={constrained_limit}"
 
     try:
@@ -337,8 +337,8 @@ def fetch_order_book(symbol: str, limit: int = 100) -> Dict[str, object]:
     return aggregates
 
 
-def generate_synthetic_order_book(symbol: str, reference_price: float, limit: int = 100) -> Dict[str, object]:
-    constrained_limit = max(5, min(limit, 500))
+def generate_synthetic_order_book(symbol: str, reference_price: float, limit: int = 500) -> Dict[str, object]:
+    constrained_limit = max(5, min(limit, 1000))
     base_price = reference_price if reference_price and reference_price > 0 else 100.0
     seed = (hash(symbol) ^ int(base_price * 100)) & 0xFFFFFFFF
     rng = random.Random(seed)

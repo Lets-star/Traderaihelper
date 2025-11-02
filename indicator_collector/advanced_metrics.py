@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-import random
 import statistics
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Sequence
@@ -18,13 +17,6 @@ except Exception:  # pragma: no cover - type checking only
 
 def _clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, value))
-
-
-def _pivot_seed(candles: Sequence[Candle]) -> int:
-    if not candles:
-        return 0
-    reference = candles[-1].close if candles[-1].close != 0 else candles[-1].high
-    return int(abs(reference) * 1_000_000) % (2**32 - 1)
 
 
 def _format_timestamp(milliseconds: int) -> str:
@@ -82,7 +74,6 @@ def calculate_volume_analysis(candles: Sequence[Candle]) -> Dict[str, object]:
         "low": round(min(area_prices), 4) if area_prices else poc_level,
     }
 
-    rng = random.Random(_pivot_seed(candles))
     cvd_series = []
     delta_series = []
     cumulative = 0.0
@@ -90,11 +81,18 @@ def calculate_volume_analysis(candles: Sequence[Candle]) -> Dict[str, object]:
     for candle in candles:
         body = candle.close - candle.open
         direction = 1 if body > 0 else -1 if body < 0 else 0
-        body_strength = abs(body) / max((candle.high - candle.low) or 1e-6, 1e-6)
-        aggression = 0.5 + direction * 0.2 * body_strength + rng.uniform(-0.05, 0.05)
-        aggression = _clamp(aggression, 0.1, 0.9)
+        candle_range = max((candle.high - candle.low), 1e-6)
+        body_strength = abs(body) / candle_range
+        
+        # Calculate close position within candle range (0 = low, 1 = high)
+        close_position = (candle.close - candle.low) / candle_range if candle_range > 0 else 0.5
+        
+        # Buy pressure is stronger when close is near high and body is bullish
+        # Sell pressure is stronger when close is near low and body is bearish
+        buy_pressure = close_position * (1 + body_strength * direction) / 2
+        buy_pressure = _clamp(buy_pressure, 0.1, 0.9)
 
-        buy_volume = candle.volume * aggression
+        buy_volume = candle.volume * buy_pressure
         sell_volume = candle.volume - buy_volume
         delta = buy_volume - sell_volume
         cumulative += delta
@@ -110,8 +108,15 @@ def calculate_volume_analysis(candles: Sequence[Candle]) -> Dict[str, object]:
             }
         )
 
-        market_pct = 0.35 + body_strength * 0.4 + rng.uniform(-0.05, 0.05)
-        market_pct = _clamp(market_pct, 0.15, 0.95)
+        # Market order proportion based on body strength and wick size
+        upper_wick = candle.high - max(candle.open, candle.close)
+        lower_wick = min(candle.open, candle.close) - candle.low
+        total_wick = upper_wick + lower_wick
+        wick_ratio = total_wick / candle_range if candle_range > 0 else 0
+        
+        # More market orders when body is strong, more limit orders with larger wicks
+        market_pct = 0.5 + body_strength * 0.3 - wick_ratio * 0.2
+        market_pct = _clamp(market_pct, 0.15, 0.85)
         market_orders = candle.volume * market_pct
         limit_orders = candle.volume - market_orders
         imbalance = market_orders - limit_orders
@@ -306,23 +311,41 @@ def calculate_fundamental_metrics(candles: Sequence[Candle]) -> Dict[str, object
             "block_trades": [],
         }
 
-    rng = random.Random(_pivot_seed(candles) + 17)
-    latest = candles[-1]
-    prev = candles[-2]
-    momentum = (latest.close - prev.close) / prev.close if prev.close else 0
+    closes = [c.close for c in candles]
+    returns = [
+        (closes[i] - closes[i - 1]) / closes[i - 1]
+        for i in range(1, len(closes))
+        if closes[i - 1]
+    ]
+    avg_return = statistics.fmean(returns[-30:]) if returns else 0.0
+    volatility = statistics.pstdev(returns[-30:]) if len(returns) > 1 else 0.0
+    latest_return = returns[-1] if returns else 0.0
 
-    funding_rate = 0.0001 + momentum * 0.02 + rng.uniform(-0.0003, 0.0003)
-    funding_rate = _clamp(funding_rate, -0.004, 0.004)
-    predicted = funding_rate + rng.uniform(-0.0001, 0.0001)
+    # Funding rate proxy based on price momentum and volatility
+    funding_rate = _clamp(avg_return * 2.0 + volatility * 0.8, -0.004, 0.004)
+    predicted = _clamp(funding_rate + latest_return * 0.3, -0.004, 0.004)
     annualized = funding_rate * 3 * 365
 
-    total_volume = sum(c.volume for c in candles[-50:])
-    base_oi = 500_000_000 + total_volume * rng.uniform(40, 120)
-    oi_change_pct = momentum * 80 + rng.uniform(-5, 5)
+    # Open interest proxy using cumulative notional over the last 200 candles
+    recent_window = candles[-200:] if len(candles) >= 200 else candles
+    cumulative_volume = sum(c.volume for c in recent_window)
+    average_price = statistics.fmean([c.close for c in recent_window]) if recent_window else 0.0
+    open_interest_proxy = cumulative_volume * average_price
 
-    long_bias = 0.5 + momentum * 1.5 + rng.uniform(-0.1, 0.1)
-    long_bias = _clamp(long_bias, 0.2, 0.8)
-    short_bias = 1 - long_bias
+    recent_volume = sum(c.volume for c in candles[-50:])
+    prior_volume = sum(c.volume for c in candles[-100:-50])
+    oi_change_pct = ((recent_volume - prior_volume) / prior_volume * 100) if prior_volume else 0.0
+
+    # Long/short bias proxy based on directional candle volume
+    analysis_window = candles[-100:] if len(candles) >= 100 else candles
+    long_volume = sum(c.volume for c in analysis_window if c.close >= c.open)
+    short_volume = sum(c.volume for c in analysis_window if c.close < c.open)
+    total_directional_volume = long_volume + short_volume
+    if total_directional_volume:
+        long_bias = long_volume / total_directional_volume
+        short_bias = short_volume / total_directional_volume
+    else:
+        long_bias = short_bias = 0.5
 
     volumes = [c.volume for c in candles[-50:]]
     mean_volume = statistics.fmean(volumes)
@@ -348,7 +371,7 @@ def calculate_fundamental_metrics(candles: Sequence[Candle]) -> Dict[str, object
             "annualized": round(annualized, 2),
         },
         "open_interest": {
-            "current": round(base_oi, 0),
+            "current": round(open_interest_proxy, 2),
             "change_pct": round(oi_change_pct, 2),
         },
         "long_short_ratio": {
@@ -363,30 +386,50 @@ def calculate_fundamental_metrics(candles: Sequence[Candle]) -> Dict[str, object
 def calculate_breadth_metrics(candles: Sequence[Candle]) -> Dict[str, object]:
     if len(candles) < 2:
         return {
-            "btc_dominance": 0,
-            "sp500_correlation": 0,
-            "nasdaq_correlation": 0,
             "fear_greed_index": 50,
             "regime": "neutral",
+            "note": "BTC dominance and correlations require external data sources",
         }
 
-    rng = random.Random(_pivot_seed(candles) + 73)
     returns = [
         (candles[i].close - candles[i - 1].close) / candles[i - 1].close
         for i in range(1, len(candles))
         if candles[i - 1].close
     ]
-    avg_return = statistics.fmean(returns[-30:]) if returns else 0
-
-    btc_dominance = 42 + avg_return * 120 + rng.uniform(-3, 3)
-    btc_dominance = _clamp(btc_dominance, 30, 70)
-
-    sp_corr = 0.4 + avg_return * 5 + rng.uniform(-0.2, 0.2)
-    nas_corr = 0.6 + avg_return * 4 + rng.uniform(-0.15, 0.15)
-    sp_corr = _clamp(sp_corr, -1, 1)
-    nas_corr = _clamp(nas_corr, -1, 1)
-
-    fear_greed = 50 + avg_return * 450 + rng.uniform(-10, 10)
+    
+    if not returns:
+        return {
+            "fear_greed_index": 50,
+            "regime": "neutral",
+            "note": "Insufficient data for calculations",
+        }
+    
+    volatility = statistics.pstdev(returns[-30:]) if len(returns) > 1 else 0
+    
+    # Calculate momentum indicator (rate of return over last 14 periods)
+    momentum_window = returns[-14:] if len(returns) >= 14 else returns
+    momentum = sum(momentum_window) / len(momentum_window) if momentum_window else 0
+    
+    # Volume momentum
+    volumes = [c.volume for c in candles]
+    recent_volumes = volumes[-30:] if len(volumes) >= 30 else volumes
+    earlier_volumes = volumes[-60:-30] if len(volumes) >= 60 else volumes[:len(volumes)//2]
+    
+    avg_recent_volume = statistics.fmean(recent_volumes) if recent_volumes else 0
+    avg_earlier_volume = statistics.fmean(earlier_volumes) if earlier_volumes else 1
+    volume_ratio = avg_recent_volume / avg_earlier_volume if avg_earlier_volume else 1
+    
+    # Fear & Greed calculation based on multiple factors:
+    # 1. Price momentum (positive = greed, negative = fear)
+    # 2. Volatility (high volatility = fear, low = greed)
+    # 3. Volume (increasing = greed, decreasing = fear)
+    
+    momentum_score = _clamp(momentum * 1000, -35, 35)
+    volatility_score = _clamp(-volatility * 300, -25, 25) 
+    volume_score = _clamp((volume_ratio - 1) * 40, -15, 15)
+    
+    # Base fear & greed at 50 and adjust based on factors
+    fear_greed = 50 + momentum_score + volatility_score + volume_score
     fear_greed = _clamp(fear_greed, 0, 100)
 
     if fear_greed >= 70:
@@ -401,11 +444,12 @@ def calculate_breadth_metrics(candles: Sequence[Candle]) -> Dict[str, object]:
         regime = "Neutral"
 
     return {
-        "btc_dominance": round(btc_dominance, 2),
-        "sp500_correlation": round(sp_corr, 2),
-        "nasdaq_correlation": round(nas_corr, 2),
         "fear_greed_index": round(fear_greed, 1),
         "regime": regime,
+        "momentum_contribution": round(momentum_score, 1),
+        "volatility_contribution": round(volatility_score, 1),
+        "volume_contribution": round(volume_score, 1),
+        "note": "BTC dominance and stock market correlations require external data sources",
     }
 
 

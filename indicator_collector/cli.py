@@ -16,11 +16,6 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--token", required=True, help="Authentication token to include in the payload")
     parser.add_argument("--output", help="Optional path to write JSON payload")
     parser.add_argument(
-        "--offline",
-        action="store_true",
-        help="Use deterministic synthetic data instead of downloading from Binance",
-    )
-    parser.add_argument(
         "--multi-symbol",
         nargs="*",
         default=["BINANCE:ETHUSDT", "BINANCE:SOLUSDT"],
@@ -47,7 +42,6 @@ def main(argv: List[str] | None = None) -> None:
         timeframe=args.timeframe,
         period=args.period,
         token=args.token,
-        offline=bool(args.offline),
         multi_symbol=args.multi_symbol,
         disable_multi_symbol=args.disable_multi_symbol,
         additional_timeframes=args.additional_timeframes,

@@ -676,6 +676,181 @@ def main():
                                 st.dataframe(ask_df, use_container_width=True, hide_index=True)
                             else:
                                 st.info("No ask volume in this range")
+
+            market_context_data = advanced.get("market_context", {})
+            orderbook_context = market_context_data.get("orderbook_context", {})
+            mm_activity = orderbook_context.get("market_maker_activity", {})
+
+            if mm_activity and not mm_activity.get("error"):
+                st.markdown("---")
+                st.markdown("### 🤖 Market Maker Detection (Real-Time)")
+
+                if mm_activity.get("warning"):
+                    st.warning(mm_activity["warning"])
+                else:
+                    mm_detected = mm_activity.get("market_maker_detected", False)
+                    confidence = mm_activity.get("confidence", 0)
+                    activity_level = mm_activity.get("activity_level", "unknown")
+
+                    mm_col1, mm_col2, mm_col3 = st.columns(3)
+
+                    with mm_col1:
+                        status_emoji = "✅" if mm_detected else "❌"
+                        st.metric(
+                            "Market Maker Detected",
+                            f"{status_emoji} {'YES' if mm_detected else 'NO'}"
+                        )
+
+                    with mm_col2:
+                        st.metric("Confidence", f"{confidence}%")
+                        st.progress(confidence / 100)
+
+                    with mm_col3:
+                        activity_emoji = "🟢" if activity_level == "high" else "🟡" if activity_level == "medium" else "⚪"
+                        st.metric(
+                            "Activity Level",
+                            f"{activity_emoji} {activity_level.upper()}"
+                        )
+
+                    signals = mm_activity.get("signals", [])
+                    if signals:
+                        st.markdown("#### Detected Signals")
+                        signal_tags = " • ".join([f"`{s.replace('_', ' ').title()}`" for s in signals])
+                        st.markdown(signal_tags)
+
+                    interpretation = mm_activity.get("interpretation", "")
+                    if interpretation:
+                        st.info(interpretation)
+
+                    details = mm_activity.get("details", {})
+
+                    with st.expander("📊 Order Walls Analysis", expanded=False):
+                        walls = details.get("order_walls", {})
+                        wall_col1, wall_col2 = st.columns(2)
+
+                        with wall_col1:
+                            st.markdown("**Bid Walls**")
+                            bid_walls = walls.get("bid_walls", [])
+                            if bid_walls:
+                                bid_walls_df = pd.DataFrame([
+                                    {
+                                        "Price": f"${w['price']:.8f}",
+                                        "Volume": f"{w['volume']:.2f}",
+                                        "Ratio": f"{w['volume_ratio']:.2f}x",
+                                        "Distance": f"{w['distance_from_mid_pct']:.3f}%" if w.get('distance_from_mid_pct') else "N/A",
+                                    }
+                                    for w in bid_walls
+                                ])
+                                st.dataframe(bid_walls_df, use_container_width=True, hide_index=True)
+                            else:
+                                st.info("No significant bid walls detected")
+
+                        with wall_col2:
+                            st.markdown("**Ask Walls**")
+                            ask_walls = walls.get("ask_walls", [])
+                            if ask_walls:
+                                ask_walls_df = pd.DataFrame([
+                                    {
+                                        "Price": f"${w['price']:.8f}",
+                                        "Volume": f"{w['volume']:.2f}",
+                                        "Ratio": f"{w['volume_ratio']:.2f}x",
+                                        "Distance": f"{w['distance_from_mid_pct']:.3f}%" if w.get('distance_from_mid_pct') else "N/A",
+                                    }
+                                    for w in ask_walls
+                                ])
+                                st.dataframe(ask_walls_df, use_container_width=True, hide_index=True)
+                            else:
+                                st.info("No significant ask walls detected")
+
+                        wall_pressure = walls.get("wall_pressure", "neutral")
+                        wall_emoji = "🟢" if wall_pressure == "bullish" else "🔴" if wall_pressure == "bearish" else "⚪"
+                        st.markdown(f"**Wall Pressure:** {wall_emoji} {wall_pressure.upper()}")
+
+                    with st.expander("🔄 Layered Orders Analysis", expanded=False):
+                        layers = details.get("layered_orders", {})
+                        layering_score = layers.get("layering_score", 0)
+                        st.metric("Layering Score", f"{layering_score}/100")
+                        st.progress(layering_score / 100)
+
+                        layer_col1, layer_col2 = st.columns(2)
+
+                        with layer_col1:
+                            st.markdown("**Bid Layers**")
+                            bid_layers = layers.get("bid_layers", [])
+                            if bid_layers:
+                                bid_layers_df = pd.DataFrame([
+                                    {
+                                        "Start": f"${l['start_price']:.8f}",
+                                        "End": f"${l['end_price']:.8f}",
+                                        "Levels": l['levels'],
+                                        "Volume": f"{l['total_volume']:.2f}",
+                                        "Distance": f"{l['distance_from_mid_pct']:.3f}%" if l.get('distance_from_mid_pct') else "N/A",
+                                    }
+                                    for l in bid_layers
+                                ])
+                                st.dataframe(bid_layers_df, use_container_width=True, hide_index=True)
+                            else:
+                                st.info("No bid layers detected")
+
+                        with layer_col2:
+                            st.markdown("**Ask Layers**")
+                            ask_layers = layers.get("ask_layers", [])
+                            if ask_layers:
+                                ask_layers_df = pd.DataFrame([
+                                    {
+                                        "Start": f"${l['start_price']:.8f}",
+                                        "End": f"${l['end_price']:.8f}",
+                                        "Levels": l['levels'],
+                                        "Volume": f"{l['total_volume']:.2f}",
+                                        "Distance": f"{l['distance_from_mid_pct']:.3f}%" if l.get('distance_from_mid_pct') else "N/A",
+                                    }
+                                    for l in ask_layers
+                                ])
+                                st.dataframe(ask_layers_df, use_container_width=True, hide_index=True)
+                            else:
+                                st.info("No ask layers detected")
+
+                    with st.expander("🚨 Quote Stuffing Analysis", expanded=False):
+                        stuffing = details.get("quote_stuffing", {})
+                        stuffing_detected = stuffing.get("stuffing_detected", False)
+                        concentration_score = stuffing.get("concentration_score", 0)
+
+                        stuff_col1, stuff_col2 = st.columns(2)
+
+                        with stuff_col1:
+                            st.metric("Stuffing Detected", "⚠️ YES" if stuffing_detected else "✅ NO")
+                            st.metric("Concentration Score", f"{concentration_score:.2f}/100")
+
+                        with stuff_col2:
+                            bid_conc = stuffing.get("bid_concentration", {})
+                            ask_conc = stuffing.get("ask_concentration", {})
+                            st.metric("Bid Density", f"{bid_conc.get('density', 0):.2f}%")
+                            st.metric("Ask Density", f"{ask_conc.get('density', 0):.2f}%")
+
+                    with st.expander("📊 Spread Manipulation Analysis", expanded=False):
+                        manipulation = details.get("spread_analysis", {})
+                        manip_risk = manipulation.get("manipulation_risk", "unknown")
+                        manip_score = manipulation.get("manipulation_score", 0)
+                        spread_quality = manipulation.get("spread_quality", "unknown")
+
+                        manip_col1, manip_col2, manip_col3 = st.columns(3)
+
+                        with manip_col1:
+                            risk_emoji = "🔴" if manip_risk == "high" else "🟡" if manip_risk == "medium" else "🟢"
+                            st.metric("Manipulation Risk", f"{risk_emoji} {manip_risk.upper()}")
+
+                        with manip_col2:
+                            st.metric("Manipulation Score", f"{manip_score}/100")
+
+                        with manip_col3:
+                            quality_emoji = "🟢" if spread_quality == "good" else "🟡" if spread_quality == "fair" else "🔴"
+                            st.metric("Spread Quality", f"{quality_emoji} {spread_quality.upper()}")
+
+                        indicators = manipulation.get("manipulation_indicators", [])
+                        if indicators:
+                            st.markdown("**Detected Indicators:**")
+                            indicator_text = " • ".join([f"`{ind.replace('_', ' ').title()}`" for ind in indicators])
+                            st.markdown(indicator_text)
     
     with tab4:
         st.subheader("Signals & Zones")

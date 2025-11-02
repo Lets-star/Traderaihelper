@@ -126,10 +126,11 @@ def collect_metrics(
         orderbook_data = generate_synthetic_order_book(symbol, reference_price, limit=500)
     else:
         try:
-            orderbook_data = fetch_order_book(symbol, limit=500)
+            orderbook_data = fetch_order_book(symbol, limit=1000)
         except RuntimeError as exc:
-            print(f"[warning] Failed to fetch orderbook: {exc}", file=sys.stderr)
-            orderbook_data = generate_synthetic_order_book(symbol, reference_price, limit=500)
+            print(f"[warning] Failed to fetch real orderbook from Binance: {exc}", file=sys.stderr)
+            print("[warning] Market maker detection requires real orderbook data", file=sys.stderr)
+            orderbook_data = None
     
     summary.orderbook_data = orderbook_data
     advanced_data = compute_advanced_metrics(summary, main_series.candles)

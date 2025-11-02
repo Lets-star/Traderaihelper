@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import math
-import random
 import statistics
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from .math_utils import Candle
+
+
+def _clamp(value: float, lower: float, upper: float) -> float:
+    return max(lower, min(upper, value))
 
 
 def calculate_vwap_levels(candles: Sequence[Candle]) -> Dict[str, object]:
@@ -79,9 +82,6 @@ def calculate_cumulative_delta_24h(candles: Sequence[Candle]) -> Dict[str, objec
     if not candles_24h:
         candles_24h = candles[-min(96, len(candles)):]
     
-    seed = int(candles[-1].close * 1000) % (2**32 - 1)
-    rng = random.Random(seed)
-    
     cumulative_delta = 0.0
     buy_volume_total = 0.0
     sell_volume_total = 0.0
@@ -91,10 +91,14 @@ def calculate_cumulative_delta_24h(candles: Sequence[Candle]) -> Dict[str, objec
         body = candle.close - candle.open
         direction = 1 if body > 0 else -1 if body < 0 else 0
         body_range = abs(body)
-        candle_range = candle.high - candle.low
-        body_strength = body_range / candle_range if candle_range > 0 else 0.5
+        candle_range = max(candle.high - candle.low, 1e-6)
+        body_strength = body_range / candle_range
         
-        buy_pressure = 0.5 + (direction * 0.3 * body_strength) + rng.uniform(-0.05, 0.05)
+        # Calculate close position within candle range (0 = low, 1 = high)
+        close_position = (candle.close - candle.low) / candle_range if candle_range > 0 else 0.5
+        
+        # Buy pressure is based on close position and body direction
+        buy_pressure = close_position * (1 + body_strength * direction) / 2
         buy_pressure = max(0.1, min(0.9, buy_pressure))
         
         buy_volume = candle.volume * buy_pressure
@@ -149,20 +153,48 @@ def calculate_liquidation_heatmap(
     leverage_levels = [5, 10, 20, 25, 50, 100]
     liquidation_zones = []
     
+    # Calculate volumes based on actual market data
+    total_volume = sum(c.volume for c in candles[-20:])
+    avg_volume = total_volume / 20 if total_volume > 0 else 1000
+    
+    # Analyze directional bias for estimating long/short distribution
+    recent_candles = candles[-50:] if len(candles) >= 50 else candles
+    long_volume_sum = sum(c.volume for c in recent_candles if c.close >= c.open)
+    short_volume_sum = sum(c.volume for c in recent_candles if c.close < c.open)
+    total_dir_volume = long_volume_sum + short_volume_sum
+    
+    long_bias = long_volume_sum / total_dir_volume if total_dir_volume else 0.5
+    short_bias = short_volume_sum / total_dir_volume if total_dir_volume else 0.5
+    
     for leverage in leverage_levels:
         liquidation_distance_pct = (1 / leverage) * 100
         
         long_liq_price = current_price * (1 - liquidation_distance_pct / 100)
         short_liq_price = current_price * (1 + liquidation_distance_pct / 100)
         
-        seed = int((current_price * leverage) % (2**32 - 1))
-        rng = random.Random(seed)
+        # Higher leverage = more risk = higher estimated liquidation volume
+        # Volume estimate is based on leverage popularity, volatility, and directional bias
+        leverage_factor = math.sqrt(leverage / 10)
         
-        total_volume = sum(c.volume for c in candles[-20:])
-        avg_volume = total_volume / 20 if total_volume > 0 else 1000
+        # More popular leverages (5x, 10x, 20x) get higher weight
+        popularity_factor = 1.0
+        if leverage in [10, 20]:
+            popularity_factor = 1.5
+        elif leverage in [25, 50]:
+            popularity_factor = 1.2
+        elif leverage == 5:
+            popularity_factor = 1.3
         
-        long_liq_volume = avg_volume * (leverage / 10) * rng.uniform(0.5, 2.0)
-        short_liq_volume = avg_volume * (leverage / 10) * rng.uniform(0.5, 2.0)
+        volatility_ratio = (atr_estimate / current_price) if current_price else 0
+        volatility_multiplier = 1 + _clamp(volatility_ratio * 5, 0, 2.5)
+        
+        prior_candles = candles[-80:-20] if len(candles) >= 80 else candles[:len(candles)//2]
+        prior_avg_volume = (sum(c.volume for c in prior_candles) / len(prior_candles)) if prior_candles else avg_volume
+        volume_ratio = avg_volume / prior_avg_volume if prior_avg_volume else 1
+        volume_multiplier = _clamp(volume_ratio, 0.6, 2.4)
+        
+        long_liq_volume = avg_volume * leverage_factor * popularity_factor * volume_multiplier * volatility_multiplier * long_bias * 0.8
+        short_liq_volume = avg_volume * leverage_factor * popularity_factor * volume_multiplier * volatility_multiplier * short_bias * 0.8
         
         liquidation_zones.append({
             "leverage": leverage,
@@ -278,9 +310,6 @@ def analyze_stablecoin_flows(candles: Sequence[Candle]) -> Dict[str, object]:
             "flow_momentum": "neutral",
         }
     
-    seed = int(candles[-1].close * 1000) % (2**32 - 1)
-    rng = random.Random(seed)
-    
     recent_candles = candles[-96:] if len(candles) >= 96 else candles
     total_volume_24h = sum(c.volume for c in recent_candles)
     
@@ -288,18 +317,31 @@ def analyze_stablecoin_flows(candles: Sequence[Candle]) -> Dict[str, object]:
     outflow_estimate = 0.0
     
     for candle in recent_candles:
-        price_change = candle.close - candle.open
+        body = candle.close - candle.open
+        candle_range = max(candle.high - candle.low, 1e-6)
+        body_strength = abs(body) / candle_range
         volume = candle.volume
         
-        if price_change > 0:
-            inflow_estimate += volume * 0.6 * rng.uniform(0.8, 1.2)
-            outflow_estimate += volume * 0.4 * rng.uniform(0.8, 1.2)
+        # Calculate close position within candle (0 = low, 1 = high)
+        close_position = (candle.close - candle.low) / candle_range if candle_range > 0 else 0.5
+        
+        # Strong buying (close near high) suggests inflow
+        # Strong selling (close near low) suggests outflow
+        if body > 0:
+            buy_pressure = _clamp(close_position * (1 + body_strength), 0.5, 0.95)
+            inflow_estimate += volume * buy_pressure
+            outflow_estimate += volume * (1 - buy_pressure)
+        elif body < 0:
+            sell_pressure = _clamp((1 - close_position) * (1 + body_strength), 0.5, 0.95)
+            outflow_estimate += volume * sell_pressure
+            inflow_estimate += volume * (1 - sell_pressure)
         else:
-            inflow_estimate += volume * 0.3 * rng.uniform(0.8, 1.2)
-            outflow_estimate += volume * 0.7 * rng.uniform(0.8, 1.2)
+            inflow_estimate += volume * 0.5
+            outflow_estimate += volume * 0.5
     
     net_flow = inflow_estimate - outflow_estimate
     
+    # Typical stablecoin market share distribution
     usdt_split = 0.65
     usdc_split = 0.35
     
@@ -330,32 +372,41 @@ def analyze_eth_network_activity(candles: Sequence[Candle]) -> Dict[str, object]
     """Estimate ETH network activity metrics based on price and volume patterns."""
     if len(candles) < 10:
         return {
-            "gas_price_gwei": 0,
-            "network_utilization_pct": 0,
-            "transaction_count_estimate": 0,
-            "congestion_level": "low",
+            "note": "ETH network metrics require blockchain data - not available from OHLCV",
         }
-    
-    seed = int(candles[-1].close * 1000) % (2**32 - 1)
-    rng = random.Random(seed)
     
     recent_volatility = statistics.stdev([c.close for c in candles[-20:]]) if len(candles) >= 20 else 0
     avg_price = statistics.fmean([c.close for c in candles[-20:]]) if len(candles) >= 20 else candles[-1].close
     volatility_ratio = (recent_volatility / avg_price) if avg_price > 0 else 0
     
-    base_gas = 20.0
-    gas_price = base_gas + (volatility_ratio * 500) + rng.uniform(-5, 15)
-    gas_price = max(5, min(gas_price, 500))
-    
     avg_volume = statistics.fmean([c.volume for c in candles[-20:]]) if len(candles) >= 20 else candles[-1].volume
     latest_volume = candles[-1].volume
     volume_ratio = latest_volume / avg_volume if avg_volume > 0 else 1.0
     
-    network_utilization = 50 + (volume_ratio - 1) * 30 + rng.uniform(-5, 5)
-    network_utilization = max(20, min(network_utilization, 100))
+    # Calculate volume momentum
+    recent_volumes = [c.volume for c in candles[-10:]]
+    prior_volumes = [c.volume for c in candles[-20:-10]] if len(candles) >= 20 else recent_volumes
+    recent_avg = statistics.fmean(recent_volumes) if recent_volumes else 0
+    prior_avg = statistics.fmean(prior_volumes) if prior_volumes else 1
+    volume_momentum = (recent_avg / prior_avg) if prior_avg else 1
     
-    tx_estimate = int((volume_ratio * 1_500_000) + rng.uniform(-100_000, 100_000))
-    tx_estimate = max(100_000, tx_estimate)
+    # Gas price proxy: higher volatility and volume suggest higher network usage
+    base_gas = 20.0
+    volatility_component = _clamp(volatility_ratio * 500, 0, 150)
+    volume_component = _clamp((volume_ratio - 1) * 50, -10, 100)
+    momentum_component = _clamp((volume_momentum - 1) * 30, -5, 50)
+    
+    gas_price = base_gas + volatility_component + volume_component + momentum_component
+    gas_price = _clamp(gas_price, 5, 500)
+    
+    # Network utilization based on volume activity
+    network_utilization = 50 + _clamp((volume_ratio - 1) * 40, -30, 50)
+    network_utilization = _clamp(network_utilization, 20, 100)
+    
+    # Transaction count estimate based on volume activity
+    base_tx_count = 1_000_000
+    tx_estimate = int(base_tx_count * volume_ratio * volume_momentum)
+    tx_estimate = max(100_000, min(tx_estimate, 3_000_000))
     
     if gas_price < 20:
         congestion_level = "low"
@@ -366,12 +417,18 @@ def analyze_eth_network_activity(candles: Sequence[Candle]) -> Dict[str, object]
     else:
         congestion_level = "extreme"
     
+    # Block time is relatively stable but can vary slightly with congestion
+    base_block_time = 12.0
+    congestion_factor = _clamp((gas_price - 50) / 100, -0.3, 1.0)
+    avg_block_time = base_block_time + congestion_factor
+    
     return {
         "gas_price_gwei": round(gas_price, 1),
         "network_utilization_pct": round(network_utilization, 1),
         "transaction_count_estimate": tx_estimate,
         "congestion_level": congestion_level,
-        "avg_block_time_sec": round(12.0 + rng.uniform(-0.5, 1.5), 1),
+        "avg_block_time_sec": round(avg_block_time, 1),
+        "note": "Estimates based on price/volume patterns - real blockchain data recommended",
     }
 
 

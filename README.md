@@ -10,7 +10,7 @@ This project provides both a **web-based dashboard** and a **command line utilit
   - Fair Value Gaps (FVG) and Order Block (OB) zones displayed on charts
   - Multi-timeframe trend analysis with visual strength indicators
   - **Enhanced Confluence Score** calculation showing both bullish and bearish bias components
-  - **Live Binance orderbook analysis** with 2% aggregated bins for 5%, 10%, 20% ranges
+  - **Deep orderbook analysis** (up to 1000 levels) with 2% aggregated bins for 5%, 10%, 20% ranges
   - **CME Gap Analysis** tracking unfilled CME futures gaps above and below current price
   - **Advanced Trade Signal Statistics** with TP1/TP2/TP3 success rates and SL hit rates
   - **Position Size Calculator** with adjustable leverage and real-time commission calculation
@@ -18,6 +18,27 @@ This project provides both a **web-based dashboard** and a **command line utilit
   - Trading signals with weighted confluence scores
   - Export data in JSON and CSV formats
   - Easy token, timeframe, and period selection
+
+- **🎯 Market Context Analysis (Enhanced)**:
+  - **VWAP (Volume Weighted Average Price)** - Key intraday level with standard deviation bands
+  - **Cumulative Delta 24H** - Buy/sell pressure analysis over last 24 hours
+  - **Liquidation Heatmap** - Estimated liquidation clusters at various leverage levels (5x-100x)
+  - **Trading Session Analysis** - Activity breakdown by Asian/European/US market hours
+  - **Orderbook Depth Context** - Market maker presence, liquidity skew, and stability scores
+  - **Smart Money Detection** - Volume outlier analysis flagging institutional-sized trades
+
+- **📈 Enhanced Technical Analysis**:
+  - **SMA Support** - Simple Moving Averages alongside existing EMA calculations
+  - **RSI Divergence Detection** - Regular and hidden divergences automatically identified
+  - **MACD Divergence Detection** - Momentum divergences with price action
+  - **Volume Confidence Score** - Normalized 0-1 score indicating volume reliability
+  - **Improved Volume Confirmation** - Multi-threshold volume analysis with fallback logic
+
+- **💰 Fundamental Metrics**:
+  - **Stablecoin Flow Analysis** - USDT/USDC inflow/outflow estimates and momentum
+  - **ETH Network Activity** - Gas prices, network utilization, transaction count estimates
+  - **Funding Rates & Open Interest** - Synthetic estimates based on market dynamics
+  - **Long/Short Ratio Analysis** - Position imbalance detection
 
 - **🔧 Command Line Interface**: Batch processing and automation
   - Fetches historical OHLCV data directly from Binance for the selected symbol and timeframe

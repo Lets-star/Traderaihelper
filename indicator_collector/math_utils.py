@@ -180,6 +180,91 @@ def bollinger_bands(
     return upper_band, middle_band, lower_band
 
 
+def vwap(prices: Sequence[float], volumes: Sequence[float]) -> List[float]:
+    """
+    Calculate Volume Weighted Average Price (VWAP).
+    
+    Returns cumulative VWAP for each period.
+    """
+    if len(prices) != len(volumes):
+        raise ValueError("prices and volumes must be the same length")
+    
+    result: List[float] = []
+    cumulative_pv = 0.0
+    cumulative_v = 0.0
+    
+    for price, volume in zip(prices, volumes):
+        cumulative_pv += price * volume
+        cumulative_v += volume
+        if cumulative_v > 0:
+            result.append(cumulative_pv / cumulative_v)
+        else:
+            result.append(float("nan"))
+    
+    return result
+
+
+def detect_divergence(
+    price_values: Sequence[float],
+    indicator_values: Sequence[float],
+    lookback: int = 14
+) -> List[str]:
+    """
+    Detect divergences between price and a momentum indicator.
+    
+    The algorithm uses rolling lookback windows to compare recent swing highs/lows
+    in price against corresponding highs/lows in the indicator series. It flags
+    both regular and hidden divergences.
+    """
+    _validate_length(lookback)
+    if len(price_values) != len(indicator_values):
+        raise ValueError("price_values and indicator_values must be the same length")
+
+    result: List[str] = []
+    extended = lookback * 2
+
+    for idx in range(len(price_values)):
+        if idx + 1 < extended:
+            result.append("none")
+            continue
+
+        window_start = idx + 1 - extended
+        mid_point = idx + 1 - lookback
+        prev_prices = price_values[window_start:mid_point]
+        curr_prices = price_values[mid_point:idx + 1]
+        prev_indicator = indicator_values[window_start:mid_point]
+        curr_indicator = indicator_values[mid_point:idx + 1]
+
+        if not prev_prices or not curr_prices:
+            result.append("none")
+            continue
+
+        prev_high = max(prev_prices)
+        prev_low = min(prev_prices)
+        curr_high = max(curr_prices)
+        curr_low = min(curr_prices)
+
+        prev_ind_high = max(prev_indicator)
+        prev_ind_low = min(prev_indicator)
+        curr_ind_high = max(curr_indicator)
+        curr_ind_low = min(curr_indicator)
+
+        divergence = "none"
+
+        if curr_low < prev_low and curr_ind_low >= prev_ind_low:
+            divergence = "bullish_divergence"
+        elif curr_high > prev_high and curr_ind_high <= prev_ind_high:
+            divergence = "bearish_divergence"
+        elif curr_low > prev_low and curr_ind_low < prev_ind_low:
+            divergence = "hidden_bullish"
+        elif curr_high < prev_high and curr_ind_high > prev_ind_high:
+            divergence = "hidden_bearish"
+
+        result.append(divergence)
+
+    return result
+
+
 @dataclass(frozen=True)
 class Candle:
     open_time: int

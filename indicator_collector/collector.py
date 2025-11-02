@@ -123,13 +123,13 @@ def collect_metrics(
     
     orderbook_data = None
     if offline:
-        orderbook_data = generate_synthetic_order_book(symbol, reference_price, limit=100)
+        orderbook_data = generate_synthetic_order_book(symbol, reference_price, limit=500)
     else:
         try:
-            orderbook_data = fetch_order_book(symbol, limit=100)
+            orderbook_data = fetch_order_book(symbol, limit=500)
         except RuntimeError as exc:
             print(f"[warning] Failed to fetch orderbook: {exc}", file=sys.stderr)
-            orderbook_data = generate_synthetic_order_book(symbol, reference_price, limit=100)
+            orderbook_data = generate_synthetic_order_book(symbol, reference_price, limit=500)
     
     summary.orderbook_data = orderbook_data
     advanced_data = compute_advanced_metrics(summary, main_series.candles)

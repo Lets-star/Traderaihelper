@@ -376,7 +376,9 @@ def analyze_eth_network_activity(candles: Sequence[Candle]) -> Dict[str, object]
 
 
 def analyze_orderbook_context(orderbook_data: Optional[Dict[str, object]], candles: Sequence[Candle]) -> Dict[str, object]:
-    """Derive additional context from extended orderbook snapshots."""
+    """Derive additional context from extended orderbook snapshots with real market maker detection."""
+    from .market_maker_detection import analyze_market_maker_activity
+    
     if not orderbook_data:
         return {
             "depth_levels": {},
@@ -386,6 +388,12 @@ def analyze_orderbook_context(orderbook_data: Optional[Dict[str, object]], candl
             "volume_imbalance_top10": None,
             "stability_score": None,
             "liquidity_shelves": [],
+            "market_maker_activity": {
+                "market_maker_detected": False,
+                "confidence": 0,
+                "activity_level": "unknown",
+                "signals": [],
+            },
         }
     
     sections = orderbook_data.get("sections", {})
@@ -450,6 +458,8 @@ def analyze_orderbook_context(orderbook_data: Optional[Dict[str, object]], candl
         if recent_volume > 0:
             stability_score = round(book_turnover / recent_volume, 2)
     
+    market_maker_activity = analyze_market_maker_activity(orderbook_data)
+    
     return {
         "depth_levels": depth_levels,
         "maker_presence": maker_presence,
@@ -458,4 +468,5 @@ def analyze_orderbook_context(orderbook_data: Optional[Dict[str, object]], candl
         "volume_imbalance_top10": orderbook_data.get("volume_imbalance_top10"),
         "stability_score": stability_score,
         "liquidity_shelves": liquidity_shelves,
+        "market_maker_activity": market_maker_activity,
     }

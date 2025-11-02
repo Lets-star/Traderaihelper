@@ -24,7 +24,7 @@ This project provides both a **web-based dashboard** and a **command line utilit
   - **Cumulative Delta 24H** - Buy/sell pressure analysis over last 24 hours
   - **Liquidation Heatmap** - Estimated liquidation clusters at various leverage levels (5x-100x)
   - **Trading Session Analysis** - Activity breakdown by Asian/European/US market hours
-  - **Orderbook Depth Context** - Market maker presence, liquidity skew, and stability scores
+  - **Orderbook Depth Context** - Real Binance orderbook ingestion with market maker detection, liquidity skew, and stability scores
   - **Smart Money Detection** - Volume outlier analysis flagging institutional-sized trades
 
 - **📈 Enhanced Technical Analysis**:
@@ -33,6 +33,14 @@ This project provides both a **web-based dashboard** and a **command line utilit
   - **MACD Divergence Detection** - Momentum divergences with price action
   - **Volume Confidence Score** - Normalized 0-1 score indicating volume reliability
   - **Improved Volume Confirmation** - Multi-threshold volume analysis with fallback logic
+
+- **🤖 Real-Time Market Maker Detection**:
+  - **Order Walls Detection** - Identifies large orders (3.5x+ average) at key price levels
+  - **Layered Orders Analysis** - Detects multiple consecutive orders (market making patterns)
+  - **Quote Stuffing Detection** - Flags suspicious order concentration and manipulation
+  - **Spread Manipulation Analysis** - Monitors bid-ask spread quality and manipulation indicators
+  - **Activity Confidence Scoring** - 0-100% confidence in market maker presence
+  - **Real Binance Data Only** - All detection algorithms use live orderbook data (up to 1000 levels)
 
 - **💰 Fundamental Metrics**:
   - **Stablecoin Flow Analysis** - USDT/USDC inflow/outflow estimates and momentum

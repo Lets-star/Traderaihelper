@@ -677,6 +677,7 @@ def main():
                             else:
                                 st.info("No ask volume in this range")
 
+            advanced = payload.get("advanced", {})
             market_context_data = advanced.get("market_context", {})
             orderbook_context = market_context_data.get("orderbook_context", {})
             mm_activity = orderbook_context.get("market_maker_activity", {})

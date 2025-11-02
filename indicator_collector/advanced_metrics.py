@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import math
 import statistics
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Sequence
+from urllib.request import urlopen
+from urllib.error import HTTPError, URLError
 
 from .math_utils import Candle, atr
 
@@ -383,73 +386,61 @@ def calculate_fundamental_metrics(candles: Sequence[Candle]) -> Dict[str, object
     }
 
 
+def fetch_fear_greed_index() -> Dict[str, object]:
+    """
+    Fetch Fear & Greed Index from Alternative.me API.
+    
+    Returns:
+        Dictionary containing fear_greed_index, regime, and timestamp
+    """
+    url = "https://api.alternative.me/fng/?limit=1"
+    
+    try:
+        with urlopen(url, timeout=5) as response:
+            raw_data = response.read()
+        
+        data = json.loads(raw_data)
+        
+        if "data" in data and len(data["data"]) > 0:
+            latest = data["data"][0]
+            fear_greed_value = int(latest.get("value", 50))
+            value_classification = latest.get("value_classification", "Neutral")
+            timestamp = int(latest.get("timestamp", 0))
+            
+            return {
+                "fear_greed_index": fear_greed_value,
+                "regime": value_classification,
+                "timestamp": timestamp,
+                "source": "alternative.me",
+            }
+    except (HTTPError, URLError, json.JSONDecodeError, KeyError, ValueError) as exc:
+        pass
+    
+    return {
+        "fear_greed_index": 50,
+        "regime": "Neutral",
+        "timestamp": None,
+        "source": "unavailable",
+        "note": "Failed to fetch from external API",
+    }
+
+
 def calculate_breadth_metrics(candles: Sequence[Candle]) -> Dict[str, object]:
     if len(candles) < 2:
         return {
             "fear_greed_index": 50,
             "regime": "neutral",
-            "note": "BTC dominance and correlations require external data sources",
-        }
-
-    returns = [
-        (candles[i].close - candles[i - 1].close) / candles[i - 1].close
-        for i in range(1, len(candles))
-        if candles[i - 1].close
-    ]
-    
-    if not returns:
-        return {
-            "fear_greed_index": 50,
-            "regime": "neutral",
             "note": "Insufficient data for calculations",
         }
-    
-    volatility = statistics.pstdev(returns[-30:]) if len(returns) > 1 else 0
-    
-    # Calculate momentum indicator (rate of return over last 14 periods)
-    momentum_window = returns[-14:] if len(returns) >= 14 else returns
-    momentum = sum(momentum_window) / len(momentum_window) if momentum_window else 0
-    
-    # Volume momentum
-    volumes = [c.volume for c in candles]
-    recent_volumes = volumes[-30:] if len(volumes) >= 30 else volumes
-    earlier_volumes = volumes[-60:-30] if len(volumes) >= 60 else volumes[:len(volumes)//2]
-    
-    avg_recent_volume = statistics.fmean(recent_volumes) if recent_volumes else 0
-    avg_earlier_volume = statistics.fmean(earlier_volumes) if earlier_volumes else 1
-    volume_ratio = avg_recent_volume / avg_earlier_volume if avg_earlier_volume else 1
-    
-    # Fear & Greed calculation based on multiple factors:
-    # 1. Price momentum (positive = greed, negative = fear)
-    # 2. Volatility (high volatility = fear, low = greed)
-    # 3. Volume (increasing = greed, decreasing = fear)
-    
-    momentum_score = _clamp(momentum * 1000, -35, 35)
-    volatility_score = _clamp(-volatility * 300, -25, 25) 
-    volume_score = _clamp((volume_ratio - 1) * 40, -15, 15)
-    
-    # Base fear & greed at 50 and adjust based on factors
-    fear_greed = 50 + momentum_score + volatility_score + volume_score
-    fear_greed = _clamp(fear_greed, 0, 100)
 
-    if fear_greed >= 70:
-        regime = "Extreme Greed"
-    elif fear_greed >= 55:
-        regime = "Greed"
-    elif fear_greed <= 30:
-        regime = "Extreme Fear"
-    elif fear_greed <= 45:
-        regime = "Fear"
-    else:
-        regime = "Neutral"
+    fear_greed_data = fetch_fear_greed_index()
 
     return {
-        "fear_greed_index": round(fear_greed, 1),
-        "regime": regime,
-        "momentum_contribution": round(momentum_score, 1),
-        "volatility_contribution": round(volatility_score, 1),
-        "volume_contribution": round(volume_score, 1),
-        "note": "BTC dominance and stock market correlations require external data sources",
+        "fear_greed_index": fear_greed_data["fear_greed_index"],
+        "regime": fear_greed_data["regime"],
+        "source": fear_greed_data.get("source", "external"),
+        "timestamp": fear_greed_data.get("timestamp"),
+        "note": fear_greed_data.get("note", "Data fetched from Alternative.me Crypto Fear & Greed Index"),
     }
 
 

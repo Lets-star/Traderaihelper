@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import json
-import math
-import random
 import time
 from typing import Dict, Iterable, List, Sequence, Tuple
 from urllib.error import HTTPError, URLError
@@ -114,46 +112,6 @@ def fetch_klines(symbol: str, timeframe: str, limit: int = 500) -> List[Candle]:
             volume=float(entry[5]),
         )
         candles.append(candle)
-    return candles
-
-
-def generate_synthetic_candles(symbol: str, timeframe: str, limit: int) -> List[Candle]:
-    """Create deterministic synthetic OHLCV candles for offline scenarios."""
-    interval = timeframe_to_binance_interval(timeframe)
-    interval_ms = interval_to_milliseconds(interval)
-    limit = max(1, limit)
-    end_time = int(time.time() * 1000)
-    start_time = end_time - interval_ms * limit
-    seed = (hash(symbol) ^ hash(interval)) & 0xFFFFFFFF
-    rng = random.Random(seed)
-
-    base_price = max(5.0, 100 + (abs(hash(symbol)) % 500) / 10)
-    price = base_price
-    candles: List[Candle] = []
-
-    for i in range(limit):
-        open_time = start_time + i * interval_ms
-        close_time = open_time + interval_ms
-        drift = math.sin(i / 12.0) * 1.5
-        change = drift + rng.uniform(-1.2, 1.2)
-        open_price = max(0.1, price)
-        close_price = max(0.1, open_price + change)
-        high = max(open_price, close_price) + rng.uniform(0.05, 0.9)
-        low = max(0.01, min(open_price, close_price) - rng.uniform(0.05, 0.9))
-        volume = 100 + abs(change) * 40 + rng.uniform(0, 30)
-        candles.append(
-            Candle(
-                open_time=open_time,
-                close_time=close_time,
-                open=open_price,
-                high=high,
-                low=low,
-                close=close_price,
-                volume=volume,
-            )
-        )
-        price = close_price + rng.uniform(-0.3, 0.3)
-
     return candles
 
 
@@ -337,33 +295,4 @@ def fetch_order_book(symbol: str, limit: int = 500) -> Dict[str, object]:
     return aggregates
 
 
-def generate_synthetic_order_book(symbol: str, reference_price: float, limit: int = 500) -> Dict[str, object]:
-    constrained_limit = max(5, min(limit, 1000))
-    base_price = reference_price if reference_price and reference_price > 0 else 100.0
-    seed = (hash(symbol) ^ int(base_price * 100)) & 0xFFFFFFFF
-    rng = random.Random(seed)
-    price_step = max(base_price * 0.0008, 0.05)
-
-    bids: List[Tuple[float, float]] = []
-    asks: List[Tuple[float, float]] = []
-    for i in range(constrained_limit):
-        offset = price_step * (i + 1)
-        bid_price = max(0.01, base_price - offset)
-        ask_price = base_price + offset
-        bid_qty = rng.uniform(0.8, 3.2) * (1 + 0.05 * i)
-        ask_qty = rng.uniform(0.8, 3.2) * (1 + 0.05 * i)
-        bids.append((round(bid_price, 4), round(bid_qty, 3)))
-        asks.append((round(ask_price, 4), round(ask_qty, 3)))
-
-    aggregates = _aggregate_order_book_depth(bids, asks)
-    aggregates.update(
-        {
-            "symbol": parse_symbol(symbol),
-            "limit": constrained_limit,
-            "last_update_id": rng.randint(1, 1_000_000_000),
-            "snapshot_time": int(time.time() * 1000),
-            "source": "synthetic",
-        }
-    )
-    return aggregates
 

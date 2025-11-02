@@ -37,13 +37,12 @@ TIMEFRAMES = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h
 
 
 @st.cache_data(ttl=300)
-def load_indicator_data(symbol: str, timeframe: str, period: int, offline: bool, token: str) -> tuple:
+def load_indicator_data(symbol: str, timeframe: str, period: int, token: str) -> tuple:
     result = collect_metrics(
         symbol=symbol,
         timeframe=timeframe,
         period=period,
         token=token,
-        offline=offline,
     )
     return result.summary, result.payload, result.main_series
 
@@ -339,9 +338,6 @@ def main():
         selected_timeframe = st.selectbox("Timeframe", TIMEFRAMES, index=TIMEFRAMES.index("15m"))
         selected_period = st.slider("Analysis Period (bars)", min_value=50, max_value=1000, value=200, step=50)
         
-        st.subheader("Data Source")
-        offline_mode = st.checkbox("Offline Mode (Synthetic Data)", value=False, help="Use synthetic data instead of fetching from Binance")
-        
         st.subheader("Export Options")
         export_token = st.text_input("Export Token/ID", value="export-session-001", help="Token to identify this analysis session")
         
@@ -354,7 +350,6 @@ def main():
                     selected_token,
                     selected_timeframe,
                     selected_period,
-                    offline_mode,
                     export_token,
                 )
                 st.session_state.summary = summary

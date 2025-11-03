@@ -12,6 +12,30 @@ from indicator_collector.indicator_metrics import SimulationSummary
 from indicator_collector.time_series import TimeframeSeries
 from indicator_collector.trade_signals import calculate_position_metrics, calculate_tp_sl_levels
 
+
+def format_correlation(value: float) -> str:
+    """Format correlation value with color coding."""
+    if value > 0.7:
+        return f"🟢 {value:.3f}"
+    elif value > 0.3:
+        return f"🟡 {value:.3f}"
+    elif value > -0.3:
+        return f"⚪ {value:.3f}"
+    elif value > -0.7:
+        return f"🟠 {value:.3f}"
+    else:
+        return f"🔴 {value:.3f}"
+
+
+def format_flow(value: float) -> str:
+    """Format flow value with color coding."""
+    if abs(value) < 1000:
+        return f"⚪ ${value:,.0f}"
+    elif value > 0:
+        return f"🟢 ${value:,.0f}"
+    else:
+        return f"🔴 ${value:,.0f}"
+
 st.set_page_config(
     page_title="Token Charts & Indicators",
     page_icon="📈",
@@ -369,27 +393,44 @@ def main():
     payload = st.session_state.payload
     main_series = st.session_state.main_series
     
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12 = st.tabs([
-        "📊 Charts", 
-        "📈 Multi-Timeframe", 
-        "📋 Latest Metrics", 
-        "🎯 Signals & Zones", 
+    (
+        chart_tab,
+        multi_tab,
+        latest_tab,
+        signals_tab,
+        volume_tab,
+        structure_tab,
+        fundamentals_tab,
+        breadth_tab,
+        onchain_tab,
+        composite_tab,
+        patterns_tab,
+        trade_tab,
+        astrology_tab,
+        export_tab,
+    ) = st.tabs([
+        "📊 Charts",
+        "📈 Multi-Timeframe",
+        "📋 Latest Metrics",
+        "🎯 Signals & Zones",
         "📊 Volume Analysis",
         "🏗️ Market Structure",
         "📈 Fundamentals",
         "🌐 Breadth Indicators",
+        "🔗 On-chain Metrics",
+        "🧩 Composite Indicators",
         "🌊 Patterns & Waves",
         "🎯 Trade Signals",
         "🔮 Astrology",
-        "💾 Export"
+        "💾 Export",
     ])
     
-    with tab1:
+    with chart_tab:
         st.subheader(f"Price Chart with Indicators - {selected_token}")
         fig = create_candlestick_chart(summary, main_series)
         st.plotly_chart(fig, use_container_width=True)
     
-    with tab2:
+    with multi_tab:
         st.subheader("Multi-Timeframe Analysis")
         mtf_fig = create_multi_timeframe_chart(payload)
         if mtf_fig:
@@ -433,7 +474,7 @@ def main():
                     if strength is not None:
                         st.write(f"{sym}: **{strength:.2f}**")
     
-    with tab3:
+    with latest_tab:
         st.subheader("Latest Market Snapshot")
         
         latest = payload.get("latest", {})
@@ -848,7 +889,7 @@ def main():
                             indicator_text = " • ".join([f"`{ind.replace('_', ' ').title()}`" for ind in indicators])
                             st.markdown(indicator_text)
     
-    with tab4:
+    with signals_tab:
         st.subheader("Signals & Zones")
         
         col1, col2 = st.columns(2)
@@ -901,7 +942,7 @@ def main():
                 low_level = structure_levels.get("low")
                 st.metric("Structure Low", f"${low_level:.4f}" if low_level else "N/A")
     
-    with tab5:
+    with volume_tab:
         st.subheader("📊 Volume Analysis")
         advanced = payload.get("advanced", {})
         volume_analysis = advanced.get("volume_analysis", {})
@@ -979,7 +1020,7 @@ def main():
             ])
             st.dataframe(delta_df, use_container_width=True, hide_index=True)
     
-    with tab6:
+    with structure_tab:
         st.subheader("🏗️ Market Structure")
         market_structure = advanced.get("market_structure", {})
         
@@ -1107,7 +1148,7 @@ def main():
         else:
             st.info("No significant liquidity zones detected")
     
-    with tab7:
+    with fundamentals_tab:
         st.subheader("📈 Fundamental Metrics")
         fundamentals = advanced.get("fundamentals", {})
         
@@ -1159,45 +1200,276 @@ def main():
         else:
             st.info("No significant block trades detected")
     
-    with tab8:
+    with breadth_tab:
         st.subheader("🌐 Breadth Indicators")
-        breadth = advanced.get("breadth", {})
+        advanced_data = payload.get("advanced", {})
+        breadth = advanced_data.get("breadth", {})
         
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.markdown("### Market Dominance & Correlations")
-            st.metric("BTC Dominance", f"{breadth.get('btc_dominance', 0):.2f}%")
-            st.metric("S&P500 Correlation", f"{breadth.get('sp500_correlation', 0):.2f}")
-            st.metric("NASDAQ Correlation", f"{breadth.get('nasdaq_correlation', 0):.2f}")
-        
-        with col2:
-            st.markdown("### Fear & Greed Index")
+        if not breadth:
+            st.info("Breadth data is not available for the selected configuration.")
+        else:
+            st.markdown(
+                "These metrics blend macro sentiment with cross-market behaviour to highlight how broad the current trend really is."
+            )
+            
             fear_greed = breadth.get("fear_greed_index", 50)
             regime = breadth.get("regime", "Neutral")
+            note = breadth.get("note")
+            source = breadth.get("source", "unavailable")
             
-            if fear_greed >= 70:
-                emoji = "😱"
-                color = "green"
-            elif fear_greed >= 55:
-                emoji = "🤑"
-                color = "lightgreen"
-            elif fear_greed <= 30:
-                emoji = "😨"
-                color = "red"
-            elif fear_greed <= 45:
-                emoji = "😟"
-                color = "orange"
-            else:
-                emoji = "😐"
-                color = "gray"
+            sentiment_col, correlation_col, macro_col = st.columns([1.2, 1, 1])
             
-            st.markdown(f"## {emoji} {fear_greed:.1f}")
-            st.markdown(f"**Regime: {regime}**")
+            with sentiment_col:
+                if fear_greed >= 70:
+                    sentiment_emoji = "🟢"
+                    sentiment_text = "Extreme Greed"
+                elif fear_greed >= 55:
+                    sentiment_emoji = "🟡"
+                    sentiment_text = "Greed"
+                elif fear_greed <= 25:
+                    sentiment_emoji = "🔴"
+                    sentiment_text = "Extreme Fear"
+                elif fear_greed <= 45:
+                    sentiment_emoji = "🟠"
+                    sentiment_text = "Fear"
+                else:
+                    sentiment_emoji = "⚪"
+                    sentiment_text = "Neutral"
+                
+                st.metric("Fear & Greed Index", f"{sentiment_emoji} {fear_greed:.1f}")
+                st.caption(f"{sentiment_text} — extremes often precede mean-reversion moves.")
+                st.progress(fear_greed / 100)
+                st.markdown(f"**Regime:** {regime.upper()}")
+                if note:
+                    st.caption(note)
+                st.caption(f"Source: {source}")
             
-            st.progress(fear_greed / 100)
+            with correlation_col:
+                st.markdown("### Cross-Market Correlations")
+                btc_corr = breadth.get("btc_correlation")
+                sp_corr = breadth.get("sp500_correlation")
+                
+                if btc_corr is None:
+                    st.metric("BTC Correlation", "N/A")
+                else:
+                    st.metric("BTC Correlation", format_correlation(btc_corr))
+                st.caption("How closely the asset tracks Bitcoin's daily move.")
+                
+                if sp_corr is None:
+                    st.metric("S&P 500 Correlation", "N/A")
+                else:
+                    st.metric("S&P 500 Correlation", format_correlation(sp_corr))
+                st.caption("Links to traditional risk-on equities.")
+            
+            with macro_col:
+                st.markdown("### Macro Backdrop")
+                dxy = breadth.get("dollar_index_dxy")
+                if dxy is None:
+                    st.metric("Dollar Index (DXY)", "N/A")
+                else:
+                    if dxy >= 105:
+                        dxy_emoji = "🔴"
+                    elif dxy >= 100:
+                        dxy_emoji = "🟡"
+                    else:
+                        dxy_emoji = "🟢"
+                    st.metric("Dollar Index (DXY)", f"{dxy_emoji} {dxy:.2f}")
+                st.caption("A stronger dollar often weighs on crypto risk appetite.")
+                
+                vix_value = breadth.get("vix_index")
+                if vix_value is None:
+                    st.metric("Volatility Index (VIX)", "N/A")
+                else:
+                    if vix_value >= 30:
+                        vix_emoji = "🔴"
+                    elif vix_value >= 20:
+                        vix_emoji = "🟡"
+                    else:
+                        vix_emoji = "🟢"
+                    st.metric("Volatility Index (VIX)", f"{vix_emoji} {vix_value:.2f}")
+                st.caption("Elevated volatility signals stress across risk assets.")
+                
+                yields = breadth.get("treasury_yields", {})
+                two_year = yields.get("2y")
+                ten_year = yields.get("10y")
+                if two_year is not None:
+                    st.metric("US 2Y Yield", f"{two_year:.3f}%")
+                if ten_year is not None:
+                    st.metric("US 10Y Yield", f"{ten_year:.3f}%")
+                if two_year is not None and ten_year is not None:
+                    curve = two_year - ten_year
+                    if curve >= 0:
+                        curve_emoji = "🔴"
+                    elif curve > -0.3:
+                        curve_emoji = "🟡"
+                    else:
+                        curve_emoji = "🟢"
+                    st.metric("Yield Curve (2Y-10Y)", f"{curve_emoji} {curve:.2f}%")
+                    st.caption("An inverted curve (2Y > 10Y) signals tightening liquidity conditions.")
     
-    with tab9:
+    with onchain_tab:
+        st.subheader("🔗 On-chain Metrics")
+        advanced_data = payload.get("advanced", {})
+        onchain = advanced_data.get("onchain_metrics", {})
+        exchange_flows = onchain.get("exchange_flows", {})
+        
+        if not exchange_flows:
+            st.info("On-chain exchange flow estimates are not available for this asset/timeframe.")
+        else:
+            st.markdown(
+                "Exchange flow estimates highlight whether capital is moving onto exchanges (accumulation) or away from them (distribution)."
+            )
+            
+            net_flow = exchange_flows.get("net_flow", 0.0)
+            inflow_usd = exchange_flows.get("inflow", 0.0)
+            outflow_usd = exchange_flows.get("outflow", 0.0)
+            inflow_asset = exchange_flows.get("inflow_btc", 0.0)
+            outflow_asset = exchange_flows.get("outflow_btc", 0.0)
+            total_turnover = abs(inflow_usd) + abs(outflow_usd)
+            flow_bias = (net_flow / total_turnover * 100) if total_turnover else 0.0
+            
+            summary_col, bias_col = st.columns(2)
+            with summary_col:
+                st.metric("Net Flow (USD)", format_flow(net_flow))
+                st.caption("Positive values show net accumulation; negative values indicate distribution pressure.")
+            with bias_col:
+                if total_turnover:
+                    if flow_bias >= 5:
+                        bias_emoji = "🟢"
+                    elif flow_bias <= -5:
+                        bias_emoji = "🔴"
+                    else:
+                        bias_emoji = "⚪"
+                    st.metric("Flow Bias", f"{bias_emoji} {flow_bias:+.2f}%")
+                else:
+                    st.metric("Flow Bias", "N/A")
+                st.caption("Net flow relative to total turnover over the analysed window.")
+            
+            usd_col1, usd_col2 = st.columns(2)
+            with usd_col1:
+                st.metric("Inflow (USD)", format_flow(inflow_usd))
+                st.caption("Buying pressure routed through exchanges.")
+            with usd_col2:
+                st.metric("Outflow (USD)", format_flow(outflow_usd))
+                st.caption("Selling pressure or capital leaving exchanges.")
+            
+            asset_col1, asset_col2 = st.columns(2)
+            with asset_col1:
+                st.metric("Inflow (Asset Units)", f"{inflow_asset:.4f}")
+            with asset_col2:
+                st.metric("Outflow (Asset Units)", f"{outflow_asset:.4f}")
+            st.caption("Asset unit estimates use the average price across the last 20 analysed candles.")
+    
+    with composite_tab:
+        st.subheader("🧩 Composite Indicators")
+        advanced_data = payload.get("advanced", {})
+        composite = advanced_data.get("composite_indicators", {})
+        
+        if not composite:
+            st.info("Composite indicators are not available for this asset/timeframe.")
+        else:
+            st.markdown(
+                "Composite scores summarise liquidity quality, market health, and the risk-adjusted trading signal."
+            )
+            
+            liquidity_score = composite.get("liquidity_score", {})
+            market_health = composite.get("market_health_index", {})
+            risk_signal = composite.get("risk_adjusted_signal", {})
+            
+            overview_col1, overview_col2, overview_col3 = st.columns(3)
+            
+            overall_liquidity = liquidity_score.get("overall")
+            with overview_col1:
+                if overall_liquidity is None:
+                    st.metric("Liquidity Score", "N/A")
+                else:
+                    if overall_liquidity >= 0.7:
+                        liquidity_emoji = "🟢"
+                    elif overall_liquidity >= 0.4:
+                        liquidity_emoji = "🟡"
+                    else:
+                        liquidity_emoji = "🔴"
+                    st.metric("Liquidity Score", f"{liquidity_emoji} {overall_liquidity:.3f}")
+                st.caption("Combines order book depth, spreads, and slippage risk.")
+            
+            overall_health = market_health.get("overall")
+            with overview_col2:
+                if overall_health is None:
+                    st.metric("Market Health", "N/A")
+                else:
+                    if overall_health >= 0.7:
+                        health_emoji = "🟢"
+                    elif overall_health >= 0.4:
+                        health_emoji = "🟡"
+                    else:
+                        health_emoji = "🔴"
+                    st.metric("Market Health", f"{health_emoji} {overall_health:.3f}")
+                st.caption("Balances volatility stability, volume quality, and momentum consistency.")
+            
+            with overview_col3:
+                final_signal = risk_signal.get("final_signal", "NEUTRAL")
+                if final_signal == "BUY":
+                    signal_emoji = "🟢"
+                elif final_signal == "SELL":
+                    signal_emoji = "🔴"
+                else:
+                    signal_emoji = "⚪"
+                st.metric("Final Signal", f"{signal_emoji} {final_signal}")
+                confidence = risk_signal.get("confidence")
+                if confidence is not None:
+                    st.metric("Signal Confidence", f"{confidence:.3f}")
+                    st.progress(confidence)
+                risk_adjustment = risk_signal.get("risk_adjustment")
+                if risk_adjustment is not None:
+                    st.caption(f"Risk adjustment applied: {risk_adjustment:+.3f}")
+                raw_signal = risk_signal.get("raw_signal")
+                if raw_signal and raw_signal != final_signal:
+                    st.caption(f"Raw trend signal was {raw_signal}; adjustments tempered the outcome.")
+            
+            st.markdown("---")
+            detail_col1, detail_col2 = st.columns(2)
+            
+            with detail_col1:
+                st.markdown("### Liquidity Components")
+                liq_rows = []
+                for key, label in (
+                    ("depth_quality", "Depth Quality"),
+                    ("spread_efficiency", "Spread Efficiency"),
+                    ("slippage_risk", "Slippage Risk"),
+                ):
+                    value = liquidity_score.get(key)
+                    if value is not None:
+                        liq_rows.append({"Component": label, "Score": f"{value:.3f}"})
+                if liq_rows:
+                    st.dataframe(pd.DataFrame(liq_rows), use_container_width=True, hide_index=True)
+                else:
+                    st.info("No liquidity breakdown available.")
+            
+            with detail_col2:
+                st.markdown("### Market Health Components")
+                health_rows = []
+                for key, label in (
+                    ("volatility_stability", "Volatility Stability"),
+                    ("volume_quality", "Volume Quality"),
+                    ("momentum_consistency", "Momentum Consistency"),
+                ):
+                    value = market_health.get(key)
+                    if value is not None:
+                        health_rows.append({"Component": label, "Score": f"{value:.3f}"})
+                if health_rows:
+                    st.dataframe(pd.DataFrame(health_rows), use_container_width=True, hide_index=True)
+                else:
+                    st.info("No market health breakdown available.")
+            
+            risk_factors = risk_signal.get("risk_factors", [])
+            if risk_factors:
+                readable = [factor.replace("_", " ").title() for factor in risk_factors]
+                st.markdown("### Risk Factors Considered")
+                st.write(" • ".join(readable))
+            else:
+                st.caption("No additional risk factors flagged in this analysis.")
+    
+    with patterns_tab:
         st.subheader("🌊 Patterns & Waves")
         patterns = advanced.get("patterns", {})
         
@@ -1259,7 +1531,7 @@ def main():
         else:
             st.info("No liquidity anomalies detected")
     
-    with tab10:
+    with trade_tab:
         st.subheader("🎯 Trade Signal Calculator")
         trade_plan = advanced.get("trade_plan", {})
         signal_analysis = advanced.get("signal_analysis", {})
@@ -1414,7 +1686,7 @@ def main():
             st.markdown("---")
             st.info("⚠️ **Disclaimer:** This is a calculated trade plan based on ATR channels. Always manage your risk and use proper position sizing.")
     
-    with tab11:
+    with astrology_tab:
         st.subheader("🔮 Astrology & Celestial Cycles")
         astrology = payload.get("astrology", {})
         
@@ -1580,7 +1852,7 @@ def main():
             st.markdown("---")
             st.warning("⚠️ **Disclaimer:** Astrology-based analysis is provided for contextual reference only and should not be the sole basis for trading decisions. Always combine with technical analysis, fundamental research, and proper risk management.")
         
-    with tab12:
+    with export_tab:
         st.subheader("💾 Export Analysis Data")
         
         st.markdown("### Current Session")

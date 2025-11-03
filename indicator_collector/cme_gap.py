@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 from urllib.error import HTTPError, URLError
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 from .math_utils import Candle
 
@@ -27,6 +28,9 @@ _CME_SYMBOL_MAP = {
 }
 
 _KNOWN_QUOTES = ("USDT", "USD", "USDC", "EUR", "PERP", "SPOT")
+
+_CACHE: Dict[str, Tuple[float, List[Candle], str]] = {}
+_CACHE_TIMEOUT = 300
 
 
 def _extract_base_symbol(symbol: str) -> str:
@@ -56,11 +60,32 @@ def fetch_cme_candles(
             f"CME futures data is not available for symbol '{symbol}'. Supported assets: {sorted(_CME_SYMBOL_MAP)}"
         )
 
+    cache_key = f"{ticker}_{interval}_{range_period}"
+    current_time = time.time()
+    
+    if cache_key in _CACHE:
+        cache_time, cached_candles, cached_ticker = _CACHE[cache_key]
+        if current_time - cache_time < _CACHE_TIMEOUT:
+            return cached_candles, cached_ticker
+
     url = f"{YAHOO_CHART_URL}/{ticker}?interval={interval}&range={range_period}"
+    
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json',
+        'Accept-Language': 'en-US,en;q=0.9',
+    }
+    
+    request = Request(url, headers=headers)
+    
     try:
-        with urlopen(url, timeout=10) as response:
+        with urlopen(request, timeout=10) as response:
             raw_data = response.read()
     except HTTPError as exc:
+        if exc.code == 429:
+            if cache_key in _CACHE:
+                _, cached_candles, cached_ticker = _CACHE[cache_key]
+                return cached_candles, cached_ticker
         raise RuntimeError(f"HTTP error while fetching CME futures data: {exc.code} {exc.reason}") from exc
     except URLError as exc:
         raise RuntimeError(f"Network error while fetching CME futures data: {exc.reason}") from exc
@@ -133,6 +158,7 @@ def fetch_cme_candles(
         raise RuntimeError("No valid CME futures candles retrieved.")
 
     candles.sort(key=lambda c: c.open_time)
+    _CACHE[cache_key] = (time.time(), candles, ticker)
     return candles, ticker
 
 

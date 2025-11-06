@@ -406,6 +406,7 @@ def main():
         composite_tab,
         patterns_tab,
         trade_tab,
+        automated_signals_tab,
         astrology_tab,
         export_tab,
     ) = st.tabs([
@@ -421,6 +422,7 @@ def main():
         "🧩 Composite Indicators",
         "🌊 Patterns & Waves",
         "🎯 Trade Signals",
+        "🤖 Automated Signals",
         "🔮 Astrology",
         "💾 Export",
     ])
@@ -1685,6 +1687,224 @@ def main():
             
             st.markdown("---")
             st.info("⚠️ **Disclaimer:** This is a calculated trade plan based on ATR channels. Always manage your risk and use proper position sizing.")
+    
+    with automated_signals_tab:
+        st.subheader("🤖 Automated Trading Signals")
+        
+        # Try to extract trading signals from payload
+        automated_signals = payload.get("automated_signals", {})
+        trading_signals_section = payload.get("trading_signals", {})
+        
+        if not automated_signals and not trading_signals_section:
+            # Check if there's signal data in advanced section
+            advanced = payload.get("advanced", {})
+            if advanced and advanced.get("trade_plan"):
+                st.info("No detailed automated signals data available. Trading system requires explicit JSON signals output.")
+                st.markdown("To enable this tab fully, ensure the trading system exports signals with position plans, optimization stats, and holding horizon estimates.")
+            else:
+                st.warning("No automated signals data available for this analysis. Run the trading system analyzer to generate signals.")
+        else:
+            # Display signal data if available
+            signal_data = automated_signals or trading_signals_section
+            
+            # Display main signal
+            col1, col2, col3 = st.columns([2, 1, 1])
+            
+            with col1:
+                signal_type = signal_data.get("signal_type", "NEUTRAL")
+                if signal_type == "BUY":
+                    st.success(f"## 🟢 BUY SIGNAL")
+                elif signal_type == "SELL":
+                    st.error(f"## 🔴 SELL SIGNAL")
+                else:
+                    st.info(f"## ⚪ NEUTRAL")
+            
+            with col2:
+                confidence = signal_data.get("confidence", 0.0)
+                confidence_pct = confidence * 100
+                if confidence > 0.7:
+                    st.metric("Confidence", f"{confidence_pct:.1f}%", "🟢 High")
+                elif confidence > 0.5:
+                    st.metric("Confidence", f"{confidence_pct:.1f}%", "🟡 Medium")
+                else:
+                    st.metric("Confidence", f"{confidence_pct:.1f}%", "⚪ Low")
+            
+            with col3:
+                timestamp = signal_data.get("timestamp", 0)
+                if timestamp:
+                    from datetime import datetime
+                    signal_time = datetime.fromtimestamp(timestamp / 1000).strftime("%H:%M:%S")
+                    st.metric("Signal Time", signal_time)
+            
+            st.markdown("---")
+            
+            # Factor Analysis
+            factors = signal_data.get("factors", [])
+            if factors:
+                st.markdown("### 📊 Factor Analysis")
+                
+                factors_data = []
+                for factor in factors:
+                    if isinstance(factor, dict):
+                        factors_data.append({
+                            "Factor": factor.get("factor_name", "Unknown"),
+                            "Score": f"{factor.get('score', 0):.2f}",
+                            "Weight": f"{factor.get('weight', 1.0):.2f}",
+                            "Emoji": factor.get("emoji", "⚪"),
+                            "Description": factor.get("description", ""),
+                        })
+                
+                if factors_data:
+                    factors_df = pd.DataFrame(factors_data)
+                    st.dataframe(factors_df, use_container_width=True, hide_index=True)
+            
+            st.markdown("---")
+            
+            # Position Plan
+            position_plan = signal_data.get("position_plan", {})
+            if position_plan:
+                st.markdown("### 💼 Position Plan")
+                
+                plan_col1, plan_col2, plan_col3, plan_col4 = st.columns(4)
+                
+                entry_price = position_plan.get("entry_price", 0.0)
+                with plan_col1:
+                    st.metric("Entry Price", f"${entry_price:.4f}")
+                
+                position_size = position_plan.get("position_size_usd", 0.0)
+                with plan_col2:
+                    st.metric("Position Size", f"${position_size:.2f}" if position_size else "N/A")
+                
+                direction = position_plan.get("direction", "N/A")
+                with plan_col3:
+                    st.metric("Direction", direction.upper() if direction else "N/A")
+                
+                leverage = position_plan.get("leverage", 1.0)
+                with plan_col4:
+                    st.metric("Leverage", f"{leverage:.1f}x" if leverage else "N/A")
+                
+                st.markdown("#### TP/SL Ladder")
+                
+                ladder_col1, ladder_col2 = st.columns(2)
+                
+                with ladder_col1:
+                    stop_loss = position_plan.get("stop_loss", 0.0)
+                    st.write(f"**Stop Loss:** ${stop_loss:.4f}" if stop_loss else "**Stop Loss:** N/A")
+                    
+                    if entry_price and stop_loss:
+                        risk_distance = abs(entry_price - stop_loss)
+                        risk_pct = (risk_distance / entry_price) * 100
+                        st.write(f"Risk Distance: ${risk_distance:.4f} ({risk_pct:.2f}%)")
+                
+                with ladder_col2:
+                    take_profit_levels = position_plan.get("take_profit_levels", [])
+                    if take_profit_levels:
+                        for idx, tp_level in enumerate(take_profit_levels, 1):
+                            if entry_price and tp_level:
+                                profit_pct = ((tp_level - entry_price) / entry_price) * 100
+                                st.write(f"TP{idx}: ${tp_level:.4f} ({profit_pct:+.2f}%)")
+                    else:
+                        st.write("No TP levels defined")
+                
+                # Risk/Reward metrics
+                if position_plan.get("risk_reward_ratio"):
+                    rrr = position_plan.get("risk_reward_ratio")
+                    st.markdown(f"**Risk/Reward Ratio:** {rrr:.2f}:1")
+                
+                if position_plan.get("max_risk_pct"):
+                    max_risk = position_plan.get("max_risk_pct")
+                    st.markdown(f"**Max Risk %:** {max_risk * 100:.2f}%")
+            
+            st.markdown("---")
+            
+            # Holding Horizon
+            if signal_data.get("holding_horizon_bars"):
+                holding_horizon = signal_data.get("holding_horizon_bars")
+                st.markdown("### ⏱️ Holding Horizon")
+                st.info(f"**Estimated Holding Period:** {holding_horizon} bars")
+            
+            # Rationale
+            explanation = signal_data.get("explanation", {})
+            if explanation:
+                st.markdown("### 📝 Signal Rationale")
+                
+                primary_reason = explanation.get("primary_reason", "")
+                if primary_reason:
+                    st.markdown(f"**Primary Reason:** {primary_reason}")
+                
+                supporting_factors = explanation.get("supporting_factors", [])
+                if supporting_factors:
+                    st.markdown("**Supporting Factors:**")
+                    for factor in supporting_factors:
+                        st.write(f"• {factor}")
+                
+                risk_factors = explanation.get("risk_factors", [])
+                if risk_factors:
+                    st.markdown("**Risk Factors:**")
+                    for risk in risk_factors:
+                        st.write(f"⚠️ {risk}")
+                
+                market_context = explanation.get("market_context", "")
+                if market_context:
+                    st.markdown(f"**Market Context:** {market_context}")
+            
+            st.markdown("---")
+            
+            # Cancellation Reasons (if signal was rejected)
+            if signal_data.get("cancellation_reasons"):
+                cancellation_reasons = signal_data.get("cancellation_reasons", [])
+                st.warning("### ⛔ Signal Rejection Reasons")
+                for reason in cancellation_reasons:
+                    st.write(f"• {reason}")
+            
+            st.markdown("---")
+            
+            # Performance Metrics
+            optimization_stats = signal_data.get("optimization_stats", {})
+            if optimization_stats:
+                st.markdown("### 📈 Performance Metrics")
+                
+                perf_col1, perf_col2, perf_col3, perf_col4 = st.columns(4)
+                
+                with perf_col1:
+                    win_rate = optimization_stats.get("backtest_win_rate")
+                    if win_rate is not None:
+                        st.metric("Win Rate", f"{win_rate:.1f}%")
+                
+                with perf_col2:
+                    profit_factor = optimization_stats.get("profit_factor")
+                    if profit_factor is not None:
+                        st.metric("Profit Factor", f"{profit_factor:.2f}")
+                
+                with perf_col3:
+                    sharpe_ratio = optimization_stats.get("sharpe_ratio")
+                    if sharpe_ratio is not None:
+                        st.metric("Sharpe Ratio", f"{sharpe_ratio:.2f}")
+                
+                with perf_col4:
+                    total_signals = optimization_stats.get("total_signals", 0)
+                    st.metric("Total Signals", total_signals)
+                
+                # Additional metrics
+                perf_extra_col1, perf_extra_col2, perf_extra_col3 = st.columns(3)
+                
+                with perf_extra_col1:
+                    avg_profit = optimization_stats.get("avg_profit_pct")
+                    if avg_profit is not None:
+                        st.metric("Avg Profit %", f"{avg_profit:.2f}%")
+                
+                with perf_extra_col2:
+                    avg_loss = optimization_stats.get("avg_loss_pct")
+                    if avg_loss is not None:
+                        st.metric("Avg Loss %", f"{avg_loss:.2f}%")
+                
+                with perf_extra_col3:
+                    profitable = optimization_stats.get("profitable_signals", 0)
+                    losing = optimization_stats.get("losing_signals", 0)
+                    st.metric("Profitable Signals", f"{profitable}/{profitable + losing}")
+            
+            st.markdown("---")
+            st.info("💡 **Note:** This automated signals tab displays trading system analysis. Ensure your trading system exports signals in the expected JSON format for full functionality.")
     
     with astrology_tab:
         st.subheader("🔮 Astrology & Celestial Cycles")

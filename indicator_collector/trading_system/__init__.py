@@ -20,6 +20,14 @@ from .volume_orderbook_analyzer import (
     analyze_smart_money_activity,
     detect_liquidity_zones,
 )
+from .technical_analysis import (
+    analyze_technical_factors,
+    analyze_macd,
+    analyze_rsi,
+    analyze_atr,
+    analyze_bollinger_bands,
+    detect_divergences,
+)
 
 __all__ = [
     "AnalyzerContext",
@@ -38,4 +46,10 @@ __all__ = [
     "calculate_order_imbalance",
     "analyze_smart_money_activity",
     "detect_liquidity_zones",
+    "analyze_technical_factors",
+    "analyze_macd",
+    "analyze_rsi",
+    "analyze_atr",
+    "analyze_bollinger_bands",
+    "detect_divergences",
 ]

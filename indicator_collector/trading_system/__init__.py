@@ -53,6 +53,16 @@ from .position_manager import (
     create_diversification_guard,
     validate_tp_sl_spacing,
 )
+from .statistics_optimizer import (
+    SignalOutcome,
+    PerformanceKPIs,
+    WeightAdjustment,
+    OptimizationResult,
+    StatsOptimizerConfig,
+    StatisticsOptimizer,
+    create_stats_optimizer,
+    create_synthetic_outcomes,
+)
 
 __all__ = [
     "AnalyzerContext",
@@ -69,6 +79,12 @@ __all__ = [
     "PositionManagerResult",
     "TradingAnalyzer",
     "TradingSignalPayload",
+    "SignalOutcome",
+    "PerformanceKPIs",
+    "WeightAdjustment",
+    "OptimizationResult",
+    "StatsOptimizerConfig",
+    "StatisticsOptimizer",
     "deserialize_signal_payload",
     "parse_collector_payload",
     "serialize_signal_payload",
@@ -94,4 +110,6 @@ __all__ = [
     "create_position_plan",
     "create_diversification_guard",
     "validate_tp_sl_spacing",
+    "create_stats_optimizer",
+    "create_synthetic_outcomes",
 ]

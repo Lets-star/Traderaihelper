@@ -1,7 +1,6 @@
-"""Indicator metrics collection toolkit for TradingView PineScript indicators."""
+"""Trading system core package."""
 
-from .cli import main
-from .trading_system import (
+from .interfaces import (
     AnalyzerContext,
     FactorScore,
     JsonDict,
@@ -16,7 +15,6 @@ from .trading_system import (
 )
 
 __all__ = [
-    "main",
     "AnalyzerContext",
     "FactorScore",
     "JsonDict",

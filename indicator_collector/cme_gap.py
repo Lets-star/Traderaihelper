@@ -11,7 +11,10 @@ from urllib.request import Request, urlopen
 
 from .math_utils import Candle
 
-YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart"
+YAHOO_CHART_URLS = (
+    "https://query1.finance.yahoo.com/v8/finance/chart",
+    "https://query2.finance.yahoo.com/v8/finance/chart",
+)
 DEFAULT_INTERVAL = "1h"
 DEFAULT_RANGE = "3mo"
 _INTERVAL_SECONDS = {
@@ -31,6 +34,9 @@ _KNOWN_QUOTES = ("USDT", "USD", "USDC", "EUR", "PERP", "SPOT")
 
 _CACHE: Dict[str, Tuple[float, List[Candle], str]] = {}
 _CACHE_TIMEOUT = 300
+_MAX_RETRY_ATTEMPTS = 4
+_INITIAL_RETRY_DELAY = 1.5
+_MAX_RETRY_DELAY = 10.0
 
 
 def _extract_base_symbol(symbol: str) -> str:
@@ -68,27 +74,64 @@ def fetch_cme_candles(
         if current_time - cache_time < _CACHE_TIMEOUT:
             return cached_candles, cached_ticker
 
-    url = f"{YAHOO_CHART_URL}/{ticker}?interval={interval}&range={range_period}"
-    
     headers = {
         'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'application/json',
         'Accept-Language': 'en-US,en;q=0.9',
+        'Referer': 'https://finance.yahoo.com/',
+        'Origin': 'https://finance.yahoo.com',
     }
     
-    request = Request(url, headers=headers)
-    
-    try:
-        with urlopen(request, timeout=10) as response:
-            raw_data = response.read()
-    except HTTPError as exc:
-        if exc.code == 429:
+    raw_data: Optional[bytes] = None
+    last_http_error: Optional[HTTPError] = None
+    last_url_error: Optional[URLError] = None
+
+    for attempt in range(1, _MAX_RETRY_ATTEMPTS + 1):
+        base_url = YAHOO_CHART_URLS[(attempt - 1) % len(YAHOO_CHART_URLS)]
+        url = f"{base_url}/{ticker}?interval={interval}&range={range_period}"
+        request = Request(url, headers=headers)
+
+        try:
+            with urlopen(request, timeout=15) as response:
+                raw_data = response.read()
+            break
+        except HTTPError as exc:
+            last_http_error = exc
+            if exc.code == 429 and cache_key in _CACHE:
+                _, cached_candles, cached_ticker = _CACHE[cache_key]
+                return cached_candles, cached_ticker
+            if exc.code == 429 and attempt < _MAX_RETRY_ATTEMPTS:
+                delay = min(_MAX_RETRY_DELAY, _INITIAL_RETRY_DELAY * (2 ** (attempt - 1)))
+                time.sleep(delay)
+                continue
             if cache_key in _CACHE:
                 _, cached_candles, cached_ticker = _CACHE[cache_key]
                 return cached_candles, cached_ticker
-        raise RuntimeError(f"HTTP error while fetching CME futures data: {exc.code} {exc.reason}") from exc
-    except URLError as exc:
-        raise RuntimeError(f"Network error while fetching CME futures data: {exc.reason}") from exc
+            break
+        except URLError as exc:
+            last_url_error = exc
+            if cache_key in _CACHE:
+                _, cached_candles, cached_ticker = _CACHE[cache_key]
+                return cached_candles, cached_ticker
+            if attempt < _MAX_RETRY_ATTEMPTS:
+                delay = min(_MAX_RETRY_DELAY, _INITIAL_RETRY_DELAY * (2 ** (attempt - 1)))
+                time.sleep(delay)
+                continue
+            break
+
+    if raw_data is None:
+        if cache_key in _CACHE:
+            _, cached_candles, cached_ticker = _CACHE[cache_key]
+            return cached_candles, cached_ticker
+        if last_http_error is not None:
+            raise RuntimeError(
+                f"HTTP error while fetching CME futures data: {last_http_error.code} {last_http_error.reason}"
+            ) from last_http_error
+        if last_url_error is not None:
+            raise RuntimeError(
+                f"Network error while fetching CME futures data: {last_url_error.reason}"
+            ) from last_url_error
+        raise RuntimeError("Failed to fetch CME futures data: unknown error")
 
     try:
         payload = json.loads(raw_data)

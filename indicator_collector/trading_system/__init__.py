@@ -28,6 +28,10 @@ from .technical_analysis import (
     analyze_bollinger_bands,
     detect_divergences,
 )
+from .sentiment_analyzer import (
+    analyze_sentiment_factors,
+    create_sentiment_factor_score,
+)
 
 __all__ = [
     "AnalyzerContext",
@@ -52,4 +56,6 @@ __all__ = [
     "analyze_atr",
     "analyze_bollinger_bands",
     "detect_divergences",
+    "analyze_sentiment_factors",
+    "create_sentiment_factor_score",
 ]

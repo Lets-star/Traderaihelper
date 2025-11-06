@@ -41,6 +41,18 @@ from .signal_generator import (
     SignalFactors,
     generate_trading_signal,
 )
+from .position_manager import (
+    PositionManagerConfig,
+    DiversificationGuard,
+    PositionSizingResult,
+    PositionManagerResult,
+    calculate_risk_based_position_size,
+    assess_market_conditions,
+    estimate_holding_horizon,
+    create_position_plan,
+    create_diversification_guard,
+    validate_tp_sl_spacing,
+)
 
 __all__ = [
     "AnalyzerContext",
@@ -51,6 +63,10 @@ __all__ = [
     "SignalExplanation",
     "SignalConfig",
     "SignalFactors",
+    "PositionManagerConfig",
+    "DiversificationGuard",
+    "PositionSizingResult",
+    "PositionManagerResult",
     "TradingAnalyzer",
     "TradingSignalPayload",
     "deserialize_signal_payload",
@@ -72,4 +88,10 @@ __all__ = [
     "analyze_multitimeframe_factors",
     "create_multitimeframe_factor_score",
     "generate_trading_signal",
+    "calculate_risk_based_position_size",
+    "assess_market_conditions",
+    "estimate_holding_horizon",
+    "create_position_plan",
+    "create_diversification_guard",
+    "validate_tp_sl_spacing",
 ]

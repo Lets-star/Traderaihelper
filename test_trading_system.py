@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict
 
+from indicator_collector.math_utils import Candle
 from indicator_collector.trading_system import (
     AnalyzerContext,
     FactorScore,
@@ -15,6 +16,10 @@ from indicator_collector.trading_system import (
     deserialize_signal_payload,
     parse_collector_payload,
     serialize_signal_payload,
+)
+from indicator_collector.trading_system.market_structure_analyzer import (
+    analyze_market_structure,
+    calculate_structure_score,
 )
 
 
@@ -575,6 +580,284 @@ def test_minimal_objects():
     print("✓ Minimal objects test passed")
 
 
+def _create_synthetic_candles_bullish() -> list[Candle]:
+    """Create synthetic candles with bullish structure (HH/HL pattern)."""
+    base_time = 1699000000000
+    base_price = 50000.0
+    
+    candles = []
+    # Create a clear uptrend with swing highs and lows
+    # Pattern: rise to peak, pullback, rise to higher peak, pullback to higher low, repeat
+    swing_pattern = [
+        # First swing: rise
+        (0, 100, 150), (100, 200, 250), (200, 300, 350), (300, 400, 450), (400, 500, 550),
+        # Pullback
+        (500, 400, 450), (400, 350, 400), (350, 300, 350),
+        # Second swing: rise to higher high
+        (300, 400, 450), (400, 500, 550), (500, 600, 650), (600, 700, 750), (700, 800, 850),
+        # Pullback to higher low
+        (800, 700, 750), (700, 650, 700), (650, 600, 650),
+        # Third swing: rise to even higher high
+        (600, 700, 750), (700, 800, 850), (800, 900, 950), (900, 1000, 1050), (1000, 1100, 1150),
+        # Pullback to higher low
+        (1100, 1000, 1050), (1000, 950, 1000), (950, 900, 950),
+        # Fourth swing
+        (900, 1000, 1050), (1000, 1100, 1150), (1100, 1200, 1250), (1200, 1300, 1350),
+        # Final pullback
+        (1300, 1200, 1250), (1200, 1150, 1200),
+    ]
+    
+    for i, (low_offset, close_offset, high_offset) in enumerate(swing_pattern):
+        time_offset = i * 3600000
+        
+        open_price = base_price + close_offset - 25
+        close_price = base_price + close_offset
+        high_price = base_price + high_offset
+        low_price = base_price + low_offset
+        
+        candles.append(Candle(
+            open_time=base_time + time_offset,
+            close_time=base_time + time_offset + 3600000,
+            open=open_price,
+            high=high_price,
+            low=low_price,
+            close=close_price,
+            volume=1000000.0 + (i % 5) * 200000,
+        ))
+    
+    return candles
+
+
+def _create_synthetic_candles_bearish() -> list[Candle]:
+    """Create synthetic candles with bearish structure (LH/LL pattern)."""
+    base_time = 1699000000000
+    base_price = 50000.0
+    
+    candles = []
+    # Create a clear downtrend with swing highs and lows
+    # Pattern: fall to low, bounce, fall to lower low, bounce to lower high, repeat
+    swing_pattern = [
+        # First swing: fall
+        (1300, 1200, 1350), (1200, 1100, 1250), (1100, 1000, 1150), (1000, 900, 1050), (900, 800, 950),
+        # Bounce
+        (800, 900, 950), (900, 950, 1000), (950, 1000, 1050),
+        # Second swing: fall to lower low
+        (1000, 900, 950), (900, 800, 850), (800, 700, 750), (700, 600, 650), (600, 500, 550),
+        # Bounce to lower high
+        (500, 600, 650), (600, 650, 700), (650, 700, 750),
+        # Third swing: fall to even lower low
+        (700, 600, 650), (600, 500, 550), (500, 400, 450), (400, 300, 350), (300, 200, 250),
+        # Bounce to lower high
+        (200, 300, 350), (300, 350, 400), (350, 400, 450),
+        # Fourth swing
+        (400, 300, 350), (300, 200, 250), (200, 100, 150), (100, 50, 100),
+        # Final bounce
+        (50, 100, 150), (100, 150, 200),
+    ]
+    
+    for i, (low_offset, close_offset, high_offset) in enumerate(swing_pattern):
+        time_offset = i * 3600000
+        
+        open_price = base_price + close_offset + 25
+        close_price = base_price + close_offset
+        high_price = base_price + high_offset
+        low_price = base_price + low_offset
+        
+        candles.append(Candle(
+            open_time=base_time + time_offset,
+            close_time=base_time + time_offset + 3600000,
+            open=open_price,
+            high=high_price,
+            low=low_price,
+            close=close_price,
+            volume=1000000.0 + (i % 5) * 200000,
+        ))
+    
+    return candles
+
+
+def _create_synthetic_candles_sideways() -> list[Candle]:
+    """Create synthetic candles with sideways/ranging structure."""
+    base_time = 1699000000000
+    base_price = 50000.0
+    
+    candles = []
+    # Create ranging market - oscillate between support and resistance with no clear trend
+    # Highs and lows stay roughly at same levels
+    swing_pattern = [
+        # Swing up to resistance
+        (600, 650, 700), (650, 700, 750), (700, 750, 800), (750, 800, 850), (800, 850, 900),
+        # Pull back to support
+        (850, 800, 850), (800, 750, 800), (750, 700, 750), (700, 650, 700), (650, 600, 650),
+        # Swing up again to similar resistance
+        (600, 650, 700), (650, 700, 750), (700, 750, 800), (750, 800, 850), (800, 850, 900),
+        # Pull back to similar support
+        (850, 800, 850), (800, 750, 800), (750, 700, 750), (700, 650, 700), (650, 600, 650),
+        # Swing up again
+        (600, 650, 700), (650, 700, 750), (700, 750, 800), (750, 800, 850), (800, 850, 900),
+        # Pull back again
+        (850, 800, 850), (800, 750, 800), (750, 700, 750), (700, 650, 700), (650, 600, 650),
+        # Final swing up
+        (600, 650, 700), (650, 700, 750), (700, 750, 800), (750, 800, 850),
+    ]
+    
+    for i, (low_offset, close_offset, high_offset) in enumerate(swing_pattern):
+        time_offset = i * 3600000
+        
+        open_price = base_price + (close_offset + low_offset) / 2
+        close_price = base_price + close_offset
+        high_price = base_price + high_offset
+        low_price = base_price + low_offset
+        
+        candles.append(Candle(
+            open_time=base_time + time_offset,
+            close_time=base_time + time_offset + 3600000,
+            open=open_price,
+            high=high_price,
+            low=low_price,
+            close=close_price,
+            volume=1000000.0 + (i % 3) * 100000,
+        ))
+    
+    return candles
+
+
+def test_market_structure_analyzer_bullish():
+    """Test market structure analyzer with bullish synthetic candles."""
+    candles = _create_synthetic_candles_bullish()
+    
+    factor_score = calculate_structure_score(candles)
+    
+    assert factor_score.factor_name == 'market_structure'
+    assert factor_score.weight == 0.3  # 30% weight
+    assert factor_score.score > 0.65, f"Expected bullish score > 0.65, got {factor_score.score}"
+    assert factor_score.emoji == '🟢', "Expected green emoji for bullish"
+    assert 'bullish' in factor_score.description.lower()
+    
+    # Check metadata
+    metadata = factor_score.metadata
+    assert metadata['trend'] == 'bullish'
+    assert metadata['swing_points']['hh_count'] > 0, "Expected Higher Highs in bullish trend"
+    assert metadata['swing_points']['hl_count'] > 0, "Expected Higher Lows in bullish trend"
+    
+    # Check highlights
+    highlights = metadata.get('highlights', [])
+    assert len(highlights) > 0, "Expected highlights to be generated"
+    assert any('bullish' in h.lower() for h in highlights), "Expected bullish mention in highlights"
+    
+    print(f"✓ Bullish structure test passed - Score: {factor_score.score:.3f}, Trend: {metadata['trend']}")
+
+
+def test_market_structure_analyzer_bearish():
+    """Test market structure analyzer with bearish synthetic candles."""
+    candles = _create_synthetic_candles_bearish()
+    
+    factor_score = calculate_structure_score(candles)
+    
+    assert factor_score.factor_name == 'market_structure'
+    assert factor_score.weight == 0.3  # 30% weight
+    assert factor_score.score < 0.35, f"Expected bearish score < 0.35, got {factor_score.score}"
+    assert factor_score.emoji == '🔴', "Expected red emoji for bearish"
+    assert 'bearish' in factor_score.description.lower()
+    
+    # Check metadata
+    metadata = factor_score.metadata
+    assert metadata['trend'] == 'bearish'
+    assert metadata['swing_points']['lh_count'] > 0, "Expected Lower Highs in bearish trend"
+    assert metadata['swing_points']['ll_count'] > 0, "Expected Lower Lows in bearish trend"
+    
+    # Check highlights
+    highlights = metadata.get('highlights', [])
+    assert len(highlights) > 0, "Expected highlights to be generated"
+    assert any('bearish' in h.lower() for h in highlights), "Expected bearish mention in highlights"
+    
+    print(f"✓ Bearish structure test passed - Score: {factor_score.score:.3f}, Trend: {metadata['trend']}")
+
+
+def test_market_structure_analyzer_neutral():
+    """Test market structure analyzer with sideways/neutral synthetic candles."""
+    candles = _create_synthetic_candles_sideways()
+    
+    factor_score = calculate_structure_score(candles)
+    
+    assert factor_score.factor_name == 'market_structure'
+    assert factor_score.weight == 0.3  # 30% weight
+    assert 0.35 <= factor_score.score <= 0.65, f"Expected neutral score between 0.35-0.65, got {factor_score.score}"
+    assert factor_score.emoji == '⚪', "Expected white emoji for neutral"
+    
+    # Check metadata
+    metadata = factor_score.metadata
+    assert metadata['trend'] == 'neutral'
+    
+    # Check highlights
+    highlights = metadata.get('highlights', [])
+    assert len(highlights) > 0, "Expected highlights to be generated"
+    assert any('sideways' in h.lower() or 'ranging' in h.lower() or 'neutral' in h.lower() for h in highlights), \
+        "Expected sideways/ranging/neutral mention in highlights"
+    
+    print(f"✓ Neutral structure test passed - Score: {factor_score.score:.3f}, Trend: {metadata['trend']}")
+
+
+def test_market_structure_with_context():
+    """Test market structure analyzer with AnalyzerContext."""
+    candles = _create_synthetic_candles_bullish()
+    
+    # Create an AnalyzerContext with candles in extras
+    context = AnalyzerContext(
+        symbol='BTCUSDT',
+        timeframe='1h',
+        timestamp=1699000000000,
+        current_price=55000.0,
+        ohlcv={
+            'open': 54900.0,
+            'high': 55100.0,
+            'low': 54800.0,
+            'close': 55000.0,
+            'volume': 1000000.0,
+        },
+        indicators={},
+        extras={'candles': candles},
+    )
+    
+    factor_score = analyze_market_structure(context)
+    
+    assert factor_score.factor_name == 'market_structure'
+    assert factor_score.weight == 0.3
+    assert factor_score.score > 0.6, "Expected bullish score from context"
+    assert 'bullish' in factor_score.description.lower()
+    
+    # Check that metadata contains structure data
+    metadata = factor_score.metadata
+    assert 'trend' in metadata
+    assert 'swing_points' in metadata
+    assert 'highlights' in metadata
+    
+    print(f"✓ Context-based structure test passed - Score: {factor_score.score:.3f}")
+
+
+def test_market_structure_insufficient_data():
+    """Test market structure analyzer with insufficient data."""
+    # Test with empty candles
+    empty_candles: list[Candle] = []
+    factor_score = calculate_structure_score(empty_candles)
+    
+    assert factor_score.factor_name == 'market_structure'
+    assert factor_score.weight == 0.3
+    assert factor_score.score == 0.5, "Expected neutral score for insufficient data"
+    assert 'Insufficient' in factor_score.description or 'data' in factor_score.description.lower()
+    
+    # Test with very few candles
+    few_candles = _create_synthetic_candles_bullish()[:5]
+    factor_score2 = calculate_structure_score(few_candles)
+    
+    assert factor_score2.factor_name == 'market_structure'
+    assert factor_score2.weight == 0.3
+    # With few candles, structure detection may be limited but should still work
+    assert 0.0 <= factor_score2.score <= 1.0
+    
+    print(f"✓ Insufficient data test passed")
+
+
 if __name__ == "__main__":
     print("Running trading system core tests...")
     print()
@@ -591,6 +874,11 @@ if __name__ == "__main__":
     test_empty_collector_payload()
     test_full_integration_roundtrip()
     test_minimal_objects()
+    test_market_structure_analyzer_bullish()
+    test_market_structure_analyzer_bearish()
+    test_market_structure_analyzer_neutral()
+    test_market_structure_with_context()
+    test_market_structure_insufficient_data()
     
     print()
     print("=" * 60)

@@ -14,6 +14,7 @@ def detect_order_walls(
     """
     Detect large order walls that may indicate market maker presence.
     Walls are identified as orders significantly larger than average.
+    Orders within 1% of mid price are ignored to filter out noise.
     """
     if not bids or not asks:
         return {"bid_walls": [], "ask_walls": [], "wall_pressure": "neutral"}
@@ -21,8 +22,16 @@ def detect_order_walls(
     bids_sorted = sorted(bids, key=lambda x: x[0], reverse=True)
     asks_sorted = sorted(asks, key=lambda x: x[0])
     
-    top_20_bids = bids_sorted[:20]
-    top_20_asks = asks_sorted[:20]
+    if mid_price and mid_price > 0:
+        threshold_1pct = mid_price * 0.01
+        bids_filtered = [(p, v) for p, v in bids_sorted if abs(mid_price - p) > threshold_1pct]
+        asks_filtered = [(p, v) for p, v in asks_sorted if abs(p - mid_price) > threshold_1pct]
+    else:
+        bids_filtered = bids_sorted
+        asks_filtered = asks_sorted
+    
+    top_20_bids = bids_filtered[:20]
+    top_20_asks = asks_filtered[:20]
     
     bid_volumes = [vol for _, vol in top_20_bids]
     ask_volumes = [vol for _, vol in top_20_asks]

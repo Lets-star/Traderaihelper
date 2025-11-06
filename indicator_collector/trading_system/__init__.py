@@ -32,6 +32,10 @@ from .sentiment_analyzer import (
     analyze_sentiment_factors,
     create_sentiment_factor_score,
 )
+from .multitimeframe_analyzer import (
+    analyze_multitimeframe_factors,
+    create_multitimeframe_factor_score,
+)
 
 __all__ = [
     "AnalyzerContext",
@@ -58,4 +62,6 @@ __all__ = [
     "detect_divergences",
     "analyze_sentiment_factors",
     "create_sentiment_factor_score",
+    "analyze_multitimeframe_factors",
+    "create_multitimeframe_factor_score",
 ]

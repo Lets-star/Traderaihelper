@@ -36,6 +36,11 @@ from .multitimeframe_analyzer import (
     analyze_multitimeframe_factors,
     create_multitimeframe_factor_score,
 )
+from .signal_generator import (
+    SignalConfig,
+    SignalFactors,
+    generate_trading_signal,
+)
 
 __all__ = [
     "AnalyzerContext",
@@ -44,6 +49,8 @@ __all__ = [
     "OptimizationStats",
     "PositionPlan",
     "SignalExplanation",
+    "SignalConfig",
+    "SignalFactors",
     "TradingAnalyzer",
     "TradingSignalPayload",
     "deserialize_signal_payload",
@@ -64,4 +71,5 @@ __all__ = [
     "create_sentiment_factor_score",
     "analyze_multitimeframe_factors",
     "create_multitimeframe_factor_score",
+    "generate_trading_signal",
 ]

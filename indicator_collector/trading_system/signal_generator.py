@@ -10,6 +10,7 @@ import math
 from .interfaces import (
     AnalyzerContext,
     FactorScore,
+    JsonDict,
     SignalExplanation,
     TradingSignalPayload,
 )
@@ -80,6 +81,51 @@ class SignalConfig:
         min_confidence = min(max(min_confidence, 0.3), 0.95)
         
         return buy_threshold, sell_threshold, min_confidence
+    
+    def to_dict(self) -> JsonDict:
+        """Convert to dictionary for serialization."""
+        return {
+            "technical_weight": self.technical_weight,
+            "sentiment_weight": self.sentiment_weight,
+            "multitimeframe_weight": self.multitimeframe_weight,
+            "volume_weight": self.volume_weight,
+            "structure_weight": self.structure_weight,
+            "composite_weight": self.composite_weight,
+            "min_factors_confirm": self.min_factors_confirm,
+            "buy_threshold": self.buy_threshold,
+            "sell_threshold": self.sell_threshold,
+            "min_confidence": self.min_confidence,
+            "vix_tighten_threshold": self.vix_tighten_threshold,
+            "vix_loosen_threshold": self.vix_loosen_threshold,
+            "vix_tighten_factor": self.vix_tighten_factor,
+            "vix_loosen_factor": self.vix_loosen_factor,
+            "max_risk_score": self.max_risk_score,
+            "min_liquidity_score": self.min_liquidity_score,
+            "max_volatility_ratio": self.max_volatility_ratio,
+        }
+    
+    @classmethod
+    def from_dict(cls, data: JsonDict) -> "SignalConfig":
+        """Create from dictionary."""
+        return cls(
+            technical_weight=float(data.get("technical_weight", 0.25)),
+            sentiment_weight=float(data.get("sentiment_weight", 0.15)),
+            multitimeframe_weight=float(data.get("multitimeframe_weight", 0.10)),
+            volume_weight=float(data.get("volume_weight", 0.20)),
+            structure_weight=float(data.get("structure_weight", 0.15)),
+            composite_weight=float(data.get("composite_weight", 0.15)),
+            min_factors_confirm=int(data.get("min_factors_confirm", 3)),
+            buy_threshold=float(data.get("buy_threshold", 0.65)),
+            sell_threshold=float(data.get("sell_threshold", 0.35)),
+            min_confidence=float(data.get("min_confidence", 0.6)),
+            vix_tighten_threshold=float(data.get("vix_tighten_threshold", 30.0)),
+            vix_loosen_threshold=float(data.get("vix_loosen_threshold", 15.0)),
+            vix_tighten_factor=float(data.get("vix_tighten_factor", 1.5)),
+            vix_loosen_factor=float(data.get("vix_loosen_factor", 0.8)),
+            max_risk_score=float(data.get("max_risk_score", 0.8)),
+            min_liquidity_score=float(data.get("min_liquidity_score", 0.2)),
+            max_volatility_ratio=float(data.get("max_volatility_ratio", 5.0)),
+        )
 
 
 @dataclass

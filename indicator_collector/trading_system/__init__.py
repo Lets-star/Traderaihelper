@@ -63,6 +63,15 @@ from .statistics_optimizer import (
     create_stats_optimizer,
     create_synthetic_outcomes,
 )
+from .trading_system import (
+    MacroBlackoutConfig,
+    TradingConfig,
+    TradingState,
+    TradingOrchestrator,
+    MacroBlackoutFilter,
+    create_trading_orchestrator,
+    create_default_config,
+)
 
 __all__ = [
     "AnalyzerContext",
@@ -85,6 +94,11 @@ __all__ = [
     "OptimizationResult",
     "StatsOptimizerConfig",
     "StatisticsOptimizer",
+    "MacroBlackoutConfig",
+    "TradingConfig",
+    "TradingState",
+    "TradingOrchestrator",
+    "MacroBlackoutFilter",
     "deserialize_signal_payload",
     "parse_collector_payload",
     "serialize_signal_payload",
@@ -112,4 +126,6 @@ __all__ = [
     "validate_tp_sl_spacing",
     "create_stats_optimizer",
     "create_synthetic_outcomes",
+    "create_trading_orchestrator",
+    "create_default_config",
 ]

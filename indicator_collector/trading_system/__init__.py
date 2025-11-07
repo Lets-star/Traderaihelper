@@ -63,6 +63,19 @@ from .statistics_optimizer import (
     create_stats_optimizer,
     create_synthetic_outcomes,
 )
+from .backtester import (
+    BacktestConfig,
+    ParameterSet,
+    BacktestResult,
+    AdaptiveWeightResult,
+    Backtester,
+)
+from .adaptive_weights import (
+    AdaptiveWeightConfig,
+    WeightPerformance,
+    AdaptationReport,
+    AdaptiveWeightManager,
+)
 
 # Payload loader functionality - commented out due to import issues
 # from .payload_loader import (
@@ -95,6 +108,15 @@ __all__ = [
     "OptimizationResult",
     "StatsOptimizerConfig",
     "StatisticsOptimizer",
+    "BacktestConfig",
+    "ParameterSet",
+    "BacktestResult",
+    "AdaptiveWeightResult",
+    "Backtester",
+    "AdaptiveWeightConfig",
+    "WeightPerformance",
+    "AdaptationReport",
+    "AdaptiveWeightManager",
     "deserialize_signal_payload",
     "parse_collector_payload",
     "serialize_signal_payload",

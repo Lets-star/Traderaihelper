@@ -137,12 +137,95 @@ The generated JSON contains the following top-level keys:
 - `multi_symbol`: Optional snapshot summarising alignment across additional symbols.
 - `definitions`: Short explanations of each major metric category.
 
+## Automated Trading System
+
+The project includes a complete automated trading system for programmatic signal generation and position management:
+
+### Core Components
+
+- **Signal Generator** (`trading_system/signal_generator.py`): Combines multi-factor analysis into trading decisions
+- **Technical Analysis** (`trading_system/technical_analysis.py`): Computes technical indicators (RSI, MACD, Bollinger Bands, etc.)
+- **Sentiment Analyzer** (`trading_system/sentiment_analyzer.py`): Evaluates market sentiment from multiple data sources
+- **Multi-Timeframe Analyzer** (`trading_system/multitimeframe_analyzer.py`): Analyzes trends across different timeframes
+- **Volume Orderbook Analyzer** (`trading_system/volume_orderbook_analyzer.py`): Analyzes volume and orderbook depth
+- **Position Manager** (`trading_system/position_manager.py`): Calculates position sizing with risk management
+- **Statistics Optimizer** (`trading_system/statistics_optimizer.py`): Tracks performance and optimizes weights
+
+### Quick Integration Example
+
+```python
+from indicator_collector.trading_system import (
+    SignalGenerator,
+    AnalyzerContext,
+    TradingSignalPayload,
+)
+
+# Create signal generator with custom configuration
+generator = SignalGenerator(
+    technical_weight=0.25,
+    sentiment_weight=0.15,
+    multitimeframe_weight=0.10,
+    volume_weight=0.20,
+    structure_weight=0.15,
+    composite_weight=0.15,
+)
+
+# Create analyzer context with market data
+context = AnalyzerContext(
+    symbol="BTCUSDT",
+    timeframe="1h",
+    current_price=45000.0,
+    current_time=1699000000000,
+    indicators={
+        "rsi": 65.0,
+        "macd_histogram": 0.15,
+        "bollinger_position": 0.6,
+        "atr": 300.0,
+    },
+)
+
+# Generate signal
+signal = generator.generate_signal(context)
+
+# Access signal data
+print(f"Signal: {signal.signal_type}")  # BUY, SELL, or NEUTRAL
+print(f"Confidence: {signal.confidence:.2%}")
+print(f"Position Plan: {signal.position_plan}")
+```
+
+### Position Sizing and Risk Management
+
+The position manager automatically calculates:
+- Entry, Stop Loss, and Take Profit levels
+- Position size based on account risk tolerance
+- Take Profit ladder levels for scaling out
+- Risk-to-Reward ratio calculation
+
+### Backtesting Workflow
+
+For backtesting your trading strategy, see `samples/BACKTESTING_WORKFLOW.md` for a complete step-by-step guide.
+
+### JSON Signal Format
+
+See `samples/trading_signal_schema.json` for the complete signal structure.
+
+### Macro Filter Configuration
+
+Configure macro-level filters to adapt signals to market conditions. See `samples/macro_filter_config.json` for examples.
+
 ## Notes
 
 - Binance imposes rate limits; avoid rapid repeated requests.
 - If Binance data is unavailable, the CLI automatically falls back to deterministic synthetic candles (or you can force this with `--offline`).
 - The calculations are deterministic and self-contained, so no indicator code runs remotely.
 - All computations are performed locally once OHLCV data has been downloaded (or generated).
+- See `AUTOMATED_SIGNALS_INTEGRATION.md` for complete developer integration guide.
+
+## Requirements
+
+- Python 3.12 or higher (3.10 minimum for compatibility)
+- Dependencies: `streamlit`, `plotly`, `pandas` (installed automatically with requirements.txt)
+- Development: `pytest>=7.4.0`, `pytest-cov>=4.1.0` (for testing)
 
 ## License
 

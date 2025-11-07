@@ -1,0 +1,100 @@
+{
+  "signal_type": "BUY",
+  "confidence": 0.78,
+  "timestamp": 1699000000000,
+  "factors": [
+    {
+      "factor_name": "rsi_oversold",
+      "score": 85.5,
+      "weight": 2.0,
+      "description": "RSI at 28 (oversold threshold: 30)",
+      "emoji": "🟢",
+      "metadata": {
+        "rsi_value": 28.0,
+        "threshold": 30.0
+      }
+    },
+    {
+      "factor_name": "macd_bullish_crossover",
+      "score": 75.0,
+      "weight": 1.8,
+      "description": "MACD signal line bullish crossover detected",
+      "emoji": "🟢",
+      "metadata": {
+        "macd": 0.15,
+        "signal_line": 0.08,
+        "histogram": 0.07
+      }
+    },
+    {
+      "factor_name": "trend_strength_mtf",
+      "score": 72.0,
+      "weight": 1.5,
+      "description": "Multi-timeframe trend strength: 72% bullish",
+      "emoji": "🟢",
+      "metadata": {
+        "1h_strength": 78.0,
+        "4h_strength": 65.0,
+        "1d_strength": 58.0
+      }
+    },
+    {
+      "factor_name": "volume_confirmation",
+      "score": 68.0,
+      "weight": 1.2,
+      "description": "Volume above 20-day average",
+      "emoji": "🟡",
+      "metadata": {
+        "current_volume": 125000,
+        "avg_volume": 100000
+      }
+    },
+    {
+      "factor_name": "order_block_support",
+      "score": 65.0,
+      "weight": 1.0,
+      "description": "Price testing recent bullish order block",
+      "emoji": "🟢",
+      "metadata": {
+        "ob_level": 44800.0,
+        "current_price": 44850.0
+      }
+    }
+  ],
+  "position_plan": {
+    "entry_price": 44850.0,
+    "stop_loss_price": 44200.0,
+    "take_profit_levels": [45600.0, 46400.0, 47200.0],
+    "position_size_usd": 2000.0,
+    "leverage": 1.0,
+    "direction": "LONG",
+    "risk_reward_ratio": 2.5,
+    "max_risk_pct": 2.0
+  },
+  "explanation": {
+    "primary_reason": "RSI oversold with MACD bullish crossover at support level",
+    "supporting_factors": [
+      "Multi-timeframe bullish alignment (1h>4h>1d)",
+      "Volume confirmation above average",
+      "Price testing previous bullish order block",
+      "No significant resistance until 45600"
+    ],
+    "risk_factors": [
+      "Potential market structure break if SL hit",
+      "Wait for volume confirmation on 5m",
+      "Monitor for divergence in higher timeframe"
+    ],
+    "market_context": "Overall bullish bias with healthy pullback to support"
+  },
+  "optimization_stats": {
+    "backtest_win_rate": 68.5,
+    "avg_profit_pct": 2.3,
+    "avg_loss_pct": -0.8,
+    "sharpe_ratio": 1.8,
+    "profit_factor": 3.2,
+    "total_signals": 127,
+    "profitable_signals": 87,
+    "losing_signals": 40
+  },
+  "cancellation_triggers": []
+}

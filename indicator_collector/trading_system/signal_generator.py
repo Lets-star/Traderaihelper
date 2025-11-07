@@ -600,5 +600,35 @@ def generate_trading_signal(
             }
         }
     )
-    
+
     return payload
+
+
+class SignalGenerator:
+    """Wrapper class for trading signal generation.
+    
+    Provides an interface for the payload loader to call signal generation
+    with a consistent `analyze()` method.
+    """
+    
+    def __init__(self, config: Optional[SignalConfig] = None):
+        """Initialize with optional custom configuration.
+        
+        Args:
+            config: SignalConfig instance (uses defaults if not provided)
+        """
+        self.config = config or SignalConfig()
+    
+    def analyze(self, context: AnalyzerContext, 
+               config: Optional[SignalConfig] = None) -> TradingSignalPayload:
+        """Analyze trading context and generate signal.
+        
+        Args:
+            context: AnalyzerContext with market data
+            config: Optional SignalConfig to override instance config
+            
+        Returns:
+            TradingSignalPayload with generated signal
+        """
+        signal_config = config or self.config
+        return generate_trading_signal(context, signal_config)

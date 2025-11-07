@@ -7,6 +7,8 @@ from unittest.mock import patch, MagicMock
 from indicator_collector.trading_system import (
     load_and_process_payload_dict,
     validate_and_normalize_payload,
+    indicator_defaults_for,
+    ParameterSet,
 )
 
 
@@ -71,6 +73,34 @@ class TestWebUIAutomatedSignals:
         
         assert isinstance(result, dict)
         assert result["metadata"]["timeframe"] == "3h"
+    
+    def test_indicator_defaults_for_timeframes(self):
+        """Indicator defaults should differ across key timeframes."""
+        defaults_1h = indicator_defaults_for("1h")
+        defaults_3h = indicator_defaults_for("3h")
+        defaults_1d = indicator_defaults_for("1d")
+
+        assert defaults_1h["atr"]["mult"] != defaults_3h["atr"]["mult"]
+        assert defaults_1d["rsi"]["period"] >= defaults_1h["rsi"]["period"]
+        assert "macd" in defaults_1h
+
+    def test_parameter_set_uses_indicator_defaults(self):
+        """ParameterSet should accept indicator defaults from helper."""
+        indicator_params = indicator_defaults_for("3h")
+        params = ParameterSet(
+            weights={
+                "technical": 0.4,
+                "volume": 0.3,
+                "sentiment": 0.2,
+                "market_structure": 0.1,
+            },
+            indicator_params=indicator_params,
+            timeframe="3h",
+        )
+
+        assert params.timeframe == "3h"
+        assert params.indicator_params["atr"]["mult"] == indicator_params["atr"]["mult"]
+        assert "bollinger" in params.indicator_params
     
     def test_load_and_process_payload_dict_basic(self):
         """Test basic payload processing for web UI."""

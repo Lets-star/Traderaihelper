@@ -12,7 +12,9 @@ from indicator_collector.trading_system.backtester import (
     BacktestConfig,
     BacktestResult,
     ParameterSet,
+    indicator_defaults_for,
 )
+from indicator_collector.timeframes import Timeframe
 from indicator_collector.trading_system.adaptive_weights import (
     AdaptiveWeightManager,
     AdaptiveWeightConfig,
@@ -48,20 +50,65 @@ class TestBacktester:
         """Test ParameterSet creation and serialization."""
         params = ParameterSet(
             weights={"technical": 0.4, "volume": 0.3, "sentiment": 0.3},
+            timeframe=Timeframe.HOUR_3.value,
             stop_loss_pct=2.5,
             take_profit_pct=5.0,
         )
-        
+
         params_dict = params.to_dict()
-        
+
         assert params_dict["weights"]["technical"] == 0.4
         assert params_dict["stop_loss_pct"] == 2.5
         assert params_dict["take_profit_pct"] == 5.0
-        
+        assert params_dict["timeframe"] == Timeframe.HOUR_3.value
+
+        defaults = indicator_defaults_for(Timeframe.HOUR_3.value)
+        assert params_dict["indicator_params"]["macd"]["fast"] == defaults["macd"]["fast"]
+
         # Test from_dict
         reconstructed = ParameterSet.from_dict(params_dict)
         assert reconstructed.weights == params.weights
         assert reconstructed.stop_loss_pct == params.stop_loss_pct
+        assert reconstructed.timeframe == params.timeframe
+        assert reconstructed.indicator_params == params.indicator_params
+    
+    def test_parameter_set_default_indicator_params(self):
+        """ParameterSet without overrides should use timeframe defaults."""
+        params = ParameterSet()
+        defaults = indicator_defaults_for(Timeframe.HOUR_1.value)
+
+        assert params.timeframe == Timeframe.HOUR_1.value
+        assert params.indicator_params == defaults
+        assert params.weights == {
+            "technical": 0.25,
+            "volume": 0.25,
+            "sentiment": 0.25,
+            "market_structure": 0.25,
+        }
+
+    def test_parameter_set_partial_indicator_params(self):
+        """Partial indicator overrides should merge with defaults."""
+        params = ParameterSet(
+            timeframe=Timeframe.HOUR_4.value,
+            indicator_params={
+                "macd": {"fast": 10},
+                "rsi": {"overbought": 68},
+            },
+        )
+
+        defaults = indicator_defaults_for(Timeframe.HOUR_4.value)
+        assert params.indicator_params["macd"]["fast"] == 10
+        assert params.indicator_params["macd"]["slow"] == defaults["macd"]["slow"]
+        assert params.indicator_params["rsi"]["overbought"] == 68
+        assert params.indicator_params["rsi"]["oversold"] == defaults["rsi"]["oversold"]
+
+    def test_parameter_set_unsupported_timeframe_defaults(self):
+        """Unsupported timeframes should safely fall back to 1h defaults."""
+        params = ParameterSet(timeframe="2h")
+        defaults = indicator_defaults_for(Timeframe.HOUR_1.value)
+
+        assert params.timeframe == Timeframe.HOUR_1.value
+        assert params.indicator_params == defaults
     
     def test_backtester_initialization(self):
         """Test Backtester initialization."""

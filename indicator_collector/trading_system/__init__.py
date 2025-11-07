@@ -1,5 +1,6 @@
 """Trading system core package."""
 
+from ..timeframes import Timeframe, validate_timeframe
 from .interfaces import (
     AnalyzerContext,
     FactorScore,
@@ -95,8 +96,19 @@ from .payload_loader import (
     extract_trading_context,
     payload_processor,
 )
+from .generate_signals import (
+    generate_signals,
+    generate_signals_from_payload,
+)
+from .signal_schema import (
+    TradingSignalSchema,
+    validate_signal_json,
+    is_valid_signal_structure,
+)
 
 __all__ = [
+    "Timeframe",
+    "validate_timeframe",
     "AnalyzerContext",
     "FactorScore",
     "JsonDict",
@@ -167,4 +179,9 @@ __all__ = [
     "create_synthetic_outcomes",
     "create_trading_orchestrator",
     "create_default_config",
+    "generate_signals",
+    "generate_signals_from_payload",
+    "TradingSignalSchema",
+    "validate_signal_json",
+    "is_valid_signal_structure",
 ]

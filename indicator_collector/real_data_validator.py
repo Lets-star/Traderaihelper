@@ -146,7 +146,7 @@ class RealDataValidator:
             self._validate_multitimeframe_data(mtf_data)
         
         # Check for synthetic flags throughout payload
-        self._ensure_no_synthetic_flags(payload)
+        self.ensure_no_synthetic_flags(payload)
         
         if self.validation_errors:
             raise DataValidationError(

@@ -13,6 +13,10 @@ from .interfaces import (
     parse_collector_payload,
     serialize_signal_payload,
 )
+from .market_structure_analyzer import (
+    analyze_market_structure,
+    calculate_structure_score,
+)
 from .volume_orderbook_analyzer import (
     analyze_volume_orderbook,
     calculate_mm_confidence_weighted,
@@ -111,6 +115,8 @@ __all__ = [
     "PositionManagerResult",
     "TradingAnalyzer",
     "TradingSignalPayload",
+    "analyze_market_structure",
+    "calculate_structure_score",
     "SignalOutcome",
     "PerformanceKPIs",
     "WeightAdjustment",

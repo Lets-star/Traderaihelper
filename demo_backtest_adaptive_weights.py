@@ -22,6 +22,7 @@ from indicator_collector.trading_system import (
     AdaptiveWeightConfig,
     TradingSignalPayload,
     SignalOutcome,
+    indicator_defaults_for,
 )
 from indicator_collector.trading_system.interfaces import FactorScore
 
@@ -155,6 +156,7 @@ def demo_basic_backtesting():
     
     # Test with initial parameter set
     print("\nTesting initial parameter set...")
+    initial_indicator_params = indicator_defaults_for("1d")
     initial_params = ParameterSet(
         weights={
             "technical": 0.4,
@@ -162,7 +164,8 @@ def demo_basic_backtesting():
             "sentiment": 0.2,
             "market_structure": 0.1,
         },
-        indicator_params={},  # Required parameter
+        indicator_params=initial_indicator_params,
+        timeframe="1d",
         stop_loss_pct=2.0,
         take_profit_pct=4.0,
         max_position_size_pct=0.05,

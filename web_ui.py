@@ -19,7 +19,7 @@ from indicator_collector.collector import collect_metrics
 from indicator_collector.indicator_metrics import SimulationSummary
 from indicator_collector.time_series import TimeframeSeries
 from indicator_collector.trade_signals import calculate_position_metrics, calculate_tp_sl_levels
-from indicator_collector.trading_system import load_and_process_payload_dict
+from indicator_collector.trading_system import load_and_process_payload_dict, indicator_defaults_for
 
 
 def format_correlation(value: float) -> str:
@@ -2154,8 +2154,11 @@ def main():
                         else:
                             weights = {"technical": 0.25, "volume": 0.25, "sentiment": 0.25, "market_structure": 0.25}
                         
+                        indicator_params = indicator_defaults_for(selected_timeframe)
                         params = ParameterSet(
                             weights=weights,
+                            indicator_params=indicator_params,
+                            timeframe=selected_timeframe,
                             stop_loss_pct=stop_loss_pct,
                             take_profit_pct=take_profit_pct,
                             max_position_size_pct=max_position_size,

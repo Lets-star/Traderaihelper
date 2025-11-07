@@ -78,6 +78,7 @@ from .backtester import (
     BacktestResult,
     AdaptiveWeightResult,
     Backtester,
+    indicator_defaults_for,
 )
 from .adaptive_weights import (
     AdaptiveWeightConfig,
@@ -126,6 +127,7 @@ __all__ = [
     "BacktestResult",
     "AdaptiveWeightResult",
     "Backtester",
+    "indicator_defaults_for",
     "AdaptiveWeightConfig",
     "WeightPerformance",
     "AdaptationReport",

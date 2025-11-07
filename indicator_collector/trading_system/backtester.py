@@ -8,13 +8,16 @@ and adaptive weight adjustment.
 from __future__ import annotations
 
 import json
+import logging
 import math
 import statistics
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 from ..real_data_validator import validate_real_data_payload, DataValidationError
+from ..timeframes import Timeframe
 from .interfaces import JsonDict, TradingSignalPayload
 from .statistics_optimizer import (
     PerformanceKPIs,
@@ -22,6 +25,106 @@ from .statistics_optimizer import (
     StatsOptimizerConfig,
     StatisticsOptimizer,
 )
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_WEIGHTS: Dict[str, float] = {
+    "technical": 0.25,
+    "volume": 0.25,
+    "sentiment": 0.25,
+    "market_structure": 0.25,
+}
+
+_BASE_INDICATOR_DEFAULTS: Dict[str, Any] = {
+    "macd": {"fast": 12, "slow": 26, "signal": 9},
+    "rsi": {"period": 14, "overbought": 70, "oversold": 30},
+    "atr": {"period": 14, "mult": 1.0},
+    "atr_channels": {"mult_1x": 1.0, "mult_2x": 2.0, "mult_3x": 3.0},
+    "bollinger": {"period": 20, "stddev": 2.0},
+    "volume": {"ma_period": 20},
+    "structure": {"lookback": 24},
+}
+
+_TIMEFRAME_INDICATOR_OVERRIDES: Dict[str, Dict[str, Any]] = {
+    Timeframe.MINUTE_5.value: {
+        "atr": {"mult": 0.6},
+        "atr_channels": {"mult_1x": 0.8, "mult_2x": 1.6, "mult_3x": 2.4},
+        "structure": {"lookback": 36},
+    },
+    Timeframe.MINUTE_15.value: {
+        "atr": {"mult": 0.8},
+        "structure": {"lookback": 32},
+    },
+    Timeframe.HOUR_3.value: {
+        "atr": {"mult": 1.3},
+        "atr_channels": {"mult_1x": 1.3, "mult_2x": 2.6, "mult_3x": 3.9},
+        "structure": {"lookback": 20},
+    },
+    Timeframe.HOUR_4.value: {
+        "atr": {"mult": 1.5},
+        "rsi": {"period": 16},
+        "structure": {"lookback": 18},
+    },
+    Timeframe.DAY_1.value: {
+        "rsi": {"period": 21, "overbought": 65, "oversold": 35},
+        "atr": {"mult": 2.0},
+        "atr_channels": {"mult_1x": 2.0, "mult_2x": 4.0, "mult_3x": 6.0},
+        "structure": {"lookback": 30},
+        "bollinger": {"period": 20, "stddev": 2.5},
+    },
+}
+
+_SUPPORTED_INDICATORS = set(_BASE_INDICATOR_DEFAULTS.keys())
+_AVAILABLE_TIMEFRAMES = {
+    Timeframe.MINUTE_1.value,
+    Timeframe.MINUTE_3.value,
+    Timeframe.MINUTE_5.value,
+    Timeframe.MINUTE_15.value,
+    Timeframe.MINUTE_30.value,
+    Timeframe.HOUR_1.value,
+    Timeframe.HOUR_3.value,
+    Timeframe.HOUR_4.value,
+    Timeframe.DAY_1.value,
+}
+
+
+def _normalize_timeframe_key(timeframe: Union[str, Timeframe]) -> str:
+    """Normalize timeframe input to lowercase string."""
+    if isinstance(timeframe, Timeframe):
+        return timeframe.value
+    if timeframe is None:
+        return Timeframe.HOUR_1.value
+    normalized = str(timeframe).strip().lower()
+    return normalized or Timeframe.HOUR_1.value
+
+
+def _deep_merge_indicator_params(
+    base: Dict[str, Any],
+    overrides: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Deep-merge indicator parameter dictionaries."""
+    merged = deepcopy(base)
+    for key, value in overrides.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge_indicator_params(merged[key], value)
+        else:
+            merged[key] = deepcopy(value)
+    return merged
+
+
+def indicator_defaults_for(timeframe: Union[str, Timeframe]) -> Dict[str, Any]:
+    """Return indicator parameter defaults for the given timeframe.
+
+    Falls back to 1h defaults when the requested timeframe is unsupported.
+    """
+    normalized = _normalize_timeframe_key(timeframe)
+    if normalized not in _AVAILABLE_TIMEFRAMES:
+        normalized = Timeframe.HOUR_1.value
+    defaults = deepcopy(_BASE_INDICATOR_DEFAULTS)
+    overrides = _TIMEFRAME_INDICATOR_OVERRIDES.get(normalized)
+    if overrides:
+        defaults = _deep_merge_indicator_params(defaults, overrides)
+    return defaults
 
 
 @dataclass
@@ -76,32 +179,106 @@ class BacktestConfig:
 
 @dataclass
 class ParameterSet:
-    """Set of parameters for backtesting."""
-    
-    weights: Dict[str, float]
-    indicator_params: Dict[str, Any]
+    """Parameter bundle used for backtesting and optimization.
+
+    Attributes:
+        weights: Mapping of factor names to weighting coefficients.
+        indicator_params: Indicator configuration keyed by indicator name.
+        timeframe: Primary timeframe the parameters are tuned for.
+        stop_loss_pct: Percentage stop loss applied to each position.
+        take_profit_pct: Percentage take profit applied to each position.
+        max_position_size_pct: Maximum position size as a fraction of equity.
+        confirmation_threshold: Minimum aggregate factor score required to act on a signal.
+    """
+
+    weights: Dict[str, float] = field(default_factory=lambda: deepcopy(DEFAULT_WEIGHTS))
+    indicator_params: Dict[str, Any] = field(default_factory=dict)
+    timeframe: Union[str, Timeframe] = Timeframe.HOUR_1.value
     stop_loss_pct: float = 2.0
     take_profit_pct: float = 4.0
     max_position_size_pct: float = 0.05
     confirmation_threshold: float = 0.6
-    
+
+    def __post_init__(self) -> None:
+        """Normalize and complete parameter configuration after initialization."""
+        self.timeframe = _normalize_timeframe_key(self.timeframe)
+        if self.timeframe not in _AVAILABLE_TIMEFRAMES:
+            logger.warning(
+                "ParameterSet received unsupported timeframe '%s'; defaulting to '%s'",
+                self.timeframe,
+                Timeframe.HOUR_1.value,
+            )
+            self.timeframe = Timeframe.HOUR_1.value
+
+        if not self.weights:
+            logger.warning("ParameterSet weights missing; using default weights.")
+            self.weights = deepcopy(DEFAULT_WEIGHTS)
+        else:
+            self.weights = dict(self.weights)
+
+        total_weight = sum(self.weights.values())
+        if total_weight <= 0:
+            logger.warning("ParameterSet weights sum to zero; using default weights.")
+            self.weights = deepcopy(DEFAULT_WEIGHTS)
+
+        defaults = indicator_defaults_for(self.timeframe)
+        user_params = self.indicator_params or {}
+        if not isinstance(user_params, dict):
+            logger.warning(
+                "ParameterSet indicator_params must be a dict; received %s. Resetting to defaults.",
+                type(user_params).__name__,
+            )
+            user_params = {}
+
+        if user_params:
+            missing_keys = [key for key in defaults if key not in user_params]
+            if missing_keys:
+                logger.warning(
+                    "ParameterSet missing indicator params for timeframe '%s': %s. Applying defaults.",
+                    self.timeframe,
+                    ", ".join(sorted(missing_keys)),
+                )
+        unsupported_keys = [key for key in user_params if key not in _SUPPORTED_INDICATORS]
+        if unsupported_keys:
+            logger.warning(
+                "ParameterSet received unsupported indicator params: %s",
+                ", ".join(sorted(unsupported_keys)),
+            )
+
+        merged_params = deepcopy(defaults)
+        for key, value in user_params.items():
+            if isinstance(value, dict) and isinstance(merged_params.get(key), dict):
+                merged_params[key] = _deep_merge_indicator_params(merged_params[key], value)
+            else:
+                merged_params[key] = deepcopy(value)
+
+        self.indicator_params = merged_params
+
     def to_dict(self) -> JsonDict:
         """Convert to dictionary."""
         return {
             "weights": dict(self.weights),
-            "indicator_params": dict(self.indicator_params),
+            "indicator_params": deepcopy(self.indicator_params),
+            "timeframe": self.timeframe,
             "stop_loss_pct": self.stop_loss_pct,
             "take_profit_pct": self.take_profit_pct,
             "max_position_size_pct": self.max_position_size_pct,
             "confirmation_threshold": self.confirmation_threshold,
         }
-    
+
     @classmethod
     def from_dict(cls, data: JsonDict) -> "ParameterSet":
         """Create from dictionary."""
+        weights = data.get("weights", {})
+        if not isinstance(weights, dict):
+            weights = dict(weights)
+        indicator_params = data.get("indicator_params", {})
+        if not isinstance(indicator_params, dict):
+            indicator_params = dict(indicator_params)
         return cls(
-            weights=data.get("weights", {}),
-            indicator_params=data.get("indicator_params", {}),
+            weights=weights,
+            indicator_params=deepcopy(indicator_params),
+            timeframe=data.get("timeframe", Timeframe.HOUR_1.value),
             stop_loss_pct=float(data.get("stop_loss_pct", 2.0)),
             take_profit_pct=float(data.get("take_profit_pct", 4.0)),
             max_position_size_pct=float(data.get("max_position_size_pct", 0.05)),

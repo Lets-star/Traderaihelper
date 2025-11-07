@@ -46,26 +46,26 @@ _BASE_INDICATOR_DEFAULTS: Dict[str, Any] = {
 }
 
 _TIMEFRAME_INDICATOR_OVERRIDES: Dict[str, Dict[str, Any]] = {
-    Timeframe.MINUTE_5.value: {
+    Timeframe.M5.value: {
         "atr": {"mult": 0.6},
         "atr_channels": {"mult_1x": 0.8, "mult_2x": 1.6, "mult_3x": 2.4},
         "structure": {"lookback": 36},
     },
-    Timeframe.MINUTE_15.value: {
+    Timeframe.M15.value: {
         "atr": {"mult": 0.8},
         "structure": {"lookback": 32},
     },
-    Timeframe.HOUR_3.value: {
+    Timeframe.H3.value: {
         "atr": {"mult": 1.3},
         "atr_channels": {"mult_1x": 1.3, "mult_2x": 2.6, "mult_3x": 3.9},
         "structure": {"lookback": 20},
     },
-    Timeframe.HOUR_4.value: {
+    Timeframe.H4.value: {
         "atr": {"mult": 1.5},
         "rsi": {"period": 16},
         "structure": {"lookback": 18},
     },
-    Timeframe.DAY_1.value: {
+    Timeframe.D1.value: {
         "rsi": {"period": 21, "overbought": 65, "oversold": 35},
         "atr": {"mult": 2.0},
         "atr_channels": {"mult_1x": 2.0, "mult_2x": 4.0, "mult_3x": 6.0},
@@ -76,26 +76,25 @@ _TIMEFRAME_INDICATOR_OVERRIDES: Dict[str, Dict[str, Any]] = {
 
 _SUPPORTED_INDICATORS = set(_BASE_INDICATOR_DEFAULTS.keys())
 _AVAILABLE_TIMEFRAMES = {
-    Timeframe.MINUTE_1.value,
-    Timeframe.MINUTE_3.value,
-    Timeframe.MINUTE_5.value,
-    Timeframe.MINUTE_15.value,
-    Timeframe.MINUTE_30.value,
-    Timeframe.HOUR_1.value,
-    Timeframe.HOUR_3.value,
-    Timeframe.HOUR_4.value,
-    Timeframe.DAY_1.value,
+    Timeframe.M1.value,
+    Timeframe.M5.value,
+    Timeframe.M15.value,
+    Timeframe.H1.value,
+    Timeframe.H3.value,
+    Timeframe.H4.value,
+    Timeframe.D1.value,
 }
 
 
 def _normalize_timeframe_key(timeframe: Union[str, Timeframe]) -> str:
-    """Normalize timeframe input to lowercase string."""
-    if isinstance(timeframe, Timeframe):
-        return timeframe.value
+    """Normalize timeframe input to standard enum value."""
     if timeframe is None:
-        return Timeframe.HOUR_1.value
-    normalized = str(timeframe).strip().lower()
-    return normalized or Timeframe.HOUR_1.value
+        return Timeframe.H1.value
+    try:
+        tf = Timeframe.from_value(timeframe)
+        return tf.value
+    except (ValueError, TypeError):
+        return Timeframe.H1.value
 
 
 def _deep_merge_indicator_params(
@@ -119,7 +118,7 @@ def indicator_defaults_for(timeframe: Union[str, Timeframe]) -> Dict[str, Any]:
     """
     normalized = _normalize_timeframe_key(timeframe)
     if normalized not in _AVAILABLE_TIMEFRAMES:
-        normalized = Timeframe.HOUR_1.value
+        normalized = Timeframe.H1.value
     defaults = deepcopy(_BASE_INDICATOR_DEFAULTS)
     overrides = _TIMEFRAME_INDICATOR_OVERRIDES.get(normalized)
     if overrides:
@@ -193,7 +192,7 @@ class ParameterSet:
 
     weights: Dict[str, float] = field(default_factory=lambda: deepcopy(DEFAULT_WEIGHTS))
     indicator_params: Dict[str, Any] = field(default_factory=dict)
-    timeframe: Union[str, Timeframe] = Timeframe.HOUR_1.value
+    timeframe: Union[str, Timeframe] = Timeframe.H1.value
     stop_loss_pct: float = 2.0
     take_profit_pct: float = 4.0
     max_position_size_pct: float = 0.05
@@ -206,9 +205,9 @@ class ParameterSet:
             logger.warning(
                 "ParameterSet received unsupported timeframe '%s'; defaulting to '%s'",
                 self.timeframe,
-                Timeframe.HOUR_1.value,
+                Timeframe.H1.value,
             )
-            self.timeframe = Timeframe.HOUR_1.value
+            self.timeframe = Timeframe.H1.value
 
         if not self.weights:
             logger.warning("ParameterSet weights missing; using default weights.")

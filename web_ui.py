@@ -1719,11 +1719,15 @@ def main():
     with automated_signals_tab:
         st.subheader("🤖 Automated Trading Signals")
 
-        # Auto-load and process the full JSON payload
+        # Auto-load and process full JSON payload with explicit signals
         try:
-            # Try to extract trading signals from payload
-            automated_signals = payload.get("automated_signals", {})
-
+            # Import new signal generation functions
+            from indicator_collector.trading_system import (
+                load_and_process_payload_dict,
+                generate_signals,
+                is_valid_signal_structure
+            )
+            
             # Process payload through trading system
             processed_signal = load_and_process_payload_dict(
                 payload,
@@ -1731,67 +1735,116 @@ def main():
                 validate_real_data=True
             )
             
-            # Display the processed signal
-            signal_data = processed_signal
+            # Generate explicit JSON signals
+            try:
+                explicit_signal = generate_signals(processed_signal)
+                
+                # Validate that we have proper signal structure
+                if is_valid_signal_structure(explicit_signal):
+                    signal_data = explicit_signal
             
-            # Display main signal
-            col1, col2, col3 = st.columns([2, 1, 1])
-            
-            with col1:
-                signal_type = signal_data.get("signal_type", "NEUTRAL")
-                if signal_type == "BUY":
-                    st.success(f"## 🟢 BUY SIGNAL")
-                elif signal_type == "SELL":
-                    st.error(f"## 🔴 SELL SIGNAL")
+            # Display main signal using explicit JSON format
+                    col1, col2, col3 = st.columns([2, 1, 1])
+                    
+                    with col1:
+                        signal_type = signal_data.get("signal", "HOLD")
+                        if signal_type == "BUY":
+                            st.success(f"## 🟢 BUY SIGNAL")
+                        elif signal_type == "SELL":
+                            st.error(f"## 🔴 SELL SIGNAL")
+                        else:
+                            st.info(f"## ⚪ HOLD")
+                    
+                    with col2:
+                        confidence = signal_data.get("confidence", 5)
+                        if confidence >= 8:
+                            st.metric("Confidence", f"{confidence}/10", "🟢 High")
+                        elif confidence >= 5:
+                            st.metric("Confidence", f"{confidence}/10", "🟡 Medium")
+                        else:
+                            st.metric("Confidence", f"{confidence}/10", "⚪ Low")
+                    
+                    with col3:
+                        timeframe = signal_data.get("timeframe", selected_timeframe)
+                        holding_period = signal_data.get("holding_period", "medium")
+                        st.metric("Timeframe", timeframe.upper())
+                        st.metric("Holding Period", holding_period.title())
+                    
+                    st.markdown("---")
+                    
+                    # Display detailed signal information
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.markdown("### 📈 Entry & Exit Levels")
+                        
+                        # Entry prices
+                        entries = signal_data.get("entries", [])
+                        if entries:
+                            st.write("**Entry Levels:**")
+                            for i, entry in enumerate(entries[:3], 1):
+                                st.write(f"  Entry {i}: ${entry:.4f}")
+                        
+                        # Stop loss
+                        stop_loss = signal_data.get("stop_loss")
+                        if stop_loss:
+                            st.write(f"**Stop Loss:** ${stop_loss:.4f}")
+                        
+                        # Take profits
+                        take_profits = signal_data.get("take_profits", {})
+                        if take_profits:
+                            st.write("**Take Profits:**")
+                            for tp_key, tp_price in take_profits.items():
+                                st.write(f"  {tp_key.upper()}: ${tp_price:.4f}")
+                    
+                    with col2:
+                        st.markdown("### 📊 Position & Risk")
+                        
+                        # Position size
+                        position_size = signal_data.get("position_size_pct")
+                        if position_size:
+                            st.write(f"**Position Size:** {position_size:.1f}%")
+                        
+                        # Weights
+                        weights = signal_data.get("weights", {})
+                        if weights:
+                            st.write("**Component Weights:**")
+                            for component, weight in weights.items():
+                                st.write(f"  {component.title()}: {weight:.2f}")
+                    
+                    st.markdown("---")
+                    
+                    # Display rationale
+                    rationale = signal_data.get("rationale", [])
+                    if rationale:
+                        st.markdown("### 💡 Signal Rationale")
+                        for i, point in enumerate(rationale, 1):
+                            st.write(f"{i}. {point}")
+                    
+                    # Display cancel conditions
+                    cancel_conditions = signal_data.get("cancel_conditions", [])
+                    if cancel_conditions:
+                        st.markdown("### ⚠️ Cancel Conditions")
+                        for condition in cancel_conditions:
+                            st.write(f"• {condition}")
+                    
+                    # Display processing info
+                    with st.expander("🔧 Processing Information", expanded=False):
+                        processing_info = processed_signal.get("metadata", {})
+                        st.write(f"**Processor:** {processing_info.get('payload_processor', 'Unknown')}")
+                        st.write(f"**Timeframe Used:** {processing_info.get('timeframe_used', 'Unknown')}")
+                        st.write(f"**Real Data Validated:** {processing_info.get('real_data_validated', False)}")
+                        st.write(f"**Source Data Quality:** {processing_info.get('source_data_quality', 'Unknown')}")
+                        st.write(f"**Signal Format:** Explicit JSON Schema v1.0")
+                    
                 else:
-                    st.info(f"## ⚪ NEUTRAL")
-            
-            with col2:
-                confidence = signal_data.get("confidence", 0.0)
-                confidence_pct = confidence * 100
-                if confidence > 0.7:
-                    st.metric("Confidence", f"{confidence_pct:.1f}%", "🟢 High")
-                elif confidence > 0.5:
-                    st.metric("Confidence", f"{confidence_pct:.1f}%", "🟡 Medium")
-                else:
-                    st.metric("Confidence", f"{confidence_pct:.1f}%", "⚪ Low")
-            
-            with col3:
-                timestamp = signal_data.get("timestamp", 0)
-                if timestamp:
-                    from datetime import datetime
-                    signal_time = datetime.fromtimestamp(timestamp / 1000).strftime("%H:%M:%S")
-                    st.metric("Signal Time", signal_time)
-            
-            st.markdown("---")
-            
-            # Display processing info
-            with st.expander("🔧 Processing Information", expanded=False):
-                processing_info = signal_data.get("metadata", {}).get("payload_processor", {})
-                if processing_info:
-                    st.write(f"**Processor:** {processing_info}")
-                    st.write(f"**Timeframe Used:** {signal_data.get('metadata', {}).get('timeframe_used', 'Unknown')}")
-                    st.write(f"**Real Data Validated:** {signal_data.get('metadata', {}).get('real_data_validated', False)}")
-                    st.write(f"**Source Data Quality:** {signal_data.get('metadata', {}).get('source_data_quality', 'Unknown')}")
-            
-        except Exception as e:
-            st.error(f"❌ Error processing automated signals: {str(e)}")
-            
-            # Fallback to original display if processing fails
-            automated_signals = payload.get("automated_signals", {})
-            trading_signals_section = payload.get("trading_signals", {})
-            
-            if not automated_signals and not trading_signals_section:
-                # Check if there's signal data in advanced section
-                advanced = payload.get("advanced", {})
-                if advanced and advanced.get("trade_plan"):
-                    st.info("No detailed automated signals data available. Trading system requires explicit JSON signals output.")
-                    st.markdown("To enable this tab fully, ensure the trading system exports signals with position plans, optimization stats, and holding horizon estimates.")
-                else:
-                    st.warning("No automated signals data available for this analysis. Run the trading system analyzer to generate signals.")
-            else:
-                # Display signal data if available
-                signal_data = automated_signals or trading_signals_section
+                    raise ValueError("Generated signal does not match required schema")
+                    
+            except Exception as signal_error:
+                st.warning(f"⚠️ Could not generate explicit JSON signals: {signal_error}")
+                
+                # Fallback to display processed signal
+                signal_data = processed_signal
                 
                 # Display main signal
                 col1, col2, col3 = st.columns([2, 1, 1])
@@ -1823,6 +1876,28 @@ def main():
                         st.metric("Signal Time", signal_time)
                 
                 st.markdown("---")
+                
+                # Display processing info
+                with st.expander("🔧 Processing Information", expanded=False):
+                    processing_info = signal_data.get("metadata", {})
+                    st.write(f"**Processor:** {processing_info.get('payload_processor', 'Unknown')}")
+                    st.write(f"**Timeframe Used:** {processing_info.get('timeframe_used', 'Unknown')}")
+                    st.write(f"**Real Data Validated:** {processing_info.get('real_data_validated', False)}")
+                    st.write(f"**Source Data Quality:** {processing_info.get('source_data_quality', 'Unknown')}")
+                    st.info("⚠️ Showing fallback signal format. Enable explicit JSON signals for full functionality.")
+            
+        except Exception as e:
+            st.error(f"❌ Error processing automated signals: {str(e)}")
+            
+            # Check if there's any signal data in payload
+            automated_signals = payload.get("automated_signals", {})
+            trading_signals_section = payload.get("trading_signals", {})
+            advanced = payload.get("advanced", {})
+            
+            if not automated_signals and not trading_signals_section and not advanced:
+                st.warning("No automated signals data available for this analysis. Run the trading system analyzer to generate signals.")
+            else:
+                st.info("⚠️ Trading system requires explicit JSON signals output for full functionality. Check signal generation configuration.")
         
         # Continue with the rest of the signal display (factor analysis, position plan, etc.)
         if 'signal_data' in locals() and signal_data:

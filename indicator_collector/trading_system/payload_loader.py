@@ -74,7 +74,7 @@ class PayloadProcessor:
                 raise ValueError("Timeframe not found in payload and not provided as parameter")
         
         # Validate timeframe
-        if not Timeframe.validate_timeframe(timeframe):
+        if not Timeframe.is_supported(timeframe):
             raise ValueError(f"Unsupported timeframe: {timeframe}")
         
         # Real data validation if enabled
@@ -101,9 +101,15 @@ class PayloadProcessor:
         # Enhance with position management
         try:
             # Create position plan from signal and context
-            position_plan = create_position_plan(context, signal_payload)
-            if position_plan:
-                signal_payload.position_plan = position_plan
+            from .position_manager import PositionManagerConfig
+            config = PositionManagerConfig()
+            position_result = create_position_plan(
+                context=context,
+                signal_direction="long" if signal_payload.signal_type == "BUY" else "short",
+                config=config
+            )
+            if position_result and position_result.position_plan:
+                signal_payload.position_plan = position_result.position_plan
         except Exception as e:
             # Position management is optional, log but continue
             print(f"[warning] Position management failed: {e}")
@@ -147,8 +153,8 @@ class PayloadProcessor:
             
             context.metadata.update({
                 "timeframe": timeframe,
-                "timeframe_minutes": Timeframe(timeframe).to_minutes(),
-                "timeframe_display": Timeframe(timeframe).get_display_name(),
+                "timeframe_minutes": Timeframe.to_minutes(timeframe),
+                "timeframe_display": Timeframe.from_value(timeframe).get_display_name(),
             })
             
         except Exception as e:
@@ -242,7 +248,7 @@ def validate_and_normalize_payload(json_data: Union[str, Dict[str, Any]],
     
     if timeframe:
         # Validate timeframe
-        if not Timeframe.validate_timeframe(timeframe):
+        if not Timeframe.is_supported(timeframe):
             raise ValueError(f"Unsupported timeframe: {timeframe}")
         
         # Basic real data validation

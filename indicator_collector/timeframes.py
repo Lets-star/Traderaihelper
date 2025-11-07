@@ -12,15 +12,53 @@ from typing import Dict, List, Optional, Tuple
 
 class Timeframe(str, Enum):
     """Supported trading timeframes."""
-    MINUTE_1 = "1m"
-    MINUTE_3 = "3m"
-    MINUTE_5 = "5m"
-    MINUTE_15 = "15m"
-    MINUTE_30 = "30m"
-    HOUR_1 = "1h"
-    HOUR_3 = "3h"
-    HOUR_4 = "4h"
-    DAY_1 = "1d"
+    M1 = '1m'
+    M5 = '5m'
+    M15 = '15m'
+    H1 = '1h'
+    H3 = '3h'
+    H4 = '4h'
+    D1 = '1d'
+    
+    @classmethod
+    def from_value(cls, value: str | 'Timeframe'):
+        """Convert various timeframe formats to Timeframe enum with aliases support."""
+        if isinstance(value, Timeframe): 
+            return value
+        v = str(value).strip().lower()
+        aliases = {
+            '1m': ['1m'], 
+            '5m': ['5m'], 
+            '15m': ['15m'], 
+            '1h': ['1h', '60m'], 
+            '3h': ['3h', '180m'], 
+            '4h': ['4h', '240m'], 
+            '1d': ['1d', '24h']
+        }
+        for k, vs in aliases.items():
+            if v in vs: 
+                return Timeframe(k)
+        raise ValueError(f"Unsupported timeframe: {value}")
+    
+    @classmethod
+    def is_supported(cls, value) -> bool:
+        """Check if a timeframe value is supported."""
+        try: 
+            cls.from_value(value); 
+            return True
+        except Exception: 
+            return False
+    
+    @classmethod
+    def to_minutes(cls, value) -> int:
+        """Convert timeframe value to minutes."""
+        tf = cls.from_value(value)
+        return {'1m': 1, '5m': 5, '15m': 15, '1h': 60, '3h': 180, '4h': 240, '1d': 1440}[tf.value]
+    
+    @classmethod
+    def validate_timeframe(cls, value):
+        """Validate timeframe and return normalized Timeframe enum."""
+        return cls.from_value(value)
     
     @classmethod
     def all_timeframes(cls) -> List[str]:
@@ -30,48 +68,34 @@ class Timeframe(str, Enum):
     @classmethod
     def common_timeframes(cls) -> List[str]:
         """Get commonly used timeframes."""
-        return [cls.MINUTE_5.value, cls.MINUTE_15.value, cls.MINUTE_30.value,
-                cls.HOUR_1.value, cls.HOUR_3.value, cls.HOUR_4.value, cls.DAY_1.value]
+        return [cls.M5.value, cls.M15.value, cls.H1.value, cls.H3.value, cls.H4.value, cls.D1.value]
     
-    def to_minutes(self) -> int:
-        """Convert timeframe to minutes."""
-        mapping = {
-            Timeframe.MINUTE_1: 1,
-            Timeframe.MINUTE_3: 3,
-            Timeframe.MINUTE_5: 5,
-            Timeframe.MINUTE_15: 15,
-            Timeframe.MINUTE_30: 30,
-            Timeframe.HOUR_1: 60,
-            Timeframe.HOUR_3: 180,
-            Timeframe.HOUR_4: 240,
-            Timeframe.DAY_1: 1440,
-        }
-        return mapping[self]
+    def to_minutes_instance(self) -> int:
+        """Convert timeframe enum to minutes."""
+        return {'1m': 1, '5m': 5, '15m': 15, '1h': 60, '3h': 180, '4h': 240, '1d': 1440}[self.value]
     
     def to_milliseconds(self) -> int:
         """Convert timeframe to milliseconds."""
-        return self.to_minutes() * 60 * 1000
+        return self.to_minutes_instance() * 60 * 1000
     
     def is_intraday(self) -> bool:
         """Check if timeframe is intraday (less than 1 day)."""
-        return self.to_minutes() < 1440
+        return self.to_minutes_instance() < 1440
     
     def is_hourly_or_less(self) -> bool:
         """Check if timeframe is hourly or shorter."""
-        return self.to_minutes() <= 60
+        return self.to_minutes_instance() <= 60
     
     def get_display_name(self) -> str:
         """Get human-readable display name."""
         mapping = {
-            Timeframe.MINUTE_1: "1 Minute",
-            Timeframe.MINUTE_3: "3 Minutes",
-            Timeframe.MINUTE_5: "5 Minutes",
-            Timeframe.MINUTE_15: "15 Minutes",
-            Timeframe.MINUTE_30: "30 Minutes",
-            Timeframe.HOUR_1: "1 Hour",
-            Timeframe.HOUR_3: "3 Hours",
-            Timeframe.HOUR_4: "4 Hours",
-            Timeframe.DAY_1: "1 Day",
+            Timeframe.M1: "1 Minute",
+            Timeframe.M5: "5 Minutes", 
+            Timeframe.M15: "15 Minutes",
+            Timeframe.H1: "1 Hour",
+            Timeframe.H3: "3 Hours",
+            Timeframe.H4: "4 Hours",
+            Timeframe.D1: "1 Day",
         }
         return mapping[self]
 
@@ -85,7 +109,7 @@ class TimeframeParameters:
     def _initialize_parameters(self) -> Dict[str, Dict[str, any]]:
         """Initialize default parameters for each timeframe."""
         return {
-            Timeframe.MINUTE_1.value: {
+            Timeframe.M1.value: {
                 "rsi_period": 14,
                 "macd_fast": 12,
                 "macd_slow": 26,
@@ -101,23 +125,7 @@ class TimeframeParameters:
                 "min_data_points": 100,
                 "max_data_points": 1000,
             },
-            Timeframe.MINUTE_3.value: {
-                "rsi_period": 14,
-                "macd_fast": 12,
-                "macd_slow": 26,
-                "macd_signal": 9,
-                "atr_period": 14,
-                "sma_fast": 9,
-                "sma_slow": 21,
-                "bollinger_period": 20,
-                "bollinger_std": 2,
-                "volume_ma_period": 20,
-                "vwap_period": 130,  # One trading day in 3m intervals
-                "orderbook_depth": 20,
-                "min_data_points": 80,
-                "max_data_points": 800,
-            },
-            Timeframe.MINUTE_5.value: {
+            Timeframe.M5.value: {
                 "rsi_period": 14,
                 "macd_fast": 12,
                 "macd_slow": 26,
@@ -133,7 +141,7 @@ class TimeframeParameters:
                 "min_data_points": 50,
                 "max_data_points": 500,
             },
-            Timeframe.MINUTE_15.value: {
+            Timeframe.M15.value: {
                 "rsi_period": 14,
                 "macd_fast": 12,
                 "macd_slow": 26,
@@ -149,23 +157,7 @@ class TimeframeParameters:
                 "min_data_points": 40,
                 "max_data_points": 400,
             },
-            Timeframe.MINUTE_30.value: {
-                "rsi_period": 14,
-                "macd_fast": 12,
-                "macd_slow": 26,
-                "macd_signal": 9,
-                "atr_period": 14,
-                "sma_fast": 9,
-                "sma_slow": 21,
-                "bollinger_period": 20,
-                "bollinger_std": 2,
-                "volume_ma_period": 20,
-                "vwap_period": 13,  # One trading day in 30m intervals
-                "orderbook_depth": 20,
-                "min_data_points": 30,
-                "max_data_points": 300,
-            },
-            Timeframe.HOUR_1.value: {
+            Timeframe.H1.value: {
                 "rsi_period": 14,
                 "macd_fast": 12,
                 "macd_slow": 26,
@@ -181,7 +173,7 @@ class TimeframeParameters:
                 "min_data_points": 25,
                 "max_data_points": 250,
             },
-            Timeframe.HOUR_3.value: {
+            Timeframe.H3.value: {
                 "rsi_period": 14,
                 "macd_fast": 12,
                 "macd_slow": 26,
@@ -197,7 +189,7 @@ class TimeframeParameters:
                 "min_data_points": 20,
                 "max_data_points": 200,
             },
-            Timeframe.HOUR_4.value: {
+            Timeframe.H4.value: {
                 "rsi_period": 14,
                 "macd_fast": 12,
                 "macd_slow": 26,
@@ -213,7 +205,7 @@ class TimeframeParameters:
                 "min_data_points": 18,
                 "max_data_points": 180,
             },
-            Timeframe.DAY_1.value: {
+            Timeframe.D1.value: {
                 "rsi_period": 14,
                 "macd_fast": 12,
                 "macd_slow": 26,
@@ -302,11 +294,7 @@ timeframe_params = TimeframeParameters()
 
 def validate_timeframe(timeframe: str) -> bool:
     """Validate if timeframe is supported."""
-    try:
-        Timeframe(timeframe)
-        return True
-    except ValueError:
-        return False
+    return Timeframe.is_supported(timeframe)
 
 
 def get_timeframe_info(timeframe: str) -> Dict[str, any]:
@@ -314,13 +302,13 @@ def get_timeframe_info(timeframe: str) -> Dict[str, any]:
     if not validate_timeframe(timeframe):
         raise ValueError(f"Unsupported timeframe: {timeframe}")
     
-    tf = Timeframe(timeframe)
-    params = timeframe_params.get_parameters(timeframe)
+    tf = Timeframe.from_value(timeframe)
+    params = timeframe_params.get_parameters(tf.value)
     
     return {
-        "timeframe": timeframe,
+        "timeframe": tf.value,
         "display_name": tf.get_display_name(),
-        "minutes": tf.to_minutes(),
+        "minutes": tf.to_minutes_instance(),
         "milliseconds": tf.to_milliseconds(),
         "is_intraday": tf.is_intraday(),
         "is_hourly_or_less": tf.is_hourly_or_less(),
@@ -331,8 +319,8 @@ def get_timeframe_info(timeframe: str) -> Dict[str, any]:
 def get_aggregation_source_timeframes(target_timeframe: str) -> List[str]:
     """Get source timeframes that can be aggregated to create target timeframe."""
     aggregation_map = {
-        Timeframe.MINUTE_3.value: [Timeframe.MINUTE_1.value],
-        Timeframe.HOUR_3.value: [Timeframe.MINUTE_15.value, Timeframe.HOUR_1.value],
+        '3m': ['1m'],  # Note: 3m not in main enum but kept for compatibility
+        Timeframe.H3.value: [Timeframe.M15.value, Timeframe.H1.value],
     }
     
     return aggregation_map.get(target_timeframe, [])
@@ -340,8 +328,8 @@ def get_aggregation_source_timeframes(target_timeframe: str) -> List[str]:
 
 def get_aggregation_factor(source_timeframe: str, target_timeframe: str) -> int:
     """Get the factor needed to aggregate source to target timeframe."""
-    source_minutes = Timeframe(source_timeframe).to_minutes()
-    target_minutes = Timeframe(target_timeframe).to_minutes()
+    source_minutes = Timeframe.to_minutes(source_timeframe)
+    target_minutes = Timeframe.to_minutes(target_timeframe)
     
     if target_minutes % source_minutes != 0:
         raise ValueError(f"Cannot aggregate {source_timeframe} to {target_timeframe}")

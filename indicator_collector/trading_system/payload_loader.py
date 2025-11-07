@@ -20,8 +20,8 @@ from .interfaces import (
     parse_collector_payload,
     deserialize_signal_payload,
 )
-from .signal_generator import SignalGenerator
-from .position_manager import PositionManager
+from .signal_generator import SignalGenerator, generate_trading_signal
+from .position_manager import create_position_plan
 from .statistics_optimizer import StatisticsOptimizer
 from ..timeframes import Timeframe, timeframe_params
 
@@ -32,7 +32,6 @@ class PayloadProcessor:
     def __init__(self):
         self.validator = RealDataValidator()
         self.signal_generator = SignalGenerator()
-        self.position_manager = PositionManager()
         self.statistics_optimizer = StatisticsOptimizer()
     
     def load_full_payload(self, json_data: Union[str, Dict[str, Any]], 
@@ -101,10 +100,10 @@ class PayloadProcessor:
         
         # Enhance with position management
         try:
-            enhanced_signal = self.position_manager.analyze(context)
-            # Merge position management insights
-            if hasattr(enhanced_signal, 'position_plan') and enhanced_signal.position_plan:
-                signal_payload.position_plan = enhanced_signal.position_plan
+            # Create position plan from signal and context
+            position_plan = create_position_plan(context, signal_payload)
+            if position_plan:
+                signal_payload.position_plan = position_plan
         except Exception as e:
             # Position management is optional, log but continue
             print(f"[warning] Position management failed: {e}")

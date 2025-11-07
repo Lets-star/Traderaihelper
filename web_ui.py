@@ -19,6 +19,7 @@ from indicator_collector.collector import collect_metrics
 from indicator_collector.indicator_metrics import SimulationSummary
 from indicator_collector.time_series import TimeframeSeries
 from indicator_collector.trade_signals import calculate_position_metrics, calculate_tp_sl_levels
+from indicator_collector.trading_system import load_and_process_payload_dict
 
 
 def format_correlation(value: float) -> str:
@@ -43,6 +44,21 @@ def format_flow(value: float) -> str:
         return f"🟢 ${value:,.0f}"
     else:
         return f"🔴 ${value:,.0f}"
+
+
+def ui_key(prefix: str, label: str) -> str:
+    """Generate a unique key for Streamlit widgets.
+    
+    Args:
+        prefix: The prefix for the key (e.g., tab name or section)
+        label: The widget label
+        
+    Returns:
+        A standardized unique key combining prefix and label
+    """
+    label_slug = label.lower().replace(" ", "_").replace("%", "pct")
+    return f"{prefix}_{label_slug}"
+
 
 st.set_page_config(
     page_title="Token Charts & Indicators",
@@ -359,19 +375,19 @@ def main():
         st.header("⚙️ Configuration")
         
         st.subheader("Token Selection")
-        token_input_mode = st.radio("Input Mode", ["Select from list", "Custom token"])
-        
+        token_input_mode = st.radio("Input Mode", ["Select from list", "Custom token"], key=ui_key("sidebar", "input_mode"))
+
         if token_input_mode == "Select from list":
-            selected_token = st.selectbox("Select Token", POPULAR_TOKENS, index=0)
+            selected_token = st.selectbox("Select Token", POPULAR_TOKENS, index=0, key=ui_key("sidebar", "select_token"))
         else:
-            selected_token = st.text_input("Custom Token (e.g., BINANCE:BTCUSDT)", "BINANCE:BTCUSDT")
-        
+            selected_token = st.text_input("Custom Token (e.g., BINANCE:BTCUSDT)", "BINANCE:BTCUSDT", key=ui_key("sidebar", "custom_token"))
+
         st.subheader("Timeframe & Period")
-        selected_timeframe = st.selectbox("Timeframe", TIMEFRAMES, index=TIMEFRAMES.index("15m"))
-        selected_period = st.slider("Analysis Period (bars)", min_value=50, max_value=1000, value=200, step=50)
+        selected_timeframe = st.selectbox("Timeframe", TIMEFRAMES, index=TIMEFRAMES.index("15m"), key=ui_key("sidebar", "timeframe"))
+        selected_period = st.slider("Analysis Period (bars)", min_value=50, max_value=1000, value=200, step=50, key=ui_key("sidebar", "analysis_period"))
         
         st.subheader("Export Options")
-        export_token = st.text_input("Export Token/ID", value="export-session-001", help="Token to identify this analysis session")
+        export_token = st.text_input("Export Token/ID", value="export-session-001", help="Token to identify this analysis session", key=ui_key("sidebar", "export_token"))
         
         analyze_button = st.button("🔄 Analyze", type="primary", use_container_width=True)
     
@@ -1702,16 +1718,16 @@ def main():
     
     with automated_signals_tab:
         st.subheader("🤖 Automated Trading Signals")
-        
+
         # Auto-load and process the full JSON payload
         try:
             # Try to extract trading signals from payload
             automated_signals = payload.get("automated_signals", {})
-            
+
             # Process payload through trading system
             processed_signal = load_and_process_payload_dict(
-                validated_payload, 
-                selected_timeframe, 
+                payload,
+                selected_timeframe,
                 validate_real_data=True
             )
             
@@ -2006,20 +2022,23 @@ def main():
                         min_value=30, 
                         max_value=3650, 
                         value=730,
-                        help="Number of days of historical data to use"
+                        help="Number of days of historical data to use",
+                        key=ui_key("backtest_tab", "lookback_days")
                     )
                     split_method = st.selectbox(
                         "Data Split Method",
                         ["walk_forward", "time_split", "k_fold"],
                         index=0,
-                        help="Method for splitting training and test data"
+                        help="Method for splitting training and test data",
+                        key=ui_key("backtest_tab", "split_method")
                     )
                     train_ratio = st.slider(
                         "Training Ratio", 
                         min_value=0.5, 
                         max_value=0.9, 
                         value=0.7,
-                        help="Proportion of data used for training"
+                        help="Proportion of data used for training",
+                        key=ui_key("backtest_tab", "train_ratio")
                     )
                 
                 with col2:
@@ -2028,21 +2047,24 @@ def main():
                         min_value=0.3, 
                         max_value=0.9, 
                         value=0.55,
-                        help="Target win rate for optimization"
+                        help="Target win rate for optimization",
+                        key=ui_key("backtest_tab", "target_win_rate")
                     )
                     target_profit_factor = st.slider(
                         "Target Profit Factor", 
                         min_value=1.0, 
                         max_value=3.0, 
                         value=1.5,
-                        help="Target profit factor (profit/loss ratio)"
+                        help="Target profit factor (profit/loss ratio)",
+                        key=ui_key("backtest_tab", "target_profit_factor")
                     )
                     target_sharpe = st.slider(
                         "Target Sharpe Ratio", 
                         min_value=0.5, 
                         max_value=3.0, 
                         value=1.0,
-                        help="Target Sharpe ratio for risk-adjusted returns"
+                        help="Target Sharpe ratio for risk-adjusted returns",
+                        key=ui_key("backtest_tab", "target_sharpe")
                     )
             
             # Parameter configuration
@@ -2051,17 +2073,17 @@ def main():
                 
                 with col1:
                     st.markdown("**Signal Weights**")
-                    technical_weight = st.slider("Technical Analysis", 0.0, 1.0, 0.4, 0.05)
-                    volume_weight = st.slider("Volume Analysis", 0.0, 1.0, 0.3, 0.05)
-                    sentiment_weight = st.slider("Sentiment Analysis", 0.0, 1.0, 0.2, 0.05)
-                    structure_weight = st.slider("Market Structure", 0.0, 1.0, 0.1, 0.05)
+                    technical_weight = st.slider("Technical Analysis", 0.0, 1.0, 0.4, 0.05, key=ui_key("backtest_tab", "technical_weight"))
+                    volume_weight = st.slider("Volume Analysis", 0.0, 1.0, 0.3, 0.05, key=ui_key("backtest_tab", "volume_weight"))
+                    sentiment_weight = st.slider("Sentiment Analysis", 0.0, 1.0, 0.2, 0.05, key=ui_key("backtest_tab", "sentiment_weight"))
+                    structure_weight = st.slider("Market Structure", 0.0, 1.0, 0.1, 0.05, key=ui_key("backtest_tab", "structure_weight"))
                 
                 with col2:
                     st.markdown("**Risk Parameters**")
-                    stop_loss_pct = st.slider("Stop Loss %", 0.5, 5.0, 2.0, 0.5)
-                    take_profit_pct = st.slider("Take Profit %", 1.0, 10.0, 4.0, 0.5)
-                    max_position_size = st.slider("Max Position Size %", 0.01, 0.2, 0.05, 0.01)
-                    confirmation_threshold = st.slider("Confirmation Threshold", 0.3, 0.9, 0.6, 0.1)
+                    stop_loss_pct = st.slider("Stop Loss pct", 0.5, 5.0, 2.0, 0.5, key=ui_key("backtest_tab", "stop_loss_pct"))
+                    take_profit_pct = st.slider("Take Profit pct", 1.0, 10.0, 4.0, 0.5, key=ui_key("backtest_tab", "take_profit_pct"))
+                    max_position_size = st.slider("Max Position Size pct", 0.01, 0.2, 0.05, 0.01, key=ui_key("backtest_tab", "max_position_size"))
+                    confirmation_threshold = st.slider("Confirmation Threshold", 0.3, 0.9, 0.6, 0.1, key=ui_key("backtest_tab", "confirmation_threshold"))
             
             # Optimization settings
             with st.expander("🔍 Optimization Settings"):
@@ -2072,28 +2094,32 @@ def main():
                         "Search Method",
                         ["grid", "random"],
                         index=0,
-                        help="Method for parameter optimization"
+                        help="Method for parameter optimization",
+                        key=ui_key("backtest_tab", "search_method")
                     )
                     max_iterations = st.number_input(
                         "Max Iterations",
                         min_value=5,
                         max_value=200,
                         value=20,
-                        help="Maximum number of optimization iterations"
+                        help="Maximum number of optimization iterations",
+                        key=ui_key("backtest_tab", "max_iterations")
                     )
                 
                 with col2:
                     validate_real_data = st.checkbox(
                         "Validate Real Data Only",
                         value=True,
-                        help="Only use validated real market data"
+                        help="Only use validated real market data",
+                        key=ui_key("backtest_tab", "validate_real_data")
                     )
                     min_confirmations = st.number_input(
                         "Min Confirmation Categories",
                         min_value=1,
                         max_value=5,
                         value=3,
-                        help="Minimum number of confirming factors required"
+                        help="Minimum number of confirming factors required",
+                        key=ui_key("backtest_tab", "min_confirmations")
                     )
             
             # Run backtest button
@@ -2295,20 +2321,23 @@ def main():
                         min_value=7,
                         max_value=90,
                         value=30,
-                        help="Number of days to consider for performance tracking"
+                        help="Number of days to consider for performance tracking",
+                        key=ui_key("adaptive_tab", "rolling_window")
                     )
                     min_signals = st.number_input(
                         "Min Signals for Adaptation",
                         min_value=10,
                         max_value=200,
                         value=50,
-                        help="Minimum signals required before adapting weights"
+                        help="Minimum signals required before adapting weights",
+                        key=ui_key("adaptive_tab", "min_signals")
                     )
                     adaptation_strategy = st.selectbox(
                         "Adaptation Strategy",
                         ["performance_based", "volatility_adjusted", "hybrid"],
                         index=2,
-                        help="Method for calculating weight adjustments"
+                        help="Method for calculating weight adjustments",
+                        key=ui_key("adaptive_tab", "adaptation_strategy")
                     )
                 
                 with col2:
@@ -2317,21 +2346,24 @@ def main():
                         min_value=0.3,
                         max_value=0.9,
                         value=0.55,
-                        help="Target win rate for adaptation triggers"
+                        help="Target win rate for adaptation triggers",
+                        key=ui_key("adaptive_tab", "target_win_rate")
                     )
                     target_profit_factor = st.slider(
                         "Target Profit Factor",
                         min_value=1.0,
                         max_value=3.0,
                         value=1.5,
-                        help="Target profit factor for adaptation triggers"
+                        help="Target profit factor for adaptation triggers",
+                        key=ui_key("adaptive_tab", "target_profit_factor")
                     )
                     adaptation_threshold = st.slider(
                         "Adaptation Threshold",
                         min_value=0.01,
                         max_value=0.2,
                         value=0.05,
-                        help="Minimum performance improvement to trigger adaptation"
+                        help="Minimum performance improvement to trigger adaptation",
+                        key=ui_key("adaptive_tab", "adaptation_threshold")
                     )
             
             # Current weights display
@@ -2340,16 +2372,16 @@ def main():
                 
                 with col1:
                     st.markdown("**Initial Weights**")
-                    tech_weight = st.slider("Technical", 0.0, 1.0, 0.4, 0.05)
-                    vol_weight = st.slider("Volume", 0.0, 1.0, 0.3, 0.05)
-                    sent_weight = st.slider("Sentiment", 0.0, 1.0, 0.2, 0.05)
-                    struct_weight = st.slider("Market Structure", 0.0, 1.0, 0.1, 0.05)
+                    tech_weight = st.slider("Technical", 0.0, 1.0, 0.4, 0.05, key=ui_key("adaptive_tab", "tech_weight"))
+                    vol_weight = st.slider("Volume", 0.0, 1.0, 0.3, 0.05, key=ui_key("adaptive_tab", "vol_weight"))
+                    sent_weight = st.slider("Sentiment", 0.0, 1.0, 0.2, 0.05, key=ui_key("adaptive_tab", "sent_weight"))
+                    struct_weight = st.slider("Market Structure", 0.0, 1.0, 0.1, 0.05, key=ui_key("adaptive_tab", "struct_weight"))
                 
                 with col2:
                     st.markdown("**Weight Constraints**")
-                    min_weight = st.slider("Min Weight per Factor", 0.01, 0.2, 0.05, 0.01)
-                    max_weight = st.slider("Max Weight per Factor", 0.2, 0.8, 0.5, 0.05)
-                    max_change = st.slider("Max Change %", 0.1, 0.5, 0.3, 0.05)
+                    min_weight = st.slider("Min Weight per Factor", 0.01, 0.2, 0.05, 0.01, key=ui_key("adaptive_tab", "min_weight"))
+                    max_weight = st.slider("Max Weight per Factor", 0.2, 0.8, 0.5, 0.05, key=ui_key("adaptive_tab", "max_weight"))
+                    max_change = st.slider("Max Change pct", 0.1, 0.5, 0.3, 0.05, key=ui_key("adaptive_tab", "max_change"))
             
             # Run adaptation
             run_adaptation = st.button("🔄 Run Adaptive Analysis", type="primary", use_container_width=True)

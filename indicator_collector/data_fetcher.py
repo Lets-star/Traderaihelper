@@ -26,6 +26,8 @@ _TIMEFRAME_ALIASES: Dict[str, str] = {
     "1h": "1h",
     "120": "2h",
     "2h": "2h",
+    "180": "3h",
+    "3h": "3h",
     "240": "4h",
     "4h": "4h",
     "360": "6h",
@@ -47,6 +49,7 @@ _TIMEFRAME_TO_MINUTES: Dict[str, int] = {
     "30m": 30,
     "1h": 60,
     "2h": 120,
+    "3h": 180,
     "4h": 240,
     "6h": 360,
     "12h": 720,
@@ -293,6 +296,248 @@ def fetch_order_book(symbol: str, limit: int = 500) -> Dict[str, object]:
         }
     )
     return aggregates
+
+
+def aggregate_candles_to_3h(candles: List[Candle]) -> List[Candle]:
+    """
+    Aggregate smaller timeframe candles to 3-hour candles.
+    
+    Args:
+        candles: List of smaller timeframe candles (1h or 15m)
+        
+    Returns:
+        List of aggregated 3h candles
+    """
+    if not candles:
+        return []
+    
+    # Determine aggregation factor based on first candle's timeframe
+    first_interval_ms = candles[1].open_time - candles[0].open_time if len(candles) > 1 else 0
+    three_hours_ms = 3 * 60 * 60 * 1000
+    
+    if first_interval_ms == 0:
+        raise ValueError("Cannot determine candle interval")
+    
+    aggregation_factor = three_hours_ms // first_interval_ms
+    if aggregation_factor <= 1:
+        return candles  # Already 3h or larger
+    
+    aggregated_candles = []
+    
+    for i in range(0, len(candles), aggregation_factor):
+        group = candles[i:i + aggregation_factor]
+        if not group:
+            continue
+        
+        # Aggregate OHLCV
+        open_price = group[0].open
+        high_price = max(c.high for c in group)
+        low_price = min(c.low for c in group)
+        close_price = group[-1].close
+        volume = sum(c.volume for c in group)
+        
+        # Use the start time of the first candle and calculate end time
+        open_time = group[0].open_time
+        close_time = open_time + three_hours_ms
+        
+        aggregated_candle = Candle(
+            open_time=open_time,
+            close_time=close_time,
+            open=open_price,
+            high=high_price,
+            low=low_price,
+            close=close_price,
+            volume=volume,
+        )
+        aggregated_candles.append(aggregated_candle)
+    
+    return aggregated_candles
+
+
+def fetch_klines_with_source_metadata(symbol: str, timeframe: str, limit: int = 500) -> Tuple[List[Candle], Dict[str, any]]:
+    """
+    Fetch klines with comprehensive source metadata.
+    
+    Args:
+        symbol: Trading symbol
+        timeframe: Timeframe interval
+        limit: Number of candles to fetch
+        
+    Returns:
+        Tuple of (candles, source_metadata)
+    """
+    # Handle 3h timeframe with aggregation
+    if timeframe_to_binance_interval(timeframe) == "3h":
+        # Fetch 1h candles and aggregate to 3h
+        candles_1h = fetch_klines(symbol, "1h", limit * 3)
+        candles_3h = aggregate_candles_to_3h(candles_1h)
+        
+        source_metadata = {
+            "source": "binance",
+            "exchange": "binance",
+            "symbol": parse_symbol(symbol),
+            "timeframe": "3h",
+            "granularity": "3h",
+            "method": "aggregated",
+            "source_timeframe": "1h",
+            "aggregation_factor": 3,
+            "limit": len(candles_3h),
+            "fetch_timestamp": int(time.time() * 1000),
+            "data_points": len(candles_3h),
+            "is_real_data": True,
+        }
+        
+        return candles_3h, source_metadata
+    else:
+        # Standard fetch for other timeframes
+        candles = fetch_klines(symbol, timeframe, limit)
+        
+        source_metadata = {
+            "source": "binance",
+            "exchange": "binance",
+            "symbol": parse_symbol(symbol),
+            "timeframe": timeframe_to_binance_interval(timeframe),
+            "granularity": timeframe_to_binance_interval(timeframe),
+            "method": "direct",
+            "limit": len(candles),
+            "fetch_timestamp": int(time.time() * 1000),
+            "data_points": len(candles),
+            "is_real_data": True,
+        }
+        
+        return candles, source_metadata
+
+
+def validate_timestamp_monotonicity(candles: Sequence[Candle]) -> bool:
+    """
+    Validate that candle timestamps are monotonic (strictly increasing).
+    
+    Args:
+        candles: Sequence of candles to validate
+        
+    Returns:
+        True if timestamps are monotonic
+        
+    Raises:
+        ValueError: If timestamps are not monotonic
+    """
+    if len(candles) < 2:
+        return True
+    
+    for i in range(1, len(candles)):
+        if candles[i].open_time <= candles[i-1].open_time:
+            raise ValueError(
+                f"Non-monotonic timestamps at index {i}: "
+                f"{candles[i-1].open_time} -> {candles[i].open_time}"
+            )
+        
+        if candles[i].close_time <= candles[i-1].close_time:
+            raise ValueError(
+                f"Non-monotonic close times at index {i}: "
+                f"{candles[i-1].close_time} -> {candles[i].close_time}"
+            )
+    
+    return True
+
+
+def validate_timestamp_plausibility(candles: Sequence[Candle], timeframe: str) -> bool:
+    """
+    Validate that candle timestamps are plausible for the given timeframe.
+    
+    Args:
+        candles: Sequence of candles to validate
+        timeframe: Expected timeframe
+        
+    Returns:
+        True if timestamps are plausible
+        
+    Raises:
+        ValueError: If timestamps are not plausible
+    """
+    if len(candles) < 2:
+        return True
+    
+    expected_interval_ms = interval_to_milliseconds(timeframe)
+    tolerance_ms = expected_interval_ms // 10  # 10% tolerance
+    
+    for i in range(1, len(candles)):
+        actual_interval = candles[i].open_time - candles[i-1].open_time
+        
+        if abs(actual_interval - expected_interval_ms) > tolerance_ms:
+            raise ValueError(
+                f"Implausible timestamp interval at index {i}: "
+                f"expected ~{expected_interval_ms}ms, got {actual_interval}ms "
+                f"(difference: {abs(actual_interval - expected_interval_ms)}ms)"
+            )
+    
+    return True
+
+
+def fetch_and_validate_klines(symbol: str, timeframe: str, limit: int = 500) -> Tuple[List[Candle], Dict[str, any]]:
+    """
+    Fetch klines with comprehensive validation and metadata.
+    
+    Args:
+        symbol: Trading symbol
+        timeframe: Timeframe interval
+        limit: Number of candles to fetch
+        
+    Returns:
+        Tuple of (validated_candles, source_metadata)
+        
+    Raises:
+        ValueError: If validation fails
+    """
+    candles, metadata = fetch_klines_with_source_metadata(symbol, timeframe, limit)
+    
+    # Validate timestamp monotonicity
+    validate_timestamp_monotonicity(candles)
+    
+    # Validate timestamp plausibility
+    validate_timestamp_plausibility(candles, timeframe)
+    
+    # Add validation results to metadata
+    metadata["validation"] = {
+        "timestamp_monotonicity": True,
+        "timestamp_plausibility": True,
+        "data_quality": "validated",
+        "validation_timestamp": int(time.time() * 1000),
+    }
+    
+    return candles, metadata
+
+
+def create_source_metadata_dict(source: str, exchange: str, symbol: str, timeframe: str, 
+                               method: str = "direct", **kwargs) -> Dict[str, any]:
+    """
+    Create standardized source metadata dictionary.
+    
+    Args:
+        source: Data source name
+        exchange: Exchange name
+        symbol: Trading symbol
+        timeframe: Timeframe
+        method: Data collection method
+        **kwargs: Additional metadata fields
+        
+    Returns:
+        Standardized metadata dictionary
+    """
+    metadata = {
+        "source": source.lower(),
+        "exchange": exchange.lower(),
+        "symbol": parse_symbol(symbol),
+        "timeframe": timeframe_to_binance_interval(timeframe),
+        "granularity": timeframe_to_binance_interval(timeframe),
+        "method": method.lower(),
+        "fetch_timestamp": int(time.time() * 1000),
+        "is_real_data": True,
+    }
+    
+    # Add any additional metadata
+    metadata.update(kwargs)
+    
+    return metadata
 
 
 

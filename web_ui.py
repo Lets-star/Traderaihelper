@@ -1,8 +1,16 @@
 #!/usr/bin/env python3
 
+from __future__ import annotations
+
 import json
+import sys
 from datetime import datetime
-import pandas as pd
+
+try:
+    import pandas as pd
+except Exception as e:
+    raise RuntimeError("pandas is required for the web UI. Please install it via 'pip install pandas'.") from e
+
 import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
@@ -2474,7 +2482,6 @@ def main():
                                 })
                             
                             if weight_changes:
-                                import pandas as pd
                                 weight_df = pd.DataFrame(weight_changes)
                                 st.dataframe(weight_df, use_container_width=True, hide_index=True)
                             
@@ -2551,7 +2558,6 @@ def main():
                             })
                         
                         if perf_data:
-                            import pandas as pd
                             perf_df = pd.DataFrame(perf_data)
                             st.dataframe(perf_df, use_container_width=True, hide_index=True)
                         

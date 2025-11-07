@@ -14,7 +14,7 @@ import statistics
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Literal, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Tuple, Union
 
 from ..real_data_validator import validate_real_data_payload, DataValidationError
 from ..timeframes import Timeframe
@@ -25,6 +25,9 @@ from .statistics_optimizer import (
     StatsOptimizerConfig,
     StatisticsOptimizer,
 )
+
+if TYPE_CHECKING:
+    from .data_sources import HistoricalDataSource
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +136,8 @@ class BacktestConfig:
     # Data requirements
     lookback_days: int = 730  # 2 years default
     min_data_points: int = 1000
+    min_data_points_per_timeframe: Optional[Dict[str, int]] = None
+    data_source: Optional[HistoricalDataSource] = None
     validate_real_data: bool = True
     
     # Split configuration
@@ -160,6 +165,7 @@ class BacktestConfig:
         return {
             "lookback_days": self.lookback_days,
             "min_data_points": self.min_data_points,
+            "min_data_points_per_timeframe": self.min_data_points_per_timeframe or {},
             "validate_real_data": self.validate_real_data,
             "split_method": self.split_method,
             "train_ratio": self.train_ratio,

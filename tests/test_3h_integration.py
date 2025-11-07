@@ -101,7 +101,7 @@ class Test3hAggregation:
     
     def test_aggregate_single_candle(self):
         """Test aggregating single candle."""
-        base_time = int(datetime(2024, 1, 1, 0, 0, 0).timestamp() * 1000
+        base_time = int(datetime(2024, 1, 1, 0, 0, 0).timestamp() * 1000)
         
         candles = [
             Candle(
@@ -123,7 +123,7 @@ class Test3hAggregation:
     
     def test_aggregate_already_3h(self):
         """Test aggregating candles that are already 3h."""
-        base_time = int(datetime(2024, 1, 1, 0, 0, 0).timestamp() * 1000
+        base_time = int(datetime(2024, 1, 1, 0, 0, 0).timestamp() * 1000)
         three_hour_ms = 3 * 60 * 60 * 1000
         
         candles_3h = [
@@ -211,7 +211,7 @@ class TestTimestampValidation:
     
     def test_validate_timestamp_monotonicity_success(self):
         """Test successful monotonicity validation."""
-        base_time = int(datetime(2024, 1, 1, 0, 0, 0).timestamp() * 1000
+        base_time = int(datetime(2024, 1, 1, 0, 0, 0).timestamp() * 1000)
         hour_ms = 60 * 60 * 1000
         
         candles = [
@@ -232,7 +232,7 @@ class TestTimestampValidation:
     
     def test_validate_timestamp_monotonicity_failure(self):
         """Test monotonicity validation failure."""
-        base_time = int(datetime(2024, 1, 1, 0, 0, 0).timestamp() * 1000
+        base_time = int(datetime(2024, 1, 1, 0, 0, 0).timestamp() * 1000)
         hour_ms = 60 * 60 * 1000
         
         # Create candles with non-monotonic timestamps
@@ -271,7 +271,7 @@ class TestTimestampValidation:
     
     def test_validate_timestamp_monotonicity_close_times(self):
         """Test monotonicity validation with close times."""
-        base_time = int(datetime(2024, 1, 1, 0, 0, 0).timestamp() * 1000
+        base_time = int(datetime(2024, 1, 1, 0, 0, 0).timestamp() * 1000)
         hour_ms = 60 * 60 * 1000
         
         # Create candles with non-monotonic close times
@@ -301,7 +301,7 @@ class TestTimestampValidation:
     
     def test_validate_timestamp_plausibility_success(self):
         """Test successful plausibility validation."""
-        base_time = int(datetime(2024, 1, 1, 0, 0, 0).timestamp() * 1000
+        base_time = int(datetime(2024, 1, 1, 0, 0, 0).timestamp() * 1000)
         hour_ms = 60 * 60 * 1000
         
         candles = [
@@ -322,7 +322,7 @@ class TestTimestampValidation:
     
     def test_validate_timestamp_plausibility_wrong_interval(self):
         """Test plausibility validation with wrong interval."""
-        base_time = int(datetime(2024, 1, 1, 0, 0, 0).timestamp() * 1000
+        base_time = int(datetime(2024, 1, 1, 0, 0, 0).timestamp() * 1000)
         hour_ms = 60 * 60 * 1000
         half_hour_ms = 30 * 60 * 1000
         
@@ -345,7 +345,7 @@ class TestTimestampValidation:
     
     def test_validate_timestamp_plausibility_tolerance(self):
         """Test plausibility validation with tolerance."""
-        base_time = int(datetime(2024, 1, 1, 0, 0, 0).timestamp() * 1000
+        base_time = int(datetime(2024, 1, 1, 0, 0, 0).timestamp() * 1000)
         hour_ms = 60 * 60 * 1000
         tolerance = hour_ms // 10  # 10% tolerance
         

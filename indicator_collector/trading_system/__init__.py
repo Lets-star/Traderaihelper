@@ -72,6 +72,29 @@ from .trading_system import (
     create_trading_orchestrator,
     create_default_config,
 )
+from .backtester import (
+    BacktestConfig,
+    ParameterSet,
+    BacktestResult,
+    AdaptiveWeightResult,
+    Backtester,
+)
+from .adaptive_weights import (
+    AdaptiveWeightConfig,
+    WeightPerformance,
+    AdaptationReport,
+    AdaptiveWeightManager,
+)
+
+# Payload loader functionality - commented out due to import issues
+# from .payload_loader import (
+#     PayloadProcessor,
+#     load_full_payload,
+#     load_and_process_payload_dict,
+#     validate_and_normalize_payload,
+#     extract_trading_context,
+#     payload_processor,
+# )
 
 __all__ = [
     "AnalyzerContext",
@@ -99,6 +122,15 @@ __all__ = [
     "TradingState",
     "TradingOrchestrator",
     "MacroBlackoutFilter",
+    "BacktestConfig",
+    "ParameterSet",
+    "BacktestResult",
+    "AdaptiveWeightResult",
+    "Backtester",
+    "AdaptiveWeightConfig",
+    "WeightPerformance",
+    "AdaptationReport",
+    "AdaptiveWeightManager",
     "deserialize_signal_payload",
     "parse_collector_payload",
     "serialize_signal_payload",

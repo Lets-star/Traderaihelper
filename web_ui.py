@@ -1,8 +1,16 @@
 #!/usr/bin/env python3
 
+from __future__ import annotations
+
 import json
+import sys
 from datetime import datetime
-import pandas as pd
+
+try:
+    import pandas as pd
+except Exception as e:
+    raise RuntimeError("pandas is required for the web UI. Please install it via 'pip install pandas'.") from e
+
 import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
@@ -56,7 +64,7 @@ POPULAR_TOKENS = [
     "BINANCE:AVAXUSDT",
 ]
 
-TIMEFRAMES = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w"]
+TIMEFRAMES = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "3h", "4h", "6h", "8h", "12h", "1d", "3d", "1w"]
 
 
 
@@ -406,6 +414,9 @@ def main():
         composite_tab,
         patterns_tab,
         trade_tab,
+        automated_signals_tab,
+        backtest_tab,
+        adaptive_tab,
         astrology_tab,
         export_tab,
     ) = st.tabs([
@@ -421,6 +432,9 @@ def main():
         "🧩 Composite Indicators",
         "🌊 Patterns & Waves",
         "🎯 Trade Signals",
+        "🤖 Automated Signals",
+        "🔬 Backtesting",
+        "⚖️ Adaptive Weights",
         "🔮 Astrology",
         "💾 Export",
     ])
@@ -1685,6 +1699,876 @@ def main():
             
             st.markdown("---")
             st.info("⚠️ **Disclaimer:** This is a calculated trade plan based on ATR channels. Always manage your risk and use proper position sizing.")
+    
+    with automated_signals_tab:
+        st.subheader("🤖 Automated Trading Signals")
+        
+        # Auto-load and process the full JSON payload
+        try:
+            # Try to extract trading signals from payload
+            automated_signals = payload.get("automated_signals", {})
+            
+            # Process payload through trading system
+            processed_signal = load_and_process_payload_dict(
+                validated_payload, 
+                selected_timeframe, 
+                validate_real_data=True
+            )
+            
+            # Display the processed signal
+            signal_data = processed_signal
+            
+            # Display main signal
+            col1, col2, col3 = st.columns([2, 1, 1])
+            
+            with col1:
+                signal_type = signal_data.get("signal_type", "NEUTRAL")
+                if signal_type == "BUY":
+                    st.success(f"## 🟢 BUY SIGNAL")
+                elif signal_type == "SELL":
+                    st.error(f"## 🔴 SELL SIGNAL")
+                else:
+                    st.info(f"## ⚪ NEUTRAL")
+            
+            with col2:
+                confidence = signal_data.get("confidence", 0.0)
+                confidence_pct = confidence * 100
+                if confidence > 0.7:
+                    st.metric("Confidence", f"{confidence_pct:.1f}%", "🟢 High")
+                elif confidence > 0.5:
+                    st.metric("Confidence", f"{confidence_pct:.1f}%", "🟡 Medium")
+                else:
+                    st.metric("Confidence", f"{confidence_pct:.1f}%", "⚪ Low")
+            
+            with col3:
+                timestamp = signal_data.get("timestamp", 0)
+                if timestamp:
+                    from datetime import datetime
+                    signal_time = datetime.fromtimestamp(timestamp / 1000).strftime("%H:%M:%S")
+                    st.metric("Signal Time", signal_time)
+            
+            st.markdown("---")
+            
+            # Display processing info
+            with st.expander("🔧 Processing Information", expanded=False):
+                processing_info = signal_data.get("metadata", {}).get("payload_processor", {})
+                if processing_info:
+                    st.write(f"**Processor:** {processing_info}")
+                    st.write(f"**Timeframe Used:** {signal_data.get('metadata', {}).get('timeframe_used', 'Unknown')}")
+                    st.write(f"**Real Data Validated:** {signal_data.get('metadata', {}).get('real_data_validated', False)}")
+                    st.write(f"**Source Data Quality:** {signal_data.get('metadata', {}).get('source_data_quality', 'Unknown')}")
+            
+        except Exception as e:
+            st.error(f"❌ Error processing automated signals: {str(e)}")
+            
+            # Fallback to original display if processing fails
+            automated_signals = payload.get("automated_signals", {})
+            trading_signals_section = payload.get("trading_signals", {})
+            
+            if not automated_signals and not trading_signals_section:
+                # Check if there's signal data in advanced section
+                advanced = payload.get("advanced", {})
+                if advanced and advanced.get("trade_plan"):
+                    st.info("No detailed automated signals data available. Trading system requires explicit JSON signals output.")
+                    st.markdown("To enable this tab fully, ensure the trading system exports signals with position plans, optimization stats, and holding horizon estimates.")
+                else:
+                    st.warning("No automated signals data available for this analysis. Run the trading system analyzer to generate signals.")
+            else:
+                # Display signal data if available
+                signal_data = automated_signals or trading_signals_section
+                
+                # Display main signal
+                col1, col2, col3 = st.columns([2, 1, 1])
+                
+                with col1:
+                    signal_type = signal_data.get("signal_type", "NEUTRAL")
+                    if signal_type == "BUY":
+                        st.success(f"## 🟢 BUY SIGNAL")
+                    elif signal_type == "SELL":
+                        st.error(f"## 🔴 SELL SIGNAL")
+                    else:
+                        st.info(f"## ⚪ NEUTRAL")
+                
+                with col2:
+                    confidence = signal_data.get("confidence", 0.0)
+                    confidence_pct = confidence * 100
+                    if confidence > 0.7:
+                        st.metric("Confidence", f"{confidence_pct:.1f}%", "🟢 High")
+                    elif confidence > 0.5:
+                        st.metric("Confidence", f"{confidence_pct:.1f}%", "🟡 Medium")
+                    else:
+                        st.metric("Confidence", f"{confidence_pct:.1f}%", "⚪ Low")
+                
+                with col3:
+                    timestamp = signal_data.get("timestamp", 0)
+                    if timestamp:
+                        from datetime import datetime
+                        signal_time = datetime.fromtimestamp(timestamp / 1000).strftime("%H:%M:%S")
+                        st.metric("Signal Time", signal_time)
+                
+                st.markdown("---")
+        
+        # Continue with the rest of the signal display (factor analysis, position plan, etc.)
+        if 'signal_data' in locals() and signal_data:
+            
+            # Factor Analysis
+            factors = signal_data.get("factors", [])
+            if factors:
+                st.markdown("### 📊 Factor Analysis")
+                
+                factors_data = []
+                for factor in factors:
+                    if isinstance(factor, dict):
+                        factors_data.append({
+                            "Factor": factor.get("factor_name", "Unknown"),
+                            "Score": f"{factor.get('score', 0):.2f}",
+                            "Weight": f"{factor.get('weight', 1.0):.2f}",
+                            "Emoji": factor.get("emoji", "⚪"),
+                            "Description": factor.get("description", ""),
+                        })
+                
+                if factors_data:
+                    factors_df = pd.DataFrame(factors_data)
+                    st.dataframe(factors_df, use_container_width=True, hide_index=True)
+            
+            st.markdown("---")
+            
+            # Position Plan
+            position_plan = signal_data.get("position_plan", {})
+            if position_plan:
+                st.markdown("### 💼 Position Plan")
+                
+                plan_col1, plan_col2, plan_col3, plan_col4 = st.columns(4)
+                
+                entry_price = position_plan.get("entry_price", 0.0)
+                with plan_col1:
+                    st.metric("Entry Price", f"${entry_price:.4f}")
+                
+                position_size = position_plan.get("position_size_usd", 0.0)
+                with plan_col2:
+                    st.metric("Position Size", f"${position_size:.2f}" if position_size else "N/A")
+                
+                direction = position_plan.get("direction", "N/A")
+                with plan_col3:
+                    st.metric("Direction", direction.upper() if direction else "N/A")
+                
+                leverage = position_plan.get("leverage", 1.0)
+                with plan_col4:
+                    st.metric("Leverage", f"{leverage:.1f}x" if leverage else "N/A")
+                
+                st.markdown("#### TP/SL Ladder")
+                
+                ladder_col1, ladder_col2 = st.columns(2)
+                
+                with ladder_col1:
+                    stop_loss = position_plan.get("stop_loss", 0.0)
+                    st.write(f"**Stop Loss:** ${stop_loss:.4f}" if stop_loss else "**Stop Loss:** N/A")
+                    
+                    if entry_price and stop_loss:
+                        risk_distance = abs(entry_price - stop_loss)
+                        risk_pct = (risk_distance / entry_price) * 100
+                        st.write(f"Risk Distance: ${risk_distance:.4f} ({risk_pct:.2f}%)")
+                
+                with ladder_col2:
+                    take_profit_levels = position_plan.get("take_profit_levels", [])
+                    if take_profit_levels:
+                        for idx, tp_level in enumerate(take_profit_levels, 1):
+                            if entry_price and tp_level:
+                                profit_pct = ((tp_level - entry_price) / entry_price) * 100
+                                st.write(f"TP{idx}: ${tp_level:.4f} ({profit_pct:+.2f}%)")
+                    else:
+                        st.write("No TP levels defined")
+                
+                # Risk/Reward metrics
+                if position_plan.get("risk_reward_ratio"):
+                    rrr = position_plan.get("risk_reward_ratio")
+                    st.markdown(f"**Risk/Reward Ratio:** {rrr:.2f}:1")
+                
+                if position_plan.get("max_risk_pct"):
+                    max_risk = position_plan.get("max_risk_pct")
+                    st.markdown(f"**Max Risk %:** {max_risk * 100:.2f}%")
+            
+            st.markdown("---")
+            
+            # Holding Horizon
+            if signal_data.get("holding_horizon_bars"):
+                holding_horizon = signal_data.get("holding_horizon_bars")
+                st.markdown("### ⏱️ Holding Horizon")
+                st.info(f"**Estimated Holding Period:** {holding_horizon} bars")
+            
+            # Rationale
+            explanation = signal_data.get("explanation", {})
+            if explanation:
+                st.markdown("### 📝 Signal Rationale")
+                
+                primary_reason = explanation.get("primary_reason", "")
+                if primary_reason:
+                    st.markdown(f"**Primary Reason:** {primary_reason}")
+                
+                supporting_factors = explanation.get("supporting_factors", [])
+                if supporting_factors:
+                    st.markdown("**Supporting Factors:**")
+                    for factor in supporting_factors:
+                        st.write(f"• {factor}")
+                
+                risk_factors = explanation.get("risk_factors", [])
+                if risk_factors:
+                    st.markdown("**Risk Factors:**")
+                    for risk in risk_factors:
+                        st.write(f"⚠️ {risk}")
+                
+                market_context = explanation.get("market_context", "")
+                if market_context:
+                    st.markdown(f"**Market Context:** {market_context}")
+            
+            st.markdown("---")
+            
+            # Cancellation Reasons (if signal was rejected)
+            if signal_data.get("cancellation_reasons"):
+                cancellation_reasons = signal_data.get("cancellation_reasons", [])
+                st.warning("### ⛔ Signal Rejection Reasons")
+                for reason in cancellation_reasons:
+                    st.write(f"• {reason}")
+            
+            st.markdown("---")
+            
+            # Performance Metrics
+            optimization_stats = signal_data.get("optimization_stats", {})
+            if optimization_stats:
+                st.markdown("### 📈 Performance Metrics")
+                
+                perf_col1, perf_col2, perf_col3, perf_col4 = st.columns(4)
+                
+                with perf_col1:
+                    win_rate = optimization_stats.get("backtest_win_rate")
+                    if win_rate is not None:
+                        st.metric("Win Rate", f"{win_rate:.1f}%")
+                
+                with perf_col2:
+                    profit_factor = optimization_stats.get("profit_factor")
+                    if profit_factor is not None:
+                        st.metric("Profit Factor", f"{profit_factor:.2f}")
+                
+                with perf_col3:
+                    sharpe_ratio = optimization_stats.get("sharpe_ratio")
+                    if sharpe_ratio is not None:
+                        st.metric("Sharpe Ratio", f"{sharpe_ratio:.2f}")
+                
+                with perf_col4:
+                    total_signals = optimization_stats.get("total_signals", 0)
+                    st.metric("Total Signals", total_signals)
+                
+                # Additional metrics
+                perf_extra_col1, perf_extra_col2, perf_extra_col3 = st.columns(3)
+                
+                with perf_extra_col1:
+                    avg_profit = optimization_stats.get("avg_profit_pct")
+                    if avg_profit is not None:
+                        st.metric("Avg Profit %", f"{avg_profit:.2f}%")
+                
+                with perf_extra_col2:
+                    avg_loss = optimization_stats.get("avg_loss_pct")
+                    if avg_loss is not None:
+                        st.metric("Avg Loss %", f"{avg_loss:.2f}%")
+                
+                with perf_extra_col3:
+                    profitable = optimization_stats.get("profitable_signals", 0)
+                    losing = optimization_stats.get("losing_signals", 0)
+                    st.metric("Profitable Signals", f"{profitable}/{profitable + losing}")
+            
+            st.markdown("---")
+            st.info("💡 **Note:** This automated signals tab displays trading system analysis. Ensure your trading system exports signals in the expected JSON format for full functionality.")
+    
+    with backtest_tab:
+        st.subheader("🔬 Backtesting Engine")
+        
+        # Import backtesting components
+        try:
+            from indicator_collector.trading_system import (
+                Backtester, BacktestConfig, ParameterSet, 
+                PerformanceKPIs, BacktestResult
+            )
+            
+            st.markdown("""
+            ### 🎯 Backtesting Configuration
+            
+            Configure and run backtests on historical data to validate trading strategies
+            and optimize parameters for target performance metrics.
+            """)
+            
+            # Backtest configuration
+            with st.expander("⚙️ Backtest Configuration", expanded=True):
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    lookback_days = st.number_input(
+                        "Lookback Period (days)", 
+                        min_value=30, 
+                        max_value=3650, 
+                        value=730,
+                        help="Number of days of historical data to use"
+                    )
+                    split_method = st.selectbox(
+                        "Data Split Method",
+                        ["walk_forward", "time_split", "k_fold"],
+                        index=0,
+                        help="Method for splitting training and test data"
+                    )
+                    train_ratio = st.slider(
+                        "Training Ratio", 
+                        min_value=0.5, 
+                        max_value=0.9, 
+                        value=0.7,
+                        help="Proportion of data used for training"
+                    )
+                
+                with col2:
+                    target_win_rate = st.slider(
+                        "Target Win Rate", 
+                        min_value=0.3, 
+                        max_value=0.9, 
+                        value=0.55,
+                        help="Target win rate for optimization"
+                    )
+                    target_profit_factor = st.slider(
+                        "Target Profit Factor", 
+                        min_value=1.0, 
+                        max_value=3.0, 
+                        value=1.5,
+                        help="Target profit factor (profit/loss ratio)"
+                    )
+                    target_sharpe = st.slider(
+                        "Target Sharpe Ratio", 
+                        min_value=0.5, 
+                        max_value=3.0, 
+                        value=1.0,
+                        help="Target Sharpe ratio for risk-adjusted returns"
+                    )
+            
+            # Parameter configuration
+            with st.expander("🎛️ Parameter Configuration", expanded=True):
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.markdown("**Signal Weights**")
+                    technical_weight = st.slider("Technical Analysis", 0.0, 1.0, 0.4, 0.05)
+                    volume_weight = st.slider("Volume Analysis", 0.0, 1.0, 0.3, 0.05)
+                    sentiment_weight = st.slider("Sentiment Analysis", 0.0, 1.0, 0.2, 0.05)
+                    structure_weight = st.slider("Market Structure", 0.0, 1.0, 0.1, 0.05)
+                
+                with col2:
+                    st.markdown("**Risk Parameters**")
+                    stop_loss_pct = st.slider("Stop Loss %", 0.5, 5.0, 2.0, 0.5)
+                    take_profit_pct = st.slider("Take Profit %", 1.0, 10.0, 4.0, 0.5)
+                    max_position_size = st.slider("Max Position Size %", 0.01, 0.2, 0.05, 0.01)
+                    confirmation_threshold = st.slider("Confirmation Threshold", 0.3, 0.9, 0.6, 0.1)
+            
+            # Optimization settings
+            with st.expander("🔍 Optimization Settings"):
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    search_method = st.selectbox(
+                        "Search Method",
+                        ["grid", "random"],
+                        index=0,
+                        help="Method for parameter optimization"
+                    )
+                    max_iterations = st.number_input(
+                        "Max Iterations",
+                        min_value=5,
+                        max_value=200,
+                        value=20,
+                        help="Maximum number of optimization iterations"
+                    )
+                
+                with col2:
+                    validate_real_data = st.checkbox(
+                        "Validate Real Data Only",
+                        value=True,
+                        help="Only use validated real market data"
+                    )
+                    min_confirmations = st.number_input(
+                        "Min Confirmation Categories",
+                        min_value=1,
+                        max_value=5,
+                        value=3,
+                        help="Minimum number of confirming factors required"
+                    )
+            
+            # Run backtest button
+            run_backtest = st.button("🚀 Run Backtest", type="primary", use_container_width=True)
+            
+            if run_backtest:
+                with st.spinner("Running backtest..."):
+                    try:
+                        # Create backtest configuration
+                        config = BacktestConfig(
+                            lookback_days=int(lookback_days),
+                            split_method=split_method,
+                            train_ratio=train_ratio,
+                            target_win_rate=target_win_rate,
+                            target_profit_factor=target_profit_factor,
+                            target_sharpe=target_sharpe,
+                            search_method=search_method,
+                            max_iterations=int(max_iterations),
+                            validate_real_data=validate_real_data,
+                            min_confirmation_categories=int(min_confirmations),
+                        )
+                        
+                        # Create parameter set
+                        total_weight = technical_weight + volume_weight + sentiment_weight + structure_weight
+                        if total_weight > 0:
+                            weights = {
+                                "technical": technical_weight / total_weight,
+                                "volume": volume_weight / total_weight,
+                                "sentiment": sentiment_weight / total_weight,
+                                "market_structure": structure_weight / total_weight,
+                            }
+                        else:
+                            weights = {"technical": 0.25, "volume": 0.25, "sentiment": 0.25, "market_structure": 0.25}
+                        
+                        params = ParameterSet(
+                            weights=weights,
+                            stop_loss_pct=stop_loss_pct,
+                            take_profit_pct=take_profit_pct,
+                            max_position_size_pct=max_position_size,
+                            confirmation_threshold=confirmation_threshold,
+                        )
+                        
+                        # Create backtester and run
+                        backtester = Backtester(config)
+                        
+                        # Create sample historical data (in real implementation, this would load from file/database)
+                        st.info("📊 Using sample historical data for demonstration. In production, this would load actual historical signals.")
+                        
+                        # Generate sample data
+                        from datetime import datetime, timedelta
+                        import random
+                        
+                        sample_payloads = []
+                        base_timestamp = int((datetime.now() - timedelta(days=lookback_days)).timestamp() * 1000)
+                        
+                        for i in range(min(500, int(lookback_days * 0.7))):
+                            signal_type = random.choice(["BUY", "SELL", "NEUTRAL"])
+                            price = 50000 + random.uniform(-5000, 5000)
+                            
+                            sample_payload = {
+                                "timestamp": base_timestamp + i * 86400000,  # Daily
+                                "signal_type": signal_type,
+                                "entry_price": price,
+                                "factors": [
+                                    {"factor_name": "technical", "score": random.uniform(0.3, 0.9)},
+                                    {"factor_name": "volume", "score": random.uniform(0.3, 0.9)},
+                                    {"factor_name": "sentiment", "score": random.uniform(0.3, 0.9)},
+                                ] if signal_type != "NEUTRAL" else [],
+                            }
+                            sample_payloads.append(sample_payload)
+                        
+                        # Load data
+                        backtester.load_historical_data(sample_payloads)
+                        
+                        # Run backtest
+                        result = backtester.run_backtest(params)
+                        
+                        # Display results
+                        st.success("✅ Backtest completed successfully!")
+                        
+                        # Performance metrics
+                        st.markdown("### 📊 Performance Results")
+                        
+                        col1, col2, col3, col4 = st.columns(4)
+                        
+                        with col1:
+                            st.metric(
+                                "Win Rate",
+                                f"{result.test_kpis.win_rate:.3f}",
+                                delta=f"{result.test_kpis.win_rate - target_win_rate:+.3f}",
+                                delta_color="normal" if result.test_kpis.win_rate >= target_win_rate else "inverse"
+                            )
+                        
+                        with col2:
+                            st.metric(
+                                "Profit Factor",
+                                f"{result.test_kpis.profit_factor:.3f}",
+                                delta=f"{result.test_kpis.profit_factor - target_profit_factor:+.3f}",
+                                delta_color="normal" if result.test_kpis.profit_factor >= target_profit_factor else "inverse"
+                            )
+                        
+                        with col3:
+                            st.metric(
+                                "Sharpe Ratio",
+                                f"{result.test_kpis.sharpe_ratio:.3f}",
+                                delta=f"{result.test_kpis.sharpe_ratio - target_sharpe:+.3f}",
+                                delta_color="normal" if result.test_kpis.sharpe_ratio >= target_sharpe else "inverse"
+                            )
+                        
+                        with col4:
+                            st.metric(
+                                "Max Drawdown",
+                                f"{result.test_kpis.max_drawdown_pct:.3f}",
+                                delta=None,
+                                delta_color="normal"
+                            )
+                        
+                        # Detailed metrics
+                        st.markdown("### 📈 Detailed Metrics")
+                        
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            st.markdown("**Training Performance**")
+                            st.write(f"• Total Signals: {result.train_kpis.total_signals}")
+                            st.write(f"• Profitable: {result.train_kpis.profitable_signals}")
+                            st.write(f"• Win Rate: {result.train_kpis.win_rate:.3f}")
+                            st.write(f"• Profit Factor: {result.train_kpis.profit_factor:.3f}")
+                            st.write(f"• Avg Profit: {result.train_kpis.avg_profit_pct:.3f}%")
+                            st.write(f"• Avg Loss: {result.train_kpis.avg_loss_pct:.3f}%")
+                        
+                        with col2:
+                            st.markdown("**Test Performance**")
+                            st.write(f"• Total Signals: {result.test_kpis.total_signals}")
+                            st.write(f"• Profitable: {result.test_kpis.profitable_signals}")
+                            st.write(f"• Win Rate: {result.test_kpis.win_rate:.3f}")
+                            st.write(f"• Profit Factor: {result.test_kpis.profit_factor:.3f}")
+                            st.write(f"• Avg Profit: {result.test_kpis.avg_profit_pct:.3f}%")
+                            st.write(f"• Avg Loss: {result.test_kpis.avg_loss_pct:.3f}%")
+                        
+                        # Target achievement
+                        st.markdown("### 🎯 Target Achievement")
+                        targets_met = (
+                            result.test_kpis.win_rate >= target_win_rate and
+                            result.test_kpis.profit_factor >= target_profit_factor and
+                            result.test_kpis.sharpe_ratio >= target_sharpe and
+                            result.test_kpis.max_drawdown_pct <= 0.25
+                        )
+                        
+                        if targets_met:
+                            st.success("🎉 All targets achieved!")
+                        else:
+                            st.warning("⚠️ Some targets not met. Consider parameter optimization.")
+                        
+                        # Optimization score
+                        st.markdown("### 📊 Optimization Score")
+                        st.progress(result.optimization_score)
+                        st.write(f"Score: {result.optimization_score:.4f}")
+                        
+                        # Execution info
+                        st.markdown("### ℹ️ Execution Info")
+                        st.write(f"• Execution Time: {result.execution_time_seconds:.2f} seconds")
+                        st.write(f"• Data Points Used: {len(sample_payloads)}")
+                        st.write(f"• Split Method: {split_method}")
+                        st.write(f"• Search Method: {search_method}")
+                        
+                    except Exception as e:
+                        st.error(f"❌ Backtest failed: {str(e)}")
+                        import traceback
+                        st.code(traceback.format_exc())
+        
+        except ImportError as e:
+            st.error(f"❌ Backtesting components not available: {str(e)}")
+            st.info("Please ensure the trading system backtesting modules are properly installed.")
+    
+    with adaptive_tab:
+        st.subheader("⚖️ Adaptive Weight Management")
+        
+        try:
+            from indicator_collector.trading_system import (
+                AdaptiveWeightManager, AdaptiveWeightConfig,
+                Backtester, ParameterSet
+            )
+            
+            st.markdown("""
+            ### 🧠 Adaptive Weight System
+            
+            Automatically adjust signal weights based on rolling performance metrics
+            to optimize trading system performance over time.
+            """)
+            
+            # Adaptive weight configuration
+            with st.expander("⚙️ Adaptive Configuration", expanded=True):
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    rolling_window = st.number_input(
+                        "Rolling Window (days)",
+                        min_value=7,
+                        max_value=90,
+                        value=30,
+                        help="Number of days to consider for performance tracking"
+                    )
+                    min_signals = st.number_input(
+                        "Min Signals for Adaptation",
+                        min_value=10,
+                        max_value=200,
+                        value=50,
+                        help="Minimum signals required before adapting weights"
+                    )
+                    adaptation_strategy = st.selectbox(
+                        "Adaptation Strategy",
+                        ["performance_based", "volatility_adjusted", "hybrid"],
+                        index=2,
+                        help="Method for calculating weight adjustments"
+                    )
+                
+                with col2:
+                    target_win_rate = st.slider(
+                        "Target Win Rate",
+                        min_value=0.3,
+                        max_value=0.9,
+                        value=0.55,
+                        help="Target win rate for adaptation triggers"
+                    )
+                    target_profit_factor = st.slider(
+                        "Target Profit Factor",
+                        min_value=1.0,
+                        max_value=3.0,
+                        value=1.5,
+                        help="Target profit factor for adaptation triggers"
+                    )
+                    adaptation_threshold = st.slider(
+                        "Adaptation Threshold",
+                        min_value=0.01,
+                        max_value=0.2,
+                        value=0.05,
+                        help="Minimum performance improvement to trigger adaptation"
+                    )
+            
+            # Current weights display
+            with st.expander("📊 Current Weights", expanded=True):
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.markdown("**Initial Weights**")
+                    tech_weight = st.slider("Technical", 0.0, 1.0, 0.4, 0.05)
+                    vol_weight = st.slider("Volume", 0.0, 1.0, 0.3, 0.05)
+                    sent_weight = st.slider("Sentiment", 0.0, 1.0, 0.2, 0.05)
+                    struct_weight = st.slider("Market Structure", 0.0, 1.0, 0.1, 0.05)
+                
+                with col2:
+                    st.markdown("**Weight Constraints**")
+                    min_weight = st.slider("Min Weight per Factor", 0.01, 0.2, 0.05, 0.01)
+                    max_weight = st.slider("Max Weight per Factor", 0.2, 0.8, 0.5, 0.05)
+                    max_change = st.slider("Max Change %", 0.1, 0.5, 0.3, 0.05)
+            
+            # Run adaptation
+            run_adaptation = st.button("🔄 Run Adaptive Analysis", type="primary", use_container_width=True)
+            
+            if run_adaptation:
+                with st.spinner("Running adaptive weight analysis..."):
+                    try:
+                        # Create adaptive weight manager
+                        config = AdaptiveWeightConfig(
+                            rolling_window_days=int(rolling_window),
+                            min_signals_for_adaptation=int(min_signals),
+                            adaptation_strategy=adaptation_strategy,
+                            target_win_rate=target_win_rate,
+                            target_profit_factor=target_profit_factor,
+                            adaptation_threshold=adaptation_threshold,
+                            min_weight_per_factor=min_weight,
+                            max_weight_per_factor=max_weight,
+                            max_weight_change_pct=max_change,
+                        )
+                        
+                        manager = AdaptiveWeightManager(config)
+                        
+                        # Initialize weights
+                        total_weight = tech_weight + vol_weight + sent_weight + struct_weight
+                        if total_weight > 0:
+                            initial_weights = {
+                                "technical": tech_weight / total_weight,
+                                "volume": vol_weight / total_weight,
+                                "sentiment": sent_weight / total_weight,
+                                "market_structure": struct_weight / total_weight,
+                            }
+                        else:
+                            initial_weights = {"technical": 0.25, "volume": 0.25, "sentiment": 0.25, "market_structure": 0.25}
+                        
+                        manager.initialize_weights(initial_weights)
+                        
+                        # Create sample signal outcomes (in real implementation, this would be historical data)
+                        import random
+                        from datetime import datetime, timedelta
+                        
+                        outcomes = []
+                        base_timestamp = int((datetime.now() - timedelta(days=rolling_window)).timestamp() * 1000)
+                        
+                        for i in range(int(min_signals * 2)):  # Generate more than minimum
+                            success = random.random() > 0.4  # 60% win rate
+                            pnl = random.uniform(1.0, 5.0) if success else random.uniform(-3.0, -0.5)
+                            
+                            outcome = {
+                                "signal_type": random.choice(["BUY", "SELL"]),
+                                "entry_price": 50000 + random.uniform(-5000, 5000),
+                                "exit_price": None,
+                                "entry_timestamp": base_timestamp + i * 86400000,
+                                "exit_timestamp": base_timestamp + i * 86400000 + 86400000,
+                                "pnl_pct": pnl,
+                                "holding_bars": random.randint(1, 100),
+                                "success": success,
+                                "factors": [
+                                    {"factor_name": "technical", "score": random.uniform(0.3, 0.9)},
+                                    {"factor_name": "volume", "score": random.uniform(0.3, 0.9)},
+                                    {"factor_name": "sentiment", "score": random.uniform(0.3, 0.9)},
+                                ],
+                            }
+                            outcomes.append(outcome)
+                        
+                        # Update manager with outcomes
+                        from indicator_collector.trading_system.statistics_optimizer import SignalOutcome
+                        signal_outcomes = []
+                        
+                        for outcome_data in outcomes:
+                            outcome = SignalOutcome(
+                                signal_type=outcome_data["signal_type"],
+                                entry_price=outcome_data["entry_price"],
+                                exit_price=outcome_data["exit_price"],
+                                entry_timestamp=outcome_data["entry_timestamp"],
+                                exit_timestamp=outcome_data["exit_timestamp"],
+                                pnl_pct=outcome_data["pnl_pct"],
+                                holding_bars=outcome_data["holding_bars"],
+                                success=outcome_data["success"],
+                                factors=outcome_data["factors"],
+                            )
+                            signal_outcomes.append(outcome)
+                        
+                        manager.update_signal_outcomes(signal_outcomes)
+                        
+                        # Check if adaptation should be performed
+                        should_adapt, reason = manager.should_adapt()
+                        
+                        st.info(f"📊 Adaptation Analysis: {reason}")
+                        
+                        if should_adapt:
+                            # Perform adaptation
+                            adaptation_report = manager.adapt_weights()
+                            
+                            st.success("✅ Weight adaptation completed!")
+                            
+                            # Display adaptation results
+                            st.markdown("### 🔄 Adaptation Results")
+                            
+                            col1, col2 = st.columns(2)
+                            
+                            with col1:
+                                st.markdown("**Adaptation Summary**")
+                                st.write(f"• Reason: {adaptation_report.adaptation_reason}")
+                                st.write(f"• Confidence: {adaptation_report.confidence_score:.3f}")
+                                st.write(f"• Expected Improvement: {adaptation_report.expected_improvement:.4f}")
+                                st.write(f"• Factors Adjusted: {', '.join(adaptation_report.factors_adjusted)}")
+                            
+                            with col2:
+                                st.markdown("**Performance Before**")
+                                before = adaptation_report.performance_before
+                                st.write(f"• Win Rate: {before.win_rate:.3f}")
+                                st.write(f"• Profit Factor: {before.profit_factor:.3f}")
+                                st.write(f"• Sharpe Ratio: {before.sharpe_ratio:.3f}")
+                                st.write(f"• Max Drawdown: {before.max_drawdown_pct:.3f}")
+                            
+                            # Weight changes
+                            st.markdown("### 📊 Weight Changes")
+                            
+                            weight_changes = []
+                            for factor in adaptation_report.factors_adjusted:
+                                old_weight = adaptation_report.original_weights.get(factor, 0)
+                                new_weight = adaptation_report.new_weights.get(factor, 0)
+                                change = new_weight - old_weight
+                                weight_changes.append({
+                                    "Factor": factor.replace("_", " ").title(),
+                                    "Before": f"{old_weight:.3f}",
+                                    "After": f"{new_weight:.3f}",
+                                    "Change": f"{change:+.3f}",
+                                    "Change %": f"{change/old_weight*100:+.1f}%" if old_weight > 0 else "N/A"
+                                })
+                            
+                            if weight_changes:
+                                weight_df = pd.DataFrame(weight_changes)
+                                st.dataframe(weight_df, use_container_width=True, hide_index=True)
+                            
+                            # Performance report
+                            st.markdown("### 📈 Performance Report")
+                            report = manager.generate_performance_report()
+                            
+                            # Summary metrics
+                            summary = report["summary"]
+                            col1, col2, col3, col4 = st.columns(4)
+                            
+                            with col1:
+                                st.metric("Total Signals", summary["total_signals_analyzed"])
+                            with col2:
+                                st.metric("Total Adaptations", summary["total_adaptations"])
+                            with col3:
+                                current_wr = summary["recent_kpis"]["win_rate"]
+                                st.metric("Current Win Rate", f"{current_wr:.3f}")
+                            with col4:
+                                current_pf = summary["recent_kpis"]["profit_factor"]
+                                st.metric("Current Profit Factor", f"{current_pf:.3f}")
+                            
+                            # Performance vs targets
+                            st.markdown("**Performance vs Targets**")
+                            perf_vs_targets = report["performance_vs_targets"]
+                            
+                            for metric, data in perf_vs_targets.items():
+                                current = data["current"]
+                                target = data["target"]
+                                gap = data["gap"]
+                                status = "✅" if gap >= 0 else "❌"
+                                
+                                st.write(f"{status} **{metric.replace('_', ' ').title()}:** {current:.3f} (target: {target:.3f})")
+                            
+                            # Recommendations
+                            st.markdown("### 💡 Recommendations")
+                            recommendations = report["recommendations"]
+                            
+                            for i, rec in enumerate(recommendations, 1):
+                                st.write(f"{i}. {rec}")
+                            
+                        else:
+                            st.info("ℹ️ No adaptation needed at this time.")
+                            
+                            # Display current performance
+                            st.markdown("### 📊 Current Performance")
+                            current_kpis = manager._calculate_recent_kpis()
+                            
+                            col1, col2, col3, col4 = st.columns(4)
+                            
+                            with col1:
+                                st.metric("Win Rate", f"{current_kpis.win_rate:.3f}")
+                            with col2:
+                                st.metric("Profit Factor", f"{current_kpis.profit_factor:.3f}")
+                            with col3:
+                                st.metric("Sharpe Ratio", f"{current_kpis.sharpe_ratio:.3f}")
+                            with col4:
+                                st.metric("Max Drawdown", f"{current_kpis.max_drawdown_pct:.3f}")
+                        
+                        # Display weight performance
+                        st.markdown("### 📊 Factor Performance")
+                        weight_performance = manager.get_weight_performance()
+                        
+                        perf_data = []
+                        for factor_name, perf in weight_performance.items():
+                            perf_data.append({
+                                "Factor": factor_name.replace("_", " ").title(),
+                                "Current Weight": f"{perf.current_weight:.3f}",
+                                "Win Rate": f"{perf.rolling_win_rate:.3f}",
+                                "Profit Factor": f"{perf.rolling_profit_factor:.3f}",
+                                "Sharpe": f"{perf.rolling_sharpe:.3f}",
+                                "Consistency": f"{perf.consistency_score:.3f}",
+                                "Adaptations": perf.adaptation_count,
+                            })
+                        
+                        if perf_data:
+                            perf_df = pd.DataFrame(perf_data)
+                            st.dataframe(perf_df, use_container_width=True, hide_index=True)
+                        
+                    except Exception as e:
+                        st.error(f"❌ Adaptive analysis failed: {str(e)}")
+                        import traceback
+                        st.code(traceback.format_exc())
+        
+        except ImportError as e:
+            st.error(f"❌ Adaptive weight components not available: {str(e)}")
+            st.info("Please ensure the adaptive weight management modules are properly installed.")
     
     with astrology_tab:
         st.subheader("🔮 Astrology & Celestial Cycles")

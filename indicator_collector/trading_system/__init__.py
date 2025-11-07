@@ -81,6 +81,13 @@ from .backtester import (
     Backtester,
     indicator_defaults_for,
 )
+from .data_sources import (
+    HistoricalDataSource,
+    BinanceKlinesSource,
+    normalize_timestamp,
+    validate_timestamps_monotonic,
+    validate_no_future_timestamps,
+)
 from .adaptive_weights import (
     AdaptiveWeightConfig,
     WeightPerformance,
@@ -140,6 +147,11 @@ __all__ = [
     "AdaptiveWeightResult",
     "Backtester",
     "indicator_defaults_for",
+    "HistoricalDataSource",
+    "BinanceKlinesSource",
+    "normalize_timestamp",
+    "validate_timestamps_monotonic",
+    "validate_no_future_timestamps",
     "AdaptiveWeightConfig",
     "WeightPerformance",
     "AdaptationReport",

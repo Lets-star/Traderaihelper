@@ -59,6 +59,49 @@ class PositionManagerConfig:
             raise ValueError("TP multipliers must be increasing")
         if self.sl_multiplier <= 0:
             raise ValueError("sl_multiplier must be positive")
+    
+    def to_dict(self) -> JsonDict:
+        """Convert to dictionary for serialization."""
+        return {
+            "max_position_size_usd": self.max_position_size_usd,
+            "max_risk_per_trade_pct": self.max_risk_per_trade_pct,
+            "default_leverage": self.default_leverage,
+            "commission_rate": self.commission_rate,
+            "tp1_multiplier": self.tp1_multiplier,
+            "tp2_multiplier": self.tp2_multiplier,
+            "tp3_multiplier": self.tp3_multiplier,
+            "sl_multiplier": self.sl_multiplier,
+            "max_concurrent_same_direction": self.max_concurrent_same_direction,
+            "max_total_positions": self.max_total_positions,
+            "min_holding_bars": self.min_holding_bars,
+            "max_holding_bars": self.max_holding_bars,
+            "target_holding_bars": self.target_holding_bars,
+            "high_volatility_threshold": self.high_volatility_threshold,
+            "low_liquidity_threshold": self.low_liquidity_threshold,
+            "high_risk_score_threshold": self.high_risk_score_threshold,
+        }
+    
+    @classmethod
+    def from_dict(cls, data: JsonDict) -> "PositionManagerConfig":
+        """Create from dictionary."""
+        return cls(
+            max_position_size_usd=float(data.get("max_position_size_usd", 1000.0)),
+            max_risk_per_trade_pct=float(data.get("max_risk_per_trade_pct", 0.02)),
+            default_leverage=float(data.get("default_leverage", 10.0)),
+            commission_rate=float(data.get("commission_rate", 0.0006)),
+            tp1_multiplier=float(data.get("tp1_multiplier", 1.5)),
+            tp2_multiplier=float(data.get("tp2_multiplier", 3.0)),
+            tp3_multiplier=float(data.get("tp3_multiplier", 5.0)),
+            sl_multiplier=float(data.get("sl_multiplier", 1.0)),
+            max_concurrent_same_direction=int(data.get("max_concurrent_same_direction", 3)),
+            max_total_positions=int(data.get("max_total_positions", 10)),
+            min_holding_bars=int(data.get("min_holding_bars", 5)),
+            max_holding_bars=int(data.get("max_holding_bars", 100)),
+            target_holding_bars=int(data.get("target_holding_bars", 20)),
+            high_volatility_threshold=float(data.get("high_volatility_threshold", 0.05)),
+            low_liquidity_threshold=float(data.get("low_liquidity_threshold", 0.2)),
+            high_risk_score_threshold=float(data.get("high_risk_score_threshold", 0.8)),
+        )
 
 
 @dataclass
@@ -106,6 +149,30 @@ class DiversificationGuard:
         elif direction == "short" and symbol in self.short_positions:
             self.short_positions.remove(symbol)
             self.total_positions = max(0, self.total_positions - 1)
+    
+    def get_positions_by_direction(self, direction: Literal["long", "short"]) -> List[str]:
+        """Get positions by direction."""
+        if direction == "long":
+            return list(self.long_positions)
+        else:
+            return list(self.short_positions)
+    
+    def to_dict(self) -> JsonDict:
+        """Convert to dictionary for serialization."""
+        return {
+            "long_positions": list(self.long_positions),
+            "short_positions": list(self.short_positions),
+            "total_positions": self.total_positions,
+        }
+    
+    @classmethod
+    def from_dict(cls, data: JsonDict) -> "DiversificationGuard":
+        """Create from dictionary."""
+        return cls(
+            long_positions=list(data.get("long_positions", [])),
+            short_positions=list(data.get("short_positions", [])),
+            total_positions=int(data.get("total_positions", 0)),
+        )
 
 
 @dataclass

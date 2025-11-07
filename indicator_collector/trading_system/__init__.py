@@ -63,6 +63,15 @@ from .statistics_optimizer import (
     create_stats_optimizer,
     create_synthetic_outcomes,
 )
+from .trading_system import (
+    MacroBlackoutConfig,
+    TradingConfig,
+    TradingState,
+    TradingOrchestrator,
+    MacroBlackoutFilter,
+    create_trading_orchestrator,
+    create_default_config,
+)
 from .backtester import (
     BacktestConfig,
     ParameterSet,
@@ -108,6 +117,11 @@ __all__ = [
     "OptimizationResult",
     "StatsOptimizerConfig",
     "StatisticsOptimizer",
+    "MacroBlackoutConfig",
+    "TradingConfig",
+    "TradingState",
+    "TradingOrchestrator",
+    "MacroBlackoutFilter",
     "BacktestConfig",
     "ParameterSet",
     "BacktestResult",
@@ -144,4 +158,6 @@ __all__ = [
     "validate_tp_sl_spacing",
     "create_stats_optimizer",
     "create_synthetic_outcomes",
+    "create_trading_orchestrator",
+    "create_default_config",
 ]

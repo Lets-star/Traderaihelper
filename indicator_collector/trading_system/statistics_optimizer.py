@@ -25,6 +25,8 @@ class SignalOutcome:
     exit_price: Optional[float] = None
     entry_timestamp: int = 0
     exit_timestamp: Optional[int] = None
+    timestamp: int = 0  # Signal generation timestamp
+    symbol: str = ""   # Trading symbol
     pnl_pct: Optional[float] = None
     holding_bars: Optional[int] = None
     success: Optional[bool] = None
@@ -39,6 +41,8 @@ class SignalOutcome:
             "exit_price": self.exit_price,
             "entry_timestamp": self.entry_timestamp,
             "exit_timestamp": self.exit_timestamp,
+            "timestamp": self.timestamp,
+            "symbol": self.symbol,
             "pnl_pct": self.pnl_pct,
             "holding_bars": self.holding_bars,
             "success": self.success,
@@ -55,6 +59,8 @@ class SignalOutcome:
             exit_price=data.get("exit_price"),
             entry_timestamp=int(data.get("entry_timestamp", 0) or 0),
             exit_timestamp=data.get("exit_timestamp"),
+            timestamp=int(data.get("timestamp", 0) or 0),
+            symbol=str(data.get("symbol", "")),
             pnl_pct=data.get("pnl_pct"),
             holding_bars=data.get("holding_bars"),
             success=data.get("success"),
@@ -102,6 +108,18 @@ class PerformanceKPIs:
             "total_return_pct": self.total_return_pct,
             "volatility_pct": self.volatility_pct,
         }
+    
+    def to_optimization_stats(self) -> OptimizationStats:
+        """Convert to OptimizationStats for compatibility."""
+        return OptimizationStats(
+            backtest_win_rate=self.win_rate,
+            avg_profit_pct=self.avg_profit_pct,
+            avg_loss_pct=self.avg_loss_pct,
+            sharpe_ratio=self.sharpe_ratio,
+            total_signals=self.total_signals,
+            profitable_signals=self.profitable_signals,
+            losing_signals=self.losing_signals,
+        )
 
 
 @dataclass
@@ -179,6 +197,21 @@ class StatsOptimizerConfig:
             "enable_volatility_filter": self.enable_volatility_filter,
             "max_volatility_pct": self.max_volatility_pct,
         }
+    
+    @classmethod
+    def from_dict(cls, data: JsonDict) -> "StatsOptimizerConfig":
+        """Create from dictionary."""
+        return cls(
+            min_win_rate_target=float(data.get("min_win_rate_target", 0.55)),
+            min_profit_factor_target=float(data.get("min_profit_factor_target", 1.5)),
+            max_drawdown_target=float(data.get("max_drawdown_target", 0.20)),
+            min_sharpe_target=float(data.get("min_sharpe_target", 1.0)),
+            min_signals_for_analysis=int(data.get("min_signals_for_analysis", 30)),
+            weight_adjustment_factor=float(data.get("weight_adjustment_factor", 0.1)),
+            factor_performance_window=int(data.get("factor_performance_window", 50)),
+            enable_volatility_filter=bool(data.get("enable_volatility_filter", True)),
+            max_volatility_pct=float(data.get("max_volatility_pct", 2.0)),
+        )
 
 
 class StatisticsOptimizer:

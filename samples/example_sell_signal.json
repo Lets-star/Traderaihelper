@@ -1,0 +1,102 @@
+{
+  "signal_type": "SELL",
+  "confidence": 0.71,
+  "timestamp": 1699010000000,
+  "factors": [
+    {
+      "factor_name": "rsi_overbought",
+      "score": 82.0,
+      "weight": 2.0,
+      "description": "RSI at 72 (overbought threshold: 70)",
+      "emoji": "🔴",
+      "metadata": {
+        "rsi_value": 72.5,
+        "threshold": 70.0
+      }
+    },
+    {
+      "factor_name": "bearish_divergence_macd",
+      "score": 76.0,
+      "weight": 1.8,
+      "description": "MACD bearish divergence: price higher but MACD lower",
+      "emoji": "🔴",
+      "metadata": {
+        "prev_macd": 0.25,
+        "current_macd": 0.18,
+        "price_movement": 1.2
+      }
+    },
+    {
+      "factor_name": "resistance_rejection",
+      "score": 70.0,
+      "weight": 1.6,
+      "description": "Price rejected from 47200 resistance 3 times",
+      "emoji": "🔴",
+      "metadata": {
+        "resistance_level": 47200.0,
+        "rejections": 3,
+        "current_price": 47050.0
+      }
+    },
+    {
+      "factor_name": "volume_divergence",
+      "score": 65.0,
+      "weight": 1.2,
+      "description": "Volume declining on up moves",
+      "emoji": "🟡",
+      "metadata": {
+        "recent_volume": 95000,
+        "avg_volume": 110000,
+        "trend": "declining"
+      }
+    },
+    {
+      "factor_name": "liquidity_concern",
+      "score": 55.0,
+      "weight": 0.8,
+      "description": "Bid-ask spread widening, market makers reducing depth",
+      "emoji": "⚪",
+      "metadata": {
+        "spread_bps": 15.0,
+        "orderbook_depth_5": 500000.0
+      }
+    }
+  ],
+  "position_plan": {
+    "entry_price": 47050.0,
+    "stop_loss_price": 47600.0,
+    "take_profit_levels": [46400.0, 45600.0, 44800.0],
+    "position_size_usd": 1500.0,
+    "leverage": 1.0,
+    "direction": "SHORT",
+    "risk_reward_ratio": 3.0,
+    "max_risk_pct": 1.5
+  },
+  "explanation": {
+    "primary_reason": "RSI overbought with bearish MACD divergence at resistance",
+    "supporting_factors": [
+      "Triple rejection from 47200 resistance level",
+      "Volume declining while price rises (weak momentum)",
+      "Previous support at 46400 likely to hold",
+      "4h chart shows bearish engulfing pattern"
+    ],
+    "risk_factors": [
+      "Potential breakout above resistance if SL hit",
+      "News or positive sentiment could push higher",
+      "Wait for confirmation break below 46800",
+      "Market maker activity unclear"
+    ],
+    "market_context": "Bearish reversal pattern forming at resistance, momentum fading"
+  },
+  "optimization_stats": {
+    "backtest_win_rate": 65.2,
+    "avg_profit_pct": 2.1,
+    "avg_loss_pct": -1.0,
+    "sharpe_ratio": 1.6,
+    "profit_factor": 2.8,
+    "total_signals": 143,
+    "profitable_signals": 93,
+    "losing_signals": 50
+  },
+  "cancellation_triggers": []
+}

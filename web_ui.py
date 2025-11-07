@@ -56,7 +56,7 @@ POPULAR_TOKENS = [
     "BINANCE:AVAXUSDT",
 ]
 
-TIMEFRAMES = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w"]
+TIMEFRAMES = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "3h", "4h", "6h", "8h", "12h", "1d", "3d", "1w"]
 
 
 
@@ -1691,21 +1691,20 @@ def main():
     with automated_signals_tab:
         st.subheader("🤖 Automated Trading Signals")
         
-        # Try to extract trading signals from payload
-        automated_signals = payload.get("automated_signals", {})
-        trading_signals_section = payload.get("trading_signals", {})
-        
-        if not automated_signals and not trading_signals_section:
-            # Check if there's signal data in advanced section
-            advanced = payload.get("advanced", {})
-            if advanced and advanced.get("trade_plan"):
-                st.info("No detailed automated signals data available. Trading system requires explicit JSON signals output.")
-                st.markdown("To enable this tab fully, ensure the trading system exports signals with position plans, optimization stats, and holding horizon estimates.")
-            else:
-                st.warning("No automated signals data available for this analysis. Run the trading system analyzer to generate signals.")
-        else:
-            # Display signal data if available
-            signal_data = automated_signals or trading_signals_section
+        # Auto-load and process the full JSON payload
+        try:
+            # Try to extract trading signals from payload
+            automated_signals = payload.get("automated_signals", {})
+            
+            # Process payload through trading system
+            processed_signal = load_and_process_payload_dict(
+                validated_payload, 
+                selected_timeframe, 
+                validate_real_data=True
+            )
+            
+            # Display the processed signal
+            signal_data = processed_signal
             
             # Display main signal
             col1, col2, col3 = st.columns([2, 1, 1])
@@ -1737,6 +1736,68 @@ def main():
                     st.metric("Signal Time", signal_time)
             
             st.markdown("---")
+            
+            # Display processing info
+            with st.expander("🔧 Processing Information", expanded=False):
+                processing_info = signal_data.get("metadata", {}).get("payload_processor", {})
+                if processing_info:
+                    st.write(f"**Processor:** {processing_info}")
+                    st.write(f"**Timeframe Used:** {signal_data.get('metadata', {}).get('timeframe_used', 'Unknown')}")
+                    st.write(f"**Real Data Validated:** {signal_data.get('metadata', {}).get('real_data_validated', False)}")
+                    st.write(f"**Source Data Quality:** {signal_data.get('metadata', {}).get('source_data_quality', 'Unknown')}")
+            
+        except Exception as e:
+            st.error(f"❌ Error processing automated signals: {str(e)}")
+            
+            # Fallback to original display if processing fails
+            automated_signals = payload.get("automated_signals", {})
+            trading_signals_section = payload.get("trading_signals", {})
+            
+            if not automated_signals and not trading_signals_section:
+                # Check if there's signal data in advanced section
+                advanced = payload.get("advanced", {})
+                if advanced and advanced.get("trade_plan"):
+                    st.info("No detailed automated signals data available. Trading system requires explicit JSON signals output.")
+                    st.markdown("To enable this tab fully, ensure the trading system exports signals with position plans, optimization stats, and holding horizon estimates.")
+                else:
+                    st.warning("No automated signals data available for this analysis. Run the trading system analyzer to generate signals.")
+            else:
+                # Display signal data if available
+                signal_data = automated_signals or trading_signals_section
+                
+                # Display main signal
+                col1, col2, col3 = st.columns([2, 1, 1])
+                
+                with col1:
+                    signal_type = signal_data.get("signal_type", "NEUTRAL")
+                    if signal_type == "BUY":
+                        st.success(f"## 🟢 BUY SIGNAL")
+                    elif signal_type == "SELL":
+                        st.error(f"## 🔴 SELL SIGNAL")
+                    else:
+                        st.info(f"## ⚪ NEUTRAL")
+                
+                with col2:
+                    confidence = signal_data.get("confidence", 0.0)
+                    confidence_pct = confidence * 100
+                    if confidence > 0.7:
+                        st.metric("Confidence", f"{confidence_pct:.1f}%", "🟢 High")
+                    elif confidence > 0.5:
+                        st.metric("Confidence", f"{confidence_pct:.1f}%", "🟡 Medium")
+                    else:
+                        st.metric("Confidence", f"{confidence_pct:.1f}%", "⚪ Low")
+                
+                with col3:
+                    timestamp = signal_data.get("timestamp", 0)
+                    if timestamp:
+                        from datetime import datetime
+                        signal_time = datetime.fromtimestamp(timestamp / 1000).strftime("%H:%M:%S")
+                        st.metric("Signal Time", signal_time)
+                
+                st.markdown("---")
+        
+        # Continue with the rest of the signal display (factor analysis, position plan, etc.)
+        if 'signal_data' in locals() and signal_data:
             
             # Factor Analysis
             factors = signal_data.get("factors", [])

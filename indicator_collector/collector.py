@@ -9,6 +9,8 @@ from typing import Dict, List, Optional, Sequence
 from .data_fetcher import (
     fetch_klines,
     fetch_order_book,
+    fetch_and_validate_klines,
+    create_source_metadata_dict,
 )
 from .advanced_metrics import compute_advanced_metrics
 from .cme_gap import get_nearest_cme_gaps
@@ -46,9 +48,14 @@ def compute_trend_strength_series(
     return TimeframeMetricSeries(points)
 
 
-def safe_fetch_candles(symbol: str, timeframe: str, limit: int, context: str) -> List[Candle]:
+def safe_fetch_candles(symbol: str, timeframe: str, limit: int, context: str, 
+                       validate_data: bool = True) -> List[Candle]:
     try:
-        return fetch_klines(symbol, timeframe, limit)
+        if validate_data:
+            candles, metadata = fetch_and_validate_klines(symbol, timeframe, limit)
+            return candles
+        else:
+            return fetch_klines(symbol, timeframe, limit)
     except RuntimeError as exc:
         print(f"[warning] {context}: {exc}", file=sys.stderr)
         return []
@@ -63,9 +70,18 @@ def collect_metrics(
     multi_symbol: Optional[Sequence[str]] = None,
     disable_multi_symbol: bool = False,
     additional_timeframes: Optional[Sequence[str]] = None,
+    validate_real_data: bool = True,
 ) -> CollectionResult:
     period_limit = min(max(period + 50, 200), 1000)
-    main_candles = fetch_klines(symbol, timeframe, period_limit)
+    
+    # Fetch main timeframe with validation if enabled
+    if validate_real_data:
+        main_candles, main_metadata = fetch_and_validate_klines(symbol, timeframe, period_limit)
+    else:
+        main_candles = fetch_klines(symbol, timeframe, period_limit)
+        main_metadata = create_source_metadata_dict("binance", "binance", symbol, timeframe, 
+                                                  method="direct", validation_disabled=True)
+    
     if len(main_candles) < period:
         raise RuntimeError(
             f"Requested period {period} but only received {len(main_candles)} bars for {symbol} {timeframe}"
@@ -81,7 +97,7 @@ def collect_metrics(
 
     multi_timeframe_series: Dict[str, TimeframeSeries] = {}
     for tf in timeframe_keys:
-        candles_tf = safe_fetch_candles(symbol, tf, max(period, 300), f"timeframe {tf}")
+        candles_tf = safe_fetch_candles(symbol, tf, max(period, 300), f"timeframe {tf}", validate_real_data)
         if len(candles_tf) < 3:
             continue
         multi_timeframe_series[tf] = TimeframeSeries(candles_tf)
@@ -90,7 +106,7 @@ def collect_metrics(
     if not disable_multi_symbol:
         symbols = list(multi_symbol)[:3] if multi_symbol else ["BINANCE:ETHUSDT", "BINANCE:SOLUSDT"]
         for sym in symbols:
-            candles_sym = safe_fetch_candles(sym, timeframe, period + 50, f"multi-symbol {sym}")
+            candles_sym = safe_fetch_candles(sym, timeframe, period + 50, f"multi-symbol {sym}", validate_real_data)
             if len(candles_sym) < 3:
                 continue
             multi_symbol_series[sym] = TimeframeSeries(candles_sym)
@@ -127,6 +143,16 @@ def collect_metrics(
     advanced_data = compute_advanced_metrics(summary, main_series.candles)
     payload = summary_to_payload(summary, symbol, timeframe, period, token)
     payload["advanced"] = advanced_data
+
+    # Add source metadata to payload
+    payload["metadata"].update(main_metadata)
+    
+    # Add real data validation status
+    payload["metadata"]["real_data_validated"] = validate_real_data
+    if validate_real_data:
+        payload["metadata"]["data_quality"] = "validated_real_data"
+    else:
+        payload["metadata"]["data_quality"] = "not_validated"
 
     cme_gap_data = get_nearest_cme_gaps(symbol, reference_price)
     payload.setdefault("latest", {})["cme_gaps"] = cme_gap_data

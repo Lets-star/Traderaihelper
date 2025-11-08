@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
 
 try:
@@ -17,8 +17,10 @@ import streamlit as st
 from plotly.subplots import make_subplots
 
 from indicator_collector.collector import collect_metrics
+from indicator_collector.data_fetcher import parse_symbol
 from indicator_collector.indicator_metrics import SimulationSummary
 from indicator_collector.time_series import TimeframeSeries
+from indicator_collector.timeframes import Timeframe
 from indicator_collector.trade_signals import calculate_position_metrics, calculate_tp_sl_levels
 from indicator_collector.trading_system import load_and_process_payload_dict, indicator_defaults_for
 
@@ -82,6 +84,15 @@ POPULAR_TOKENS = [
 ]
 
 TIMEFRAMES = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "3h", "4h", "6h", "8h", "12h", "1d", "3d", "1w"]
+
+BACKTEST_MIN_DATA_POINTS = {
+    "15m": 2000,
+    "1h": 1000,
+    "3h": 400,
+    "4h": 300,
+    "1d": 200,
+}
+SUPPORTED_BACKTEST_TIMEFRAMES = set(BACKTEST_MIN_DATA_POINTS.keys())
 
 CACHE_VERSION = "binance-real-data-v1"
 SYNTHETIC_FLAG_KEYS = {"is_synthetic", "synthetic", "mock", "demo", "paper", "testnet"}
@@ -2151,8 +2162,13 @@ def main():
         # Import backtesting components
         try:
             from indicator_collector.trading_system import (
-                Backtester, BacktestConfig, ParameterSet, 
-                PerformanceKPIs, BacktestResult
+                Backtester,
+                BacktestConfig,
+                ParameterSet,
+                PerformanceKPIs,
+                BacktestResult,
+                BinanceKlinesSource,
+                build_backtest_payloads_from_candles,
             )
             
             st.markdown("""
@@ -2272,15 +2288,74 @@ def main():
                         key=ui_key("backtest_tab", "min_confirmations")
                     )
             
+            date_range_value = None
+            backtest_symbol_input = selected_token
+            default_end_date = datetime.utcnow().date()
+            default_start_date = default_end_date - timedelta(days=int(lookback_days))
+            with st.expander("📅 Historical Data Selection", expanded=True):
+                date_range_value = st.date_input(
+                    "Date Range",
+                    value=(default_start_date, default_end_date),
+                    help="Select the historical window to fetch from Binance",
+                    key=ui_key("backtest_tab", "date_range"),
+                )
+                backtest_symbol_input = st.text_input(
+                    "Backtest Symbol",
+                    value=selected_token,
+                    help="Symbol to fetch from Binance (e.g., BINANCE:BTCUSDT)",
+                    key=ui_key("backtest_tab", "backtest_symbol"),
+                )
+
+            if isinstance(date_range_value, (list, tuple)) and len(date_range_value) == 2:
+                start_date, end_date = date_range_value
+            else:
+                start_date = end_date = None
+            backtest_symbol = backtest_symbol_input.strip()
+            
             # Run backtest button
             run_backtest = st.button("🚀 Run Backtest", type="primary", use_container_width=True)
             
             if run_backtest:
                 with st.spinner("Running backtest..."):
                     try:
-                        # Create backtest configuration
+                        try:
+                            tf_enum = Timeframe.from_value(selected_timeframe)
+                        except ValueError:
+                            st.error(f"Timeframe '{selected_timeframe}' is not supported for backtesting.")
+                            continue
+
+                        timeframe_key = tf_enum.value
+                        if timeframe_key not in SUPPORTED_BACKTEST_TIMEFRAMES:
+                            supported = ", ".join(sorted(SUPPORTED_BACKTEST_TIMEFRAMES))
+                            st.error(f"Backtester currently supports the following timeframes: {supported}.")
+                            continue
+
+                        if not backtest_symbol:
+                            st.warning("Please provide a symbol to backtest.")
+                            continue
+
+                        if not start_date or not end_date:
+                            st.warning("Please select a valid start and end date for historical data.")
+                            continue
+
+                        if start_date > end_date:
+                            st.error("Start date must be before or equal to end date.")
+                            continue
+
+                        start_dt = datetime.combine(start_date, datetime.min.time()).replace(tzinfo=timezone.utc)
+                        end_dt = datetime.combine(end_date, datetime.max.time()).replace(tzinfo=timezone.utc)
+                        if start_dt >= end_dt:
+                            st.error("Selected date range is empty. Adjust the start/end dates and try again.")
+                            continue
+
+                        base_symbol = parse_symbol(backtest_symbol)
+                        data_source = BinanceKlinesSource()
+
+                        days_from_start = max(1, (datetime.utcnow().date() - start_date).days + 1)
+                        effective_lookback = max(int(lookback_days), days_from_start)
+
                         config = BacktestConfig(
-                            lookback_days=int(lookback_days),
+                            lookback_days=effective_lookback,
                             split_method=split_method,
                             train_ratio=train_ratio,
                             target_win_rate=target_win_rate,
@@ -2290,9 +2365,10 @@ def main():
                             max_iterations=int(max_iterations),
                             validate_real_data=validate_real_data,
                             min_confirmation_categories=int(min_confirmations),
+                            data_source=data_source,
+                            min_data_points_per_timeframe=dict(BACKTEST_MIN_DATA_POINTS),
                         )
-                        
-                        # Create parameter set
+
                         total_weight = technical_weight + volume_weight + sentiment_weight + structure_weight
                         if total_weight > 0:
                             weights = {
@@ -2302,52 +2378,76 @@ def main():
                                 "market_structure": structure_weight / total_weight,
                             }
                         else:
-                            weights = {"technical": 0.25, "volume": 0.25, "sentiment": 0.25, "market_structure": 0.25}
-                        
-                        indicator_params = indicator_defaults_for(selected_timeframe)
+                            weights = {
+                                "technical": 0.25,
+                                "volume": 0.25,
+                                "sentiment": 0.25,
+                                "market_structure": 0.25,
+                            }
+
+                        indicator_params = indicator_defaults_for(timeframe_key)
                         params = ParameterSet(
                             weights=weights,
                             indicator_params=indicator_params,
-                            timeframe=selected_timeframe,
+                            timeframe=timeframe_key,
                             stop_loss_pct=stop_loss_pct,
                             take_profit_pct=take_profit_pct,
                             max_position_size_pct=max_position_size,
                             confirmation_threshold=confirmation_threshold,
                         )
-                        
-                        # Create backtester and run
+
+                        try:
+                            candles_df = data_source.load_candles(
+                                symbol=base_symbol,
+                                timeframe=tf_enum,
+                                start=start_dt,
+                                end=end_dt,
+                            )
+                        except ValueError as fetch_error:
+                            st.error(f"❌ Failed to load Binance data: {fetch_error}")
+                            continue
+
+                        payloads = build_backtest_payloads_from_candles(
+                            candles_df,
+                            symbol=base_symbol,
+                            timeframe=timeframe_key,
+                            display_symbol=backtest_symbol,
+                        )
+
+                        if not payloads:
+                            st.warning(
+                                "No closed candles were found for the selected range. Adjust your date range and try again."
+                            )
+                            continue
+
                         backtester = Backtester(config)
-                        
-                        # Create sample historical data (in real implementation, this would load from file/database)
-                        st.info("📊 Using sample historical data for demonstration. In production, this would load actual historical signals.")
-                        
-                        # Generate sample data
-                        from datetime import datetime, timedelta
-                        import random
-                        
-                        sample_payloads = []
-                        base_timestamp = int((datetime.now() - timedelta(days=lookback_days)).timestamp() * 1000)
-                        
-                        for i in range(min(500, int(lookback_days * 0.7))):
-                            signal_type = random.choice(["BUY", "SELL", "NEUTRAL"])
-                            price = 50000 + random.uniform(-5000, 5000)
-                            
-                            sample_payload = {
-                                "timestamp": base_timestamp + i * 86400000,  # Daily
-                                "signal_type": signal_type,
-                                "entry_price": price,
-                                "factors": [
-                                    {"factor_name": "technical", "score": random.uniform(0.3, 0.9)},
-                                    {"factor_name": "volume", "score": random.uniform(0.3, 0.9)},
-                                    {"factor_name": "sentiment", "score": random.uniform(0.3, 0.9)},
-                                ] if signal_type != "NEUTRAL" else [],
-                            }
-                            sample_payloads.append(sample_payload)
-                        
-                        # Load data
-                        backtester.load_historical_data(sample_payloads)
-                        
-                        # Run backtest
+                        available_count = len(payloads)
+
+                        try:
+                            loaded_count = backtester.load_historical_data(
+                                payloads,
+                                symbol=base_symbol,
+                                timeframe=timeframe_key,
+                            )
+                        except ValueError as load_error:
+                            message = str(load_error)
+                            if "Insufficient data" in message:
+                                min_required = config.min_data_points_per_timeframe.get(
+                                    timeframe_key,
+                                    config.min_data_points,
+                                )
+                                st.warning(
+                                    f"Insufficient data for {timeframe_key}: {available_count} available, "
+                                    f"but at least {min_required} are required. Consider expanding the date range."
+                                )
+                            else:
+                                st.error(f"❌ Backtest data error: {message}")
+                            continue
+
+                        st.info(
+                            f"Loaded {loaded_count} Binance payloads for {backtest_symbol} on the {timeframe_key} timeframe."
+                        )
+
                         result = backtester.run_backtest(params)
                         
                         # Display results
@@ -2435,7 +2535,7 @@ def main():
                         # Execution info
                         st.markdown("### ℹ️ Execution Info")
                         st.write(f"• Execution Time: {result.execution_time_seconds:.2f} seconds")
-                        st.write(f"• Data Points Used: {len(sample_payloads)}")
+                        st.write(f"• Data Points Used: {loaded_count}")
                         st.write(f"• Split Method: {split_method}")
                         st.write(f"• Search Method: {search_method}")
                         

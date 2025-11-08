@@ -527,6 +527,68 @@ class TestConvenienceFunctions:
         assert payload["latest"]["timestamp"] == timestamp
         assert payload["latest"]["time_iso"] == expected_iso
 
+    def test_summary_to_payload_ignores_future_snapshot(self):
+        """Latest payload timestamp should ignore snapshots that extend into the future."""
+        now = datetime.now(tz=timezone.utc)
+        past_timestamp = int((now - timedelta(hours=3)).timestamp() * 1000)
+        future_timestamp = int((now + timedelta(hours=3)).timestamp() * 1000)
+
+        past_snapshot = MarketSnapshot(
+            timestamp=past_timestamp,
+            close=49900.0,
+            open=49800.0,
+            high=50000.0,
+            low=49700.0,
+            volume=95.0,
+            trend_strength=60.0,
+            pattern_score=55.0,
+            sentiment=52.0,
+            structure_state="neutral",
+            structure_event=None,
+            volume_confirmed=False,
+            volume_ratio=0.9,
+            confluence_score=5.0,
+            signal=None,
+        )
+        future_snapshot = MarketSnapshot(
+            timestamp=future_timestamp,
+            close=51000.0,
+            open=50900.0,
+            high=51100.0,
+            low=50800.0,
+            volume=110.0,
+            trend_strength=70.0,
+            pattern_score=65.0,
+            sentiment=68.0,
+            structure_state="bullish",
+            structure_event=None,
+            volume_confirmed=True,
+            volume_ratio=1.3,
+            confluence_score=8.0,
+            signal="BUY",
+        )
+
+        summary = SimulationSummary(
+            snapshots=[past_snapshot, future_snapshot],
+            signals=[],
+            pnl=PnLStats(),
+            success=SuccessStats(),
+            active_fvg_zones=[],
+            active_ob_zones=[],
+            last_structure_levels={},
+            multi_timeframe_trend={"1h": 60.0},
+            multi_timeframe_direction={"1h": "neutral"},
+            market_sentiment=55.0,
+            pattern_prediction=50.0,
+            multi_symbol=None,
+        )
+
+        payload = summary_to_payload(summary, "BINANCE:BTCUSDT", "1h", 200, "test-token")
+
+        assert payload["metadata"]["timestamp"] == past_timestamp
+        assert payload["latest"]["timestamp"] == past_timestamp
+        assert payload["metadata"]["timestamp"] <= int(datetime.now(tz=timezone.utc).timestamp() * 1000)
+
 
 class TestGlobalProcessor:
     """Test cases for global processor instance."""

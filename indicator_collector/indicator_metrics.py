@@ -23,6 +23,10 @@ from .math_utils import (
     vwap,
 )
 from .time_series import MetricPoint, TimeframeMetricSeries, TimeframeSeries
+from .trading_system.data_sources.timestamp_utils import (
+    normalize_timestamp,
+    validate_no_future_timestamps,
+)
 
 ZoneType = Literal["BullFVG", "BearFVG", "BullOB", "BearOB"]
 
@@ -1038,9 +1042,36 @@ def summary_to_payload(
     period: int,
     token: str,
 ) -> Dict[str, object]:
-    latest_snapshot = summary.snapshots[-1]
+    if not summary.snapshots:
+        raise ValueError("Simulation summary requires at least one snapshot")
+
     generated_at = datetime.now(tz=timezone.utc).isoformat()
-    latest_timestamp = latest_snapshot.timestamp
+    now_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
+    tolerance_ms = 60 * 1000
+
+    normalized_snapshots: List[Tuple[MarketSnapshot, int]] = []
+    for snapshot in summary.snapshots:
+        try:
+            ts_ms = normalize_timestamp(snapshot.timestamp)
+        except ValueError:
+            continue
+        normalized_snapshots.append((snapshot, ts_ms))
+
+    if not normalized_snapshots:
+        raise ValueError("Simulation summary does not contain valid timestamps")
+
+    valid_snapshots = [
+        (snapshot, ts)
+        for snapshot, ts in normalized_snapshots
+        if ts <= now_ms + tolerance_ms
+    ]
+    if valid_snapshots:
+        latest_snapshot, latest_timestamp = valid_snapshots[-1]
+    else:
+        latest_snapshot, latest_timestamp = normalized_snapshots[-1]
+        latest_timestamp = min(latest_timestamp, now_ms)
+
+    validate_no_future_timestamps([latest_timestamp])
     latest_time_iso = datetime.fromtimestamp(latest_timestamp / 1000, tz=timezone.utc).isoformat()
 
     signals_payload = [

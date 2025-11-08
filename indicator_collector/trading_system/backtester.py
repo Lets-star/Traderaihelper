@@ -88,6 +88,14 @@ _AVAILABLE_TIMEFRAMES = {
     Timeframe.D1.value,
 }
 
+_MIN_DATA_POINTS_PER_TIMEFRAME_DEFAULT: Dict[str, int] = {
+    Timeframe.M15.value: 2000,
+    Timeframe.H1.value: 1000,
+    Timeframe.H3.value: 400,
+    Timeframe.H4.value: 300,
+    Timeframe.D1.value: 200,
+}
+
 
 def _normalize_timeframe_key(timeframe: Union[str, Timeframe]) -> str:
     """Normalize timeframe input to standard enum value."""
@@ -136,7 +144,9 @@ class BacktestConfig:
     # Data requirements
     lookback_days: int = 730  # 2 years default
     min_data_points: int = 1000
-    min_data_points_per_timeframe: Optional[Dict[str, int]] = None
+    min_data_points_per_timeframe: Dict[str, int] = field(
+        default_factory=lambda: dict(_MIN_DATA_POINTS_PER_TIMEFRAME_DEFAULT)
+    )
     data_source: Optional[HistoricalDataSource] = None
     validate_real_data: bool = True
     
@@ -165,7 +175,7 @@ class BacktestConfig:
         return {
             "lookback_days": self.lookback_days,
             "min_data_points": self.min_data_points,
-            "min_data_points_per_timeframe": self.min_data_points_per_timeframe or {},
+            "min_data_points_per_timeframe": dict(self.min_data_points_per_timeframe),
             "validate_real_data": self.validate_real_data,
             "split_method": self.split_method,
             "train_ratio": self.train_ratio,
@@ -406,9 +416,16 @@ class Backtester:
             if timestamp >= cutoff_timestamp:
                 filtered_payloads.append(payload)
         
-        # Check minimum data requirements
-        if len(filtered_payloads) < self.config.min_data_points:
-            raise ValueError(f"Insufficient data: {len(filtered_payloads)} < {self.config.min_data_points}")
+        # Check minimum data requirements (timeframe-specific)
+        timeframe_key = _normalize_timeframe_key(timeframe)
+        min_required = self.config.min_data_points_per_timeframe.get(
+            timeframe_key,
+            self.config.min_data_points,
+        )
+        if len(filtered_payloads) < min_required:
+            raise ValueError(
+                f"Insufficient data for {timeframe_key}: {len(filtered_payloads)} < {min_required}"
+            )
         
         self._historical_data = filtered_payloads
         return len(filtered_payloads)

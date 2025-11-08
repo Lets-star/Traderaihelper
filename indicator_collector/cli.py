@@ -5,8 +5,6 @@ import json
 from pathlib import Path
 from typing import List
 
-from .collector import collect_metrics
-
 
 def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Collect metrics from FVG & Order Block Sync Pro indicator logic")
@@ -35,6 +33,8 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: List[str] | None = None) -> None:
+    from .collector import collect_metrics
+
     args = parse_args(argv)
 
     result = collect_metrics(

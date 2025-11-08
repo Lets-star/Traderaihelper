@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import sys
-from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence
 
+from .types import CollectionResult
 from .data_fetcher import (
     fetch_klines,
     fetch_order_book,
@@ -25,16 +25,6 @@ from .math_utils import Candle
 from .time_series import MetricPoint, TimeframeMetricSeries, TimeframeSeries
 
 DEFAULT_MULTI_TIMEFRAMES = ["5m", "15m", "1h", "4h", "1d"]
-
-
-@dataclass
-class CollectionResult:
-    payload: Dict[str, object]
-    summary: SimulationSummary
-    main_series: TimeframeSeries
-    multi_timeframe_series: Dict[str, TimeframeSeries]
-    multi_timeframe_strength: Dict[str, TimeframeMetricSeries]
-    multi_symbol_series: Dict[str, TimeframeSeries]
 
 
 def compute_trend_strength_series(

@@ -23,6 +23,7 @@ from .indicator_metrics import (
 )
 from .math_utils import Candle
 from .time_series import MetricPoint, TimeframeMetricSeries, TimeframeSeries
+from .real_data_validator import RealDataValidator
 
 DEFAULT_MULTI_TIMEFRAMES = ["5m", "15m", "1h", "4h", "1d"]
 
@@ -161,6 +162,9 @@ def collect_metrics(
     if latest_timestamp:
         astrology_data = get_astrology_metrics(latest_timestamp)
         payload["astrology"] = astrology_data
+
+    if validate_real_data:
+        RealDataValidator().ensure_no_synthetic_flags(payload)
 
     return CollectionResult(
         payload=payload,

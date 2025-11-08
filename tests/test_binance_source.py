@@ -343,6 +343,13 @@ class TestBinanceKlinesSourceIntegration:
         assert len(df) >= 24  # May have more from pagination
         assert list(df.columns) == ["ts", "open", "high", "low", "close", "volume"]
         assert not df.isna().any().any()
+        meta = df.attrs.get("meta")
+        assert meta is not None
+        assert meta["source"] == "binance"
+        assert meta["symbol"] == "BTCUSDT"
+        assert meta["timeframe"] == "1h"
+        assert meta["real_data"] is True
+        assert meta["source_timeframe"] == "1h"
 
     @patch("indicator_collector.trading_system.data_sources.binance_source.BinanceKlinesSource._fetch_klines_batch")
     def test_load_candles_3h(self, mock_fetch):
@@ -366,6 +373,17 @@ class TestBinanceKlinesSourceIntegration:
         # 72 1h candles should aggregate to 24 3h candles
         assert len(df) >= 24  # May have more from pagination
         assert list(df.columns) == ["ts", "open", "high", "low", "close", "volume"]
+        meta = df.attrs.get("meta")
+        assert meta is not None
+        assert meta["source"] == "binance"
+        assert meta["symbol"] == "BTCUSDT"
+        assert meta["timeframe"] == "3h"
+        assert meta["real_data"] is True
+        assert meta["source_timeframe"] == "1h"
+        aggregation = meta.get("aggregation")
+        assert aggregation is not None
+        assert aggregation["from_timeframe"] == "1h"
+        assert aggregation["factor"] == 3
 
     @patch("indicator_collector.trading_system.data_sources.binance_source.BinanceKlinesSource._fetch_klines_batch")
     def test_load_candles_empty_raises(self, mock_fetch):

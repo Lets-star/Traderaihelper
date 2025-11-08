@@ -81,11 +81,27 @@ POPULAR_TOKENS = [
 ]
 
 TIMEFRAMES = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "3h", "4h", "6h", "8h", "12h", "1d", "3d", "1w"]
+DATA_SOURCE = "binance"
 
+
+
+def clear_cached_indicator_data() -> None:
+    """Clear cached indicator data."""
+    load_indicator_data.clear()
+
+
+def ensure_data_source_cache(source: str) -> None:
+    """Ensure cached data aligns with the selected source."""
+    active_source = st.session_state.get("automated_signals_data_source")
+    if active_source and active_source != source:
+        clear_cached_indicator_data()
+    st.session_state["automated_signals_data_source"] = source
 
 
 @st.cache_data(ttl=300)
-def load_indicator_data(symbol: str, timeframe: str, period: int, token: str) -> tuple:
+def load_indicator_data(symbol: str, timeframe: str, period: int, token: str, source: str = DATA_SOURCE) -> tuple:
+    if source.lower() != "binance":
+        raise ValueError(f"Unsupported data source: {source}")
     result = collect_metrics(
         symbol=symbol,
         timeframe=timeframe,
@@ -371,6 +387,8 @@ def main():
     st.title("📈 Token Charts & Indicators Dashboard")
     st.markdown("---")
     
+    ensure_data_source_cache(DATA_SOURCE)
+    
     with st.sidebar:
         st.header("⚙️ Configuration")
         
@@ -399,6 +417,7 @@ def main():
                     selected_timeframe,
                     selected_period,
                     export_token,
+                    source=DATA_SOURCE,
                 )
                 st.session_state.summary = summary
                 st.session_state.payload = payload

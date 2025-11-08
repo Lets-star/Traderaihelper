@@ -290,7 +290,10 @@ class TestWebUIAutomatedSignals:
         
         assert isinstance(result, dict)
         assert "metadata" in result
-        assert result["metadata"].get("real_data_validated") is True
+        metadata = result["metadata"]
+        assert metadata.get("real_data_validated") is True
+        assert metadata.get("source") == "binance"
+        assert metadata.get("exchange") == "binance"
     
     def test_load_and_process_payload_dict_synthetic_rejection(self):
         """Test that synthetic data is rejected when validation enabled."""

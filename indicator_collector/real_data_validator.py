@@ -7,9 +7,14 @@ is processed by the trading system, rejecting synthetic/mock data.
 from __future__ import annotations
 
 import json
+import logging
+import re
 from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any, Dict, List, Optional, Set, Union
+
+logger = logging.getLogger(__name__)
+TOKEN_SPLIT_RE = re.compile(r"[^a-z0-9]+")
 
 
 def timeframe_to_minutes(timeframe: str) -> int:
@@ -60,8 +65,36 @@ class RealDataValidator:
     
     # Known synthetic data sources
     SYNTHETIC_SOURCES = {
-        "testnet", "paper_trading", "demo_api", "simulator", "backtest_engine"
+        "testnet", "paper_trading", "demo_api", "simulator", "backtest_engine", "local"
     }
+    
+    SYNTHETIC_VALUE_TOKENS = SYNTHETIC_MARKERS.union(SYNTHETIC_SOURCES).union({
+        "demo_feed",
+        "demo_source",
+        "sandbox",
+        "simulation",
+        "papertrade",
+        "paper-trading",
+    })
+    
+    SYNTHETIC_KEY_TOKENS = {"synthetic", "mock", "demo", "sample", "paper", "testnet", "sandbox", "simulation"}
+    SYNTHETIC_BOOLEAN_KEYS = {
+        "is_synthetic",
+        "synthetic_mode",
+        "use_mock_data",
+        "mock_mode",
+        "demo_mode",
+        "use_demo_data",
+        "is_demo",
+        "paper_trading",
+        "is_paper_trading",
+        "is_testnet",
+        "testnet_mode",
+        "sandbox_mode",
+    }
+    SYNTHETIC_SOURCE_KEYS = {"source", "exchange", "provider", "data_source"}
+    MAX_FLAG_PATHS = 20
+    VALUE_PREVIEW_LIMIT = 80
     
     # Required fields for real data validation
     REQUIRED_SOURCE_FIELDS = {
@@ -169,27 +202,75 @@ class RealDataValidator:
         Raises:
             DataValidationError: If synthetic markers detected
         """
-        synthetic_flags_found = []
-        
-        def _scan_for_markers(obj: Any, path: str = "") -> None:
-            if isinstance(obj, str):
-                if self._contains_synthetic_markers(obj):
-                    synthetic_flags_found.append(f"{path}: '{obj}'")
-            elif isinstance(obj, dict):
-                for key, value in obj.items():
-                    new_path = f"{path}.{key}" if path else key
-                    _scan_for_markers(value, new_path)
+        flagged_paths: List[str] = []
+        total_flags = 0
+
+        def add_flag(path: str, flag_type: str, value: Any = None) -> None:
+            nonlocal total_flags
+            total_flags += 1
+            if len(flagged_paths) >= self.MAX_FLAG_PATHS:
+                return
+            if value is not None and not isinstance(value, (dict, list)):
+                if isinstance(value, str):
+                    value_clean = value.strip()
+                    if len(value_clean) > self.VALUE_PREVIEW_LIMIT:
+                        value_clean = value_clean[: self.VALUE_PREVIEW_LIMIT - 3] + "..."
+                    flagged_paths.append(f"{path}='{value_clean}'")
+                else:
+                    flagged_paths.append(f"{path}={value!r}")
+            elif flag_type == "key":
+                flagged_paths.append(f"{path} (key)")
+            else:
+                flagged_paths.append(path)
+
+        def scan(obj: Any, current_path: str) -> None:
+            if isinstance(obj, dict):
+                keys_to_remove: List[Any] = []
+                for key, value in list(obj.items()):
+                    key_str = str(key)
+                    key_lower = key_str.lower()
+                    next_path = f"{current_path}.{key_str}" if current_path != "$" else f"$." + key_str
+                    key_tokens = self._tokenize_text(key_lower)
+                    if key_lower in self.SYNTHETIC_BOOLEAN_KEYS or any(
+                        token in self.SYNTHETIC_KEY_TOKENS for token in key_tokens
+                    ):
+                        add_flag(next_path, "key", value if key_lower in self.SYNTHETIC_BOOLEAN_KEYS else None)
+                        keys_to_remove.append(key)
+                        continue
+                    if key_lower in self.SYNTHETIC_SOURCE_KEYS and isinstance(value, str):
+                        if self._string_has_synthetic_marker(value):
+                            add_flag(next_path, "value", value)
+                            keys_to_remove.append(key)
+                            continue
+                    if isinstance(value, str):
+                        if self._string_has_synthetic_marker(value):
+                            add_flag(next_path, "value", value)
+                    if isinstance(value, (dict, list)):
+                        scan(value, next_path)
+                for key in keys_to_remove:
+                    obj.pop(key, None)
             elif isinstance(obj, list):
-                for i, item in enumerate(obj):
-                    new_path = f"{path}[{i}]" if path else f"[{i}]"
-                    _scan_for_markers(item, new_path)
-        
-        _scan_for_markers(payload)
-        
-        if synthetic_flags_found:
+                for index, item in enumerate(obj):
+                    next_path = f"{current_path}[{index}]"
+                    if isinstance(item, str):
+                        if self._string_has_synthetic_marker(item):
+                            add_flag(next_path, "value", item)
+                    if isinstance(item, (dict, list)):
+                        scan(item, next_path)
+
+        scan(payload, "$")
+
+        if total_flags:
+            display_count = min(len(flagged_paths), self.MAX_FLAG_PATHS)
+            preview = ", ".join(flagged_paths[: min(display_count, 5)])
+            logger.debug(
+                "RealDataValidator detected %s synthetic marker(s): %s",
+                total_flags,
+                flagged_paths[: display_count],
+            )
             raise DataValidationError(
-                f"Synthetic data markers detected: {len(synthetic_flags_found)} instances",
-                {"synthetic_flags": synthetic_flags_found}
+                f"Synthetic data detected: {total_flags} markers found (showing first {display_count}). Paths: {preview}",
+                {"flag_count": total_flags, "synthetic_flags": flagged_paths},
             )
         
         return True
@@ -271,8 +352,23 @@ class RealDataValidator:
     
     def _contains_synthetic_markers(self, text: str) -> bool:
         """Check if text contains synthetic data markers."""
-        text_lower = text.lower()
-        return any(marker in text_lower for marker in self.SYNTHETIC_MARKERS)
+        if not isinstance(text, str):
+            return False
+        return self._string_has_synthetic_marker(text)
+    
+    def _string_has_synthetic_marker(self, text: str) -> bool:
+        """Determine whether a string contains synthetic markers."""
+        text_lower = text.lower().strip()
+        if not text_lower:
+            return False
+        if text_lower in self.SYNTHETIC_VALUE_TOKENS:
+            return True
+        tokens = self._tokenize_text(text_lower)
+        return any(token in self.SYNTHETIC_VALUE_TOKENS for token in tokens)
+    
+    @staticmethod
+    def _tokenize_text(text: str) -> List[str]:
+        return [token for token in TOKEN_SPLIT_RE.split(text) if token]
     
     def _is_valid_timestamp(self, timestamp: Union[int, float]) -> bool:
         """Check if timestamp is plausible."""

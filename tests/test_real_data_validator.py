@@ -152,8 +152,43 @@ class TestRealDataValidator:
             ]
         }
         
-        with pytest.raises(DataValidationError, match="Synthetic data markers detected"):
+        with pytest.raises(DataValidationError, match="Synthetic data detected") as exc_info:
             validator.ensure_no_synthetic_flags(payload)
+        
+        details = exc_info.value.details
+        assert details.get("flag_count") == 1
+        flagged_paths = details.get("synthetic_flags", [])
+        assert any("$.data[0].type" in entry for entry in flagged_paths)
+    
+    def test_ensure_no_synthetic_flags_key_reporting(self):
+        """Synthetic keys should be reported with JSON paths."""
+        validator = RealDataValidator()
+        payload = {
+            "flags": {
+                "is_synthetic": True,
+                "demo_mode": False,
+            }
+        }
+        with pytest.raises(DataValidationError, match="Synthetic data detected") as exc_info:
+            validator.ensure_no_synthetic_flags(payload)
+        details = exc_info.value.details
+        assert details.get("flag_count") == 2
+        flagged_paths = details.get("synthetic_flags", [])
+        assert any("$.flags.is_synthetic" in entry for entry in flagged_paths)
+        assert any("$.flags.demo_mode" in entry for entry in flagged_paths)
+    
+    def test_ensure_no_synthetic_flags_limits_report_length(self):
+        """Only the first N synthetic paths should be reported to avoid noise."""
+        validator = RealDataValidator()
+        payload = {
+            "flags": {f"mock_flag_{i}": True for i in range(25)}
+        }
+        with pytest.raises(DataValidationError, match="Synthetic data detected") as exc_info:
+            validator.ensure_no_synthetic_flags(payload)
+        details = exc_info.value.details
+        assert details.get("flag_count") == 25
+        flagged_paths = details.get("synthetic_flags", [])
+        assert len(flagged_paths) == validator.MAX_FLAG_PATHS
     
     def test_validate_time_continuity_success(self):
         """Test successful time continuity validation."""

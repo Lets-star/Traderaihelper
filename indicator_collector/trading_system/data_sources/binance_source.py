@@ -6,7 +6,7 @@ import json
 import logging
 import time
 from datetime import datetime, timedelta
-from typing import Dict, Optional, Union
+from typing import Any, Dict, Optional, Union
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
@@ -118,6 +118,17 @@ class BinanceKlinesSource(HistoricalDataSource):
 
             # Validate and normalize
             df = self._validate_and_normalize(df, tf)
+
+            meta: Dict[str, Any] = {
+                "source": "binance",
+                "symbol": symbol,
+                "timeframe": tf.value,
+                "real_data": True,
+                "source_timeframe": source_timeframe,
+            }
+            if is_3h:
+                meta["aggregation"] = {"from_timeframe": source_timeframe, "factor": 3}
+            df.attrs["meta"] = meta
 
             return df
 

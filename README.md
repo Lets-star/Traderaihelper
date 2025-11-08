@@ -63,7 +63,7 @@ This project provides both a **web-based dashboard** and a **command line utilit
 ## Requirements
 
 - Python 3.10 or higher
-- Dependencies: `streamlit`, `plotly`, `pandas` (installed automatically with requirements.txt)
+- Dependencies: `streamlit`, `plotly`, `pandas` (installed automatically via `pyproject.toml`)
 - Internet access to reach the Binance public REST API for market data (or use offline mode with synthetic data)
 
 ## Installation
@@ -73,10 +73,11 @@ This project provides both a **web-based dashboard** and a **command line utilit
    python3 -m venv .venv
    source .venv/bin/activate
    ```
-2. Install project dependencies
+2. Install the project in editable mode (includes test extras)
    ```bash
-   pip install -r requirements.txt
+   pip install -e ".[dev]"
    ```
+   For a runtime-only environment, use `pip install -e .`.
 
 ## Running the Web Dashboard
 

@@ -15,7 +15,7 @@ The web dashboard provides an interactive interface to visualize token charts wi
 
 1. **Install Dependencies** (first time only)
    ```bash
-   pip install -r requirements.txt
+   pip install -e ".[dev]"
    ```
 
 2. **Launch the Dashboard**
@@ -207,7 +207,7 @@ See `samples/trading_signal_schema.json` for the complete signal structure used 
 ## Troubleshooting
 
 ### "Streamlit not found"
-Install dependencies: `pip install -r requirements.txt`
+Install dependencies: `pip install -e .`
 
 ### "No data available"
 - Check your internet connection
@@ -224,7 +224,7 @@ Use a virtual environment:
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -e ".[dev]"
 ```
 
 ### Testing and Development

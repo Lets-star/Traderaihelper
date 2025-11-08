@@ -66,14 +66,11 @@ source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 ### 3. Install Dependencies
 
 ```bash
-# Install runtime dependencies
-pip install -r requirements.txt
+# Install the package in editable mode with development extras
+pip install -e ".[dev]"
 
-# Or install just production dependencies
-pip install streamlit>=1.28.0 plotly>=5.17.0 pandas>=2.0.0
-
-# For development/testing (included in requirements.txt):
-pip install pytest>=7.4.0 pytest-cov>=4.1.0 pytest-mock>=3.12.0
+# For a runtime-only environment
+pip install -e .
 ```
 
 ### 4. Verify Installation

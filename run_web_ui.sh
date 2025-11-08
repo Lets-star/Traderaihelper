@@ -5,7 +5,7 @@ set -e
 if ! command -v streamlit &> /dev/null; then
     echo "Streamlit is not installed."
     echo "Please install project dependencies first:"
-    echo "  pip install -r requirements.txt"
+    echo "  pip install -e ."
     exit 1
 fi
 

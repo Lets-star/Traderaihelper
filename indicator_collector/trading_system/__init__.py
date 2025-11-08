@@ -81,6 +81,10 @@ from .backtester import (
     Backtester,
     indicator_defaults_for,
 )
+from .backtest_data_builder import (
+    BacktestPayload,
+    build_backtest_payloads_from_candles,
+)
 from .data_sources import (
     HistoricalDataSource,
     BinanceKlinesSource,
@@ -146,12 +150,14 @@ __all__ = [
     "BacktestResult",
     "AdaptiveWeightResult",
     "Backtester",
+    "BacktestPayload",
+    "build_backtest_payloads_from_candles",
     "indicator_defaults_for",
     "HistoricalDataSource",
     "BinanceKlinesSource",
     "normalize_timestamp",
     "validate_timestamps_monotonic",
-    "validate_no_future_timestamps",
+
     "AdaptiveWeightConfig",
     "WeightPerformance",
     "AdaptationReport",

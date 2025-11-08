@@ -102,9 +102,13 @@ def fetch_klines(symbol: str, timeframe: str, limit: int = 500) -> List[Candle]:
 
     candles: List[Candle] = []
     interval_ms = interval_to_milliseconds(interval)
+    current_ms = int(time.time() * 1000)
+    future_tolerance_ms = 60 * 1000
     for entry in data:
         open_time = int(entry[0])
         close_time = open_time + interval_ms
+        if close_time > current_ms + future_tolerance_ms:
+            continue
         candle = Candle(
             open_time=open_time,
             close_time=close_time,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
 
 try:
@@ -18,9 +18,13 @@ from plotly.subplots import make_subplots
 
 from indicator_collector.collector import collect_metrics
 from indicator_collector.indicator_metrics import SimulationSummary
+from indicator_collector.real_data_validator import DataValidationError
 from indicator_collector.time_series import TimeframeSeries
+from indicator_collector.timeframes import Timeframe
 from indicator_collector.trade_signals import calculate_position_metrics, calculate_tp_sl_levels
-from indicator_collector.trading_system import load_and_process_payload_dict, indicator_defaults_for
+from indicator_collector.trading_system import indicator_defaults_for
+from indicator_collector.trading_system.automated_signals import run_automated_signal_flow
+from indicator_collector.trading_system.signal_schema import is_valid_signal_structure
 
 
 def format_correlation(value: float) -> str:
@@ -82,6 +86,8 @@ POPULAR_TOKENS = [
 ]
 
 TIMEFRAMES = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "3h", "4h", "6h", "8h", "12h", "1d", "3d", "1w"]
+AUTOMATED_SIGNALS_TIMEFRAMES = ["1m", "5m", "15m", "1h", "3h", "4h", "1d"]
+AUTOMATED_SIGNALS_STATE_KEY = "automated_signals_state"
 
 CACHE_VERSION = "binance-real-data-v1"
 SYNTHETIC_FLAG_KEYS = {"is_synthetic", "synthetic", "mock", "demo", "paper", "testnet"}
@@ -151,6 +157,32 @@ def sanitize_payload_for_real_data(payload: Dict[str, Any]) -> Dict[str, Any]:
     metadata["data_quality"] = "validated_real_data"
 
     return payload
+
+
+@st.cache_data(ttl=300)
+def cached_run_automated_signals(
+    symbol: str,
+    timeframe: str,
+    start_iso: str,
+    end_iso: str,
+    source: str = "binance",
+) -> Dict[str, Any]:
+    """Cache Binance signal generation results for performance."""
+    _ = source  # Included to differentiate cache keys if needed
+    start_dt = datetime.fromisoformat(start_iso)
+    end_dt = datetime.fromisoformat(end_iso)
+    result = run_automated_signal_flow(
+        symbol,
+        timeframe,
+        start_dt,
+        end_dt,
+        validate_real_data=True,
+    )
+    return {
+        "candles": result.candles,
+        "processed_payload": result.processed_payload,
+        "explicit_signal": result.explicit_signal,
+    }
 
 
 @st.cache_data(ttl=300)
@@ -1794,247 +1826,316 @@ def main():
     with automated_signals_tab:
         st.subheader("🤖 Automated Trading Signals")
 
-        # Auto-load and process full JSON payload with explicit signals
-        try:
-            # Import new signal generation functions
-            from indicator_collector.trading_system import (
-                load_and_process_payload_dict,
-                generate_signals,
-                is_valid_signal_structure
-            )
-            
-            # Process payload through trading system
-            processed_signal = load_and_process_payload_dict(
-                payload,
-                selected_timeframe,
-                validate_real_data=True
-            )
-            
-            # Generate explicit JSON signals
+        state: Dict[str, Any] = st.session_state.setdefault(AUTOMATED_SIGNALS_STATE_KEY, {})
+
+        default_end = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+        default_start = default_end - timedelta(hours=72)
+
+        inputs_defaults = state.get("inputs")
+        symbol_default = "BTCUSDT"
+        timeframe_default = "1h"
+        if inputs_defaults:
+            symbol_default = inputs_defaults.get("symbol", symbol_default)
+            timeframe_default = inputs_defaults.get("timeframe", timeframe_default)
             try:
-                explicit_signal = generate_signals(processed_signal)
-                
-                # Validate that we have proper signal structure
-                if is_valid_signal_structure(explicit_signal):
-                    signal_data = explicit_signal
-            
-            # Display main signal using explicit JSON format
-                    col1, col2, col3 = st.columns([2, 1, 1])
-                    
-                    with col1:
-                        signal_type = signal_data.get("signal", "HOLD")
-                        if signal_type == "BUY":
-                            st.success(f"## 🟢 BUY SIGNAL")
-                        elif signal_type == "SELL":
-                            st.error(f"## 🔴 SELL SIGNAL")
-                        else:
-                            st.info(f"## ⚪ HOLD")
-                    
-                    with col2:
-                        confidence = signal_data.get("confidence", 5)
-                        if confidence >= 8:
-                            st.metric("Confidence", f"{confidence}/10", "🟢 High")
-                        elif confidence >= 5:
-                            st.metric("Confidence", f"{confidence}/10", "🟡 Medium")
-                        else:
-                            st.metric("Confidence", f"{confidence}/10", "⚪ Low")
-                    
-                    with col3:
-                        timeframe = signal_data.get("timeframe", selected_timeframe)
-                        holding_period = signal_data.get("holding_period", "medium")
-                        st.metric("Timeframe", timeframe.upper())
-                        st.metric("Holding Period", holding_period.title())
-                    
-                    st.markdown("---")
-                    
-                    # Display detailed signal information
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        st.markdown("### 📈 Entry & Exit Levels")
-                        
-                        # Entry prices
-                        entries = signal_data.get("entries", [])
-                        if entries:
-                            st.write("**Entry Levels:**")
-                            for i, entry in enumerate(entries[:3], 1):
-                                st.write(f"  Entry {i}: ${entry:.4f}")
-                        
-                        # Stop loss
-                        stop_loss = signal_data.get("stop_loss")
-                        if stop_loss:
-                            st.write(f"**Stop Loss:** ${stop_loss:.4f}")
-                        
-                        # Take profits
-                        take_profits = signal_data.get("take_profits", {})
-                        if take_profits:
-                            st.write("**Take Profits:**")
-                            for tp_key, tp_price in take_profits.items():
-                                st.write(f"  {tp_key.upper()}: ${tp_price:.4f}")
-                    
-                    with col2:
-                        st.markdown("### 📊 Position & Risk")
-                        
-                        # Position size
-                        position_size = signal_data.get("position_size_pct")
-                        if position_size:
-                            st.write(f"**Position Size:** {position_size:.1f}%")
-                        
-                        # Weights
-                        weights = signal_data.get("weights", {})
-                        if weights:
-                            st.write("**Component Weights:**")
-                            for component, weight in weights.items():
-                                st.write(f"  {component.title()}: {weight:.2f}")
-                    
-                    st.markdown("---")
-                    
-                    # Display rationale
-                    rationale = signal_data.get("rationale", [])
-                    if rationale:
-                        st.markdown("### 💡 Signal Rationale")
-                        for i, point in enumerate(rationale, 1):
-                            st.write(f"{i}. {point}")
-                    
-                    # Display cancel conditions
-                    cancel_conditions = signal_data.get("cancel_conditions", [])
-                    if cancel_conditions:
-                        st.markdown("### ⚠️ Cancel Conditions")
-                        for condition in cancel_conditions:
-                            st.write(f"• {condition}")
-                    
-                    # Display processing info
-                    with st.expander("🔧 Processing Information", expanded=False):
-                        processing_info = processed_signal.get("metadata", {})
-                        st.write(f"**Processor:** {processing_info.get('payload_processor', 'Unknown')}")
-                        st.write(f"**Timeframe Used:** {processing_info.get('timeframe_used', 'Unknown')}")
-                        st.write(f"**Real Data Validated:** {processing_info.get('real_data_validated', False)}")
-                        st.write(f"**Source Data Quality:** {processing_info.get('source_data_quality', 'Unknown')}")
-                        st.write(f"**Signal Format:** Explicit JSON Schema v1.0")
-                    
-                else:
+                default_start = datetime.fromisoformat(
+                    inputs_defaults.get("start", default_start.isoformat())
+                )
+                default_end = datetime.fromisoformat(
+                    inputs_defaults.get("end", default_end.isoformat())
+                )
+            except (TypeError, ValueError):
+                default_start = default_end - timedelta(hours=72)
+
+        if default_start >= default_end:
+            default_start = default_end - timedelta(hours=72)
+
+        col_symbol, col_timeframe = st.columns([2, 1])
+        with col_symbol:
+            symbol_input = st.text_input(
+                "Symbol (Binance spot)",
+                value=symbol_default,
+                help="Enter the Binance spot symbol, e.g. BTCUSDT",
+                key=ui_key("automated_signals", "symbol"),
+            )
+        with col_timeframe:
+            try:
+                timeframe_index = AUTOMATED_SIGNALS_TIMEFRAMES.index(timeframe_default)
+            except ValueError:
+                timeframe_index = AUTOMATED_SIGNALS_TIMEFRAMES.index("1h")
+            timeframe_selection = st.selectbox(
+                "Timeframe",
+                AUTOMATED_SIGNALS_TIMEFRAMES,
+                index=timeframe_index,
+                key=ui_key("automated_signals", "timeframe"),
+            )
+
+        start_col, end_col = st.columns(2)
+        with start_col:
+            start_date = st.date_input(
+                "Start date (UTC)",
+                value=default_start.date(),
+                key=ui_key("automated_signals", "start_date"),
+            )
+            start_time = st.time_input(
+                "Start time (UTC)",
+                value=default_start.time().replace(microsecond=0),
+                key=ui_key("automated_signals", "start_time"),
+            )
+        with end_col:
+            end_date = st.date_input(
+                "End date (UTC)",
+                value=default_end.date(),
+                key=ui_key("automated_signals", "end_date"),
+            )
+            end_time = st.time_input(
+                "End time (UTC)",
+                value=default_end.time().replace(microsecond=0),
+                key=ui_key("automated_signals", "end_time"),
+            )
+
+        start_dt = datetime.combine(start_date, start_time, tzinfo=timezone.utc)
+        end_dt = datetime.combine(end_date, end_time, tzinfo=timezone.utc)
+
+        symbol_clean = symbol_input.strip().upper()
+        try:
+            tf_minutes = Timeframe.to_minutes(timeframe_selection)
+        except ValueError:
+            tf_minutes = 0
+
+        duration_minutes = max((end_dt - start_dt).total_seconds() / 60, 0.0)
+        estimated_bars = duration_minutes / tf_minutes if tf_minutes else 0.0
+
+        if start_dt >= end_dt:
+            st.warning("Start time must be before end time.")
+        if estimated_bars < 30:
+            st.info("Select a range with at least 30 completed candles to generate signals.")
+
+        current_inputs_snapshot = {
+            "symbol": symbol_clean,
+            "timeframe": timeframe_selection,
+            "start": start_dt.isoformat(),
+            "end": end_dt.isoformat(),
+        }
+        if "inputs" not in state:
+            state["inputs"] = current_inputs_snapshot
+
+        inputs_valid = bool(symbol_clean) and start_dt < end_dt and estimated_bars >= 30
+
+        run_button = st.button(
+            "🚀 Run with Binance Data",
+            type="primary",
+            use_container_width=True,
+            disabled=not inputs_valid,
+        )
+
+        if run_button:
+            previous_inputs = state.get("inputs")
+            if previous_inputs and previous_inputs != current_inputs_snapshot:
+                cached_run_automated_signals.clear()
+            try:
+                with st.spinner(
+                    f"Fetching Binance candles for {symbol_clean} on {timeframe_selection} timeframe..."
+                ):
+                    result_dict = cached_run_automated_signals(
+                        symbol_clean,
+                        timeframe_selection,
+                        current_inputs_snapshot["start"],
+                        current_inputs_snapshot["end"],
+                    )
+                if not is_valid_signal_structure(result_dict["explicit_signal"]):
                     raise ValueError("Generated signal does not match required schema")
-                    
-            except Exception as signal_error:
-                st.warning(f"⚠️ Could not generate explicit JSON signals: {signal_error}")
-                
-                # Fallback to display processed signal
-                signal_data = processed_signal
-                
-                # Display main signal
-                col1, col2, col3 = st.columns([2, 1, 1])
-                
-                with col1:
-                    signal_type = signal_data.get("signal_type", "NEUTRAL")
-                    if signal_type == "BUY":
-                        st.success(f"## 🟢 BUY SIGNAL")
-                    elif signal_type == "SELL":
-                        st.error(f"## 🔴 SELL SIGNAL")
-                    else:
-                        st.info(f"## ⚪ NEUTRAL")
-                
-                with col2:
-                    confidence = signal_data.get("confidence", 0.0)
-                    confidence_pct = confidence * 100
-                    if confidence > 0.7:
-                        st.metric("Confidence", f"{confidence_pct:.1f}%", "🟢 High")
-                    elif confidence > 0.5:
-                        st.metric("Confidence", f"{confidence_pct:.1f}%", "🟡 Medium")
-                    else:
-                        st.metric("Confidence", f"{confidence_pct:.1f}%", "⚪ Low")
-                
-                with col3:
-                    timestamp = signal_data.get("timestamp", 0)
-                    if timestamp:
-                        from datetime import datetime
-                        signal_time = datetime.fromtimestamp(timestamp / 1000).strftime("%H:%M:%S")
-                        st.metric("Signal Time", signal_time)
-                
-                st.markdown("---")
-                
-                # Display processing info
-                with st.expander("🔧 Processing Information", expanded=False):
-                    processing_info = signal_data.get("metadata", {})
-                    st.write(f"**Processor:** {processing_info.get('payload_processor', 'Unknown')}")
-                    st.write(f"**Timeframe Used:** {processing_info.get('timeframe_used', 'Unknown')}")
-                    st.write(f"**Real Data Validated:** {processing_info.get('real_data_validated', False)}")
-                    st.write(f"**Source Data Quality:** {processing_info.get('source_data_quality', 'Unknown')}")
-                    st.info("⚠️ Showing fallback signal format. Enable explicit JSON signals for full functionality.")
-            
-        except Exception as e:
-            st.error(f"❌ Error processing automated signals: {str(e)}")
-            
-            # Check if there's any signal data in payload
-            automated_signals = payload.get("automated_signals", {})
-            trading_signals_section = payload.get("trading_signals", {})
-            advanced = payload.get("advanced", {})
-            
-            if not automated_signals and not trading_signals_section and not advanced:
-                st.warning("No automated signals data available for this analysis. Run the trading system analyzer to generate signals.")
-            else:
-                st.info("⚠️ Trading system requires explicit JSON signals output for full functionality. Check signal generation configuration.")
-        
-        # Continue with the rest of the signal display (factor analysis, position plan, etc.)
-        if 'signal_data' in locals() and signal_data:
-            
+                state["inputs"] = current_inputs_snapshot
+                state["result"] = result_dict
+                state["error"] = None
+            except DataValidationError as exc:
+                state["inputs"] = current_inputs_snapshot
+                state["result"] = None
+                state["error"] = f"Data validation failed: {exc}"
+            except Exception as exc:
+                state["inputs"] = current_inputs_snapshot
+                state["result"] = None
+                state["error"] = str(exc)
+
+        error_message = state.get("error")
+        result = state.get("result")
+
+        if error_message:
+            st.error(error_message)
+        elif result:
+            inputs_used = state.get("inputs", current_inputs_snapshot)
+            candles = result.get("candles", [])
+            try:
+                result_start = datetime.fromisoformat(
+                    inputs_used.get("start", current_inputs_snapshot["start"])
+                )
+                result_end = datetime.fromisoformat(
+                    inputs_used.get("end", current_inputs_snapshot["end"])
+                )
+            except (TypeError, ValueError):
+                result_start = start_dt
+                result_end = end_dt
+
+            st.caption(
+                f"Source: Binance | {inputs_used.get('symbol', symbol_clean)} "
+                f"{inputs_used.get('timeframe', timeframe_selection)} | {len(candles)} candles "
+                f"from {result_start.strftime('%Y-%m-%d %H:%M UTC')} to {result_end.strftime('%Y-%m-%d %H:%M UTC')}"
+            )
+
+            signal_data = result["explicit_signal"]
+            processed_signal = result["processed_payload"]
+
+            col1, col2, col3 = st.columns([2, 1, 1])
+
+            with col1:
+                signal_type = signal_data.get("signal", "HOLD")
+                if signal_type == "BUY":
+                    st.success("## 🟢 BUY SIGNAL")
+                elif signal_type == "SELL":
+                    st.error("## 🔴 SELL SIGNAL")
+                else:
+                    st.info("## ⚪ HOLD")
+
+            with col2:
+                confidence = signal_data.get("confidence", 5)
+                if confidence >= 8:
+                    st.metric("Confidence", f"{confidence}/10", "🟢 High")
+                elif confidence >= 5:
+                    st.metric("Confidence", f"{confidence}/10", "🟡 Medium")
+                else:
+                    st.metric("Confidence", f"{confidence}/10", "⚪ Low")
+
+            with col3:
+                timeframe_value = str(
+                    signal_data.get(
+                        "timeframe", inputs_used.get("timeframe", timeframe_selection)
+                    )
+                ).upper()
+                holding_period = str(signal_data.get("holding_period", "medium")).title()
+                st.metric("Timeframe", timeframe_value)
+                st.metric("Holding Period", holding_period)
+
+            st.markdown("---")
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.markdown("### 📈 Entry & Exit Levels")
+
+                entries = signal_data.get("entries", [])
+                if entries:
+                    st.write("**Entry Levels:**")
+                    for i, entry in enumerate(entries[:3], 1):
+                        st.write(f"  Entry {i}: ${entry:.4f}")
+
+                stop_loss = signal_data.get("stop_loss")
+                if stop_loss:
+                    st.write(f"**Stop Loss:** ${stop_loss:.4f}")
+
+                take_profits = signal_data.get("take_profits", {})
+                if take_profits:
+                    st.write("**Take Profits:**")
+                    for tp_key, tp_price in take_profits.items():
+                        st.write(f"  {tp_key.upper()}: ${tp_price:.4f}")
+
+            with col2:
+                st.markdown("### 📊 Position & Risk")
+
+                position_size = signal_data.get("position_size_pct")
+                if position_size:
+                    st.write(f"**Position Size:** {position_size:.1f}%")
+
+                weights = signal_data.get("weights", {})
+                if weights:
+                    st.write("**Component Weights:**")
+                    for component, weight in weights.items():
+                        st.write(f"  {component.title()}: {weight:.2f}")
+
+            st.markdown("---")
+
+            rationale = signal_data.get("rationale", [])
+            if rationale:
+                st.markdown("### 💡 Signal Rationale")
+                for i, point in enumerate(rationale, 1):
+                    st.write(f"{i}. {point}")
+
+            cancel_conditions = signal_data.get("cancel_conditions", [])
+            if cancel_conditions:
+                st.markdown("### ⚠️ Cancel Conditions")
+                for condition in cancel_conditions:
+                    st.write(f"• {condition}")
+
+            with st.expander("🔧 Processing Information", expanded=False):
+                processing_info = processed_signal.get("metadata", {})
+                st.write(f"**Processor:** {processing_info.get('payload_processor', 'Unknown')}")
+                st.write(f"**Timeframe Used:** {processing_info.get('timeframe_used', 'Unknown')}")
+                st.write(f"**Real Data Validated:** {processing_info.get('real_data_validated', False)}")
+                st.write(f"**Source Data Quality:** {processing_info.get('source_data_quality', 'Unknown')}")
+                st.write("**Signal Format:** Explicit JSON Schema v1.0")
+
             # Factor Analysis
             factors = signal_data.get("factors", [])
             if factors:
                 st.markdown("### 📊 Factor Analysis")
-                
+
                 factors_data = []
                 for factor in factors:
                     if isinstance(factor, dict):
-                        factors_data.append({
-                            "Factor": factor.get("factor_name", "Unknown"),
-                            "Score": f"{factor.get('score', 0):.2f}",
-                            "Weight": f"{factor.get('weight', 1.0):.2f}",
-                            "Emoji": factor.get("emoji", "⚪"),
-                            "Description": factor.get("description", ""),
-                        })
-                
+                        factors_data.append(
+                            {
+                                "Factor": factor.get("factor_name", "Unknown"),
+                                "Score": f"{factor.get('score', 0):.2f}",
+                                "Weight": f"{factor.get('weight', 1.0):.2f}",
+                                "Emoji": factor.get("emoji", "⚪"),
+                                "Description": factor.get("description", ""),
+                            }
+                        )
+
                 if factors_data:
                     factors_df = pd.DataFrame(factors_data)
                     st.dataframe(factors_df, use_container_width=True, hide_index=True)
-            
+
             st.markdown("---")
-            
+
             # Position Plan
             position_plan = signal_data.get("position_plan", {})
             if position_plan:
                 st.markdown("### 💼 Position Plan")
-                
+
                 plan_col1, plan_col2, plan_col3, plan_col4 = st.columns(4)
-                
+
                 entry_price = position_plan.get("entry_price", 0.0)
                 with plan_col1:
                     st.metric("Entry Price", f"${entry_price:.4f}")
-                
-                position_size = position_plan.get("position_size_usd", 0.0)
+
+                position_size_usd = position_plan.get("position_size_usd", 0.0)
                 with plan_col2:
-                    st.metric("Position Size", f"${position_size:.2f}" if position_size else "N/A")
-                
+                    st.metric(
+                        "Position Size",
+                        f"${position_size_usd:.2f}" if position_size_usd else "N/A",
+                    )
+
                 direction = position_plan.get("direction", "N/A")
                 with plan_col3:
                     st.metric("Direction", direction.upper() if direction else "N/A")
-                
+
                 leverage = position_plan.get("leverage", 1.0)
                 with plan_col4:
                     st.metric("Leverage", f"{leverage:.1f}x" if leverage else "N/A")
-                
+
                 st.markdown("#### TP/SL Ladder")
-                
+
                 ladder_col1, ladder_col2 = st.columns(2)
-                
+
                 with ladder_col1:
                     stop_loss = position_plan.get("stop_loss", 0.0)
                     st.write(f"**Stop Loss:** ${stop_loss:.4f}" if stop_loss else "**Stop Loss:** N/A")
-                    
+
                     if entry_price and stop_loss:
                         risk_distance = abs(entry_price - stop_loss)
                         risk_pct = (risk_distance / entry_price) * 100
                         st.write(f"Risk Distance: ${risk_distance:.4f} ({risk_pct:.2f}%)")
-                
+
                 with ladder_col2:
                     take_profit_levels = position_plan.get("take_profit_levels", [])
                     if take_profit_levels:
@@ -2044,106 +2145,105 @@ def main():
                                 st.write(f"TP{idx}: ${tp_level:.4f} ({profit_pct:+.2f}%)")
                     else:
                         st.write("No TP levels defined")
-                
-                # Risk/Reward metrics
+
                 if position_plan.get("risk_reward_ratio"):
                     rrr = position_plan.get("risk_reward_ratio")
                     st.markdown(f"**Risk/Reward Ratio:** {rrr:.2f}:1")
-                
+
                 if position_plan.get("max_risk_pct"):
                     max_risk = position_plan.get("max_risk_pct")
                     st.markdown(f"**Max Risk %:** {max_risk * 100:.2f}%")
-            
+
             st.markdown("---")
-            
-            # Holding Horizon
+
             if signal_data.get("holding_horizon_bars"):
                 holding_horizon = signal_data.get("holding_horizon_bars")
                 st.markdown("### ⏱️ Holding Horizon")
                 st.info(f"**Estimated Holding Period:** {holding_horizon} bars")
-            
-            # Rationale
+
             explanation = signal_data.get("explanation", {})
             if explanation:
                 st.markdown("### 📝 Signal Rationale")
-                
+
                 primary_reason = explanation.get("primary_reason", "")
                 if primary_reason:
                     st.markdown(f"**Primary Reason:** {primary_reason}")
-                
+
                 supporting_factors = explanation.get("supporting_factors", [])
                 if supporting_factors:
                     st.markdown("**Supporting Factors:**")
                     for factor in supporting_factors:
                         st.write(f"• {factor}")
-                
+
                 risk_factors = explanation.get("risk_factors", [])
                 if risk_factors:
                     st.markdown("**Risk Factors:**")
                     for risk in risk_factors:
                         st.write(f"⚠️ {risk}")
-                
+
                 market_context = explanation.get("market_context", "")
                 if market_context:
                     st.markdown(f"**Market Context:** {market_context}")
-            
+
             st.markdown("---")
-            
-            # Cancellation Reasons (if signal was rejected)
+
             if signal_data.get("cancellation_reasons"):
                 cancellation_reasons = signal_data.get("cancellation_reasons", [])
                 st.warning("### ⛔ Signal Rejection Reasons")
                 for reason in cancellation_reasons:
                     st.write(f"• {reason}")
-            
+
             st.markdown("---")
-            
-            # Performance Metrics
+
             optimization_stats = signal_data.get("optimization_stats", {})
             if optimization_stats:
                 st.markdown("### 📈 Performance Metrics")
-                
+
                 perf_col1, perf_col2, perf_col3, perf_col4 = st.columns(4)
-                
+
                 with perf_col1:
                     win_rate = optimization_stats.get("backtest_win_rate")
                     if win_rate is not None:
                         st.metric("Win Rate", f"{win_rate:.1f}%")
-                
+
                 with perf_col2:
                     profit_factor = optimization_stats.get("profit_factor")
                     if profit_factor is not None:
                         st.metric("Profit Factor", f"{profit_factor:.2f}")
-                
+
                 with perf_col3:
                     sharpe_ratio = optimization_stats.get("sharpe_ratio")
                     if sharpe_ratio is not None:
                         st.metric("Sharpe Ratio", f"{sharpe_ratio:.2f}")
-                
+
                 with perf_col4:
                     total_signals = optimization_stats.get("total_signals", 0)
                     st.metric("Total Signals", total_signals)
-                
-                # Additional metrics
+
                 perf_extra_col1, perf_extra_col2, perf_extra_col3 = st.columns(3)
-                
+
                 with perf_extra_col1:
                     avg_profit = optimization_stats.get("avg_profit_pct")
                     if avg_profit is not None:
                         st.metric("Avg Profit %", f"{avg_profit:.2f}%")
-                
+
                 with perf_extra_col2:
                     avg_loss = optimization_stats.get("avg_loss_pct")
                     if avg_loss is not None:
                         st.metric("Avg Loss %", f"{avg_loss:.2f}%")
-                
+
                 with perf_extra_col3:
                     profitable = optimization_stats.get("profitable_signals", 0)
                     losing = optimization_stats.get("losing_signals", 0)
                     st.metric("Profitable Signals", f"{profitable}/{profitable + losing}")
-            
+
             st.markdown("---")
-            st.info("💡 **Note:** This automated signals tab displays trading system analysis. Ensure your trading system exports signals in the expected JSON format for full functionality.")
+            st.info(
+                "💡 **Note:** This automated signals tab generates trading system analysis using real Binance data. "
+                "Ensure your trading system exports signals in the expected JSON format for full functionality."
+            )
+        else:
+            st.info("Configure symbol, timeframe, and date range to run automated signals with real Binance data.")
     
     with backtest_tab:
         st.subheader("🔬 Backtesting Engine")

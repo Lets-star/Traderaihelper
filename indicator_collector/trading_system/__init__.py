@@ -112,6 +112,11 @@ _MODULE_EXPORTS: Dict[str, Tuple[str, ...]] = {
         "generate_signals",
         "generate_signals_from_payload",
     ),
+    "indicator_collector.trading_system.automated_signals": (
+        "AutomatedSignalResult",
+        "build_payload_from_candles",
+        "run_automated_signal_flow",
+    ),
     "indicator_collector.trading_system.signal_schema": (
         "TradingSignalSchema",
         "validate_signal_json",

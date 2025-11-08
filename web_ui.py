@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import sys
-from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
 
 try:
@@ -169,8 +169,8 @@ def cached_run_automated_signals(
 ) -> Dict[str, Any]:
     """Cache Binance signal generation results for performance."""
     _ = source  # Included to differentiate cache keys if needed
-    start_dt = datetime.fromisoformat(start_iso)
-    end_dt = datetime.fromisoformat(end_iso)
+    start_dt = dt.datetime.fromisoformat(start_iso)
+    end_dt = dt.datetime.fromisoformat(end_iso)
     result = run_automated_signal_flow(
         symbol,
         timeframe,
@@ -202,7 +202,7 @@ def create_candlestick_chart(summary: SimulationSummary, main_series: TimeframeS
     
     df = pd.DataFrame([
         {
-            "timestamp": datetime.fromtimestamp(c.close_time / 1000),
+            "timestamp": dt.datetime.fromtimestamp(c.close_time / 1000),
             "open": c.open,
             "high": c.high,
             "low": c.low,
@@ -1828,8 +1828,8 @@ def main():
 
         state: Dict[str, Any] = st.session_state.setdefault(AUTOMATED_SIGNALS_STATE_KEY, {})
 
-        default_end = datetime.now(timezone.utc).replace(second=0, microsecond=0)
-        default_start = default_end - timedelta(hours=72)
+        default_end = dt.datetime.now(dt.timezone.utc).replace(second=0, microsecond=0)
+        default_start = default_end - dt.timedelta(hours=72)
 
         inputs_defaults = state.get("inputs")
         symbol_default = "BTCUSDT"
@@ -1838,17 +1838,17 @@ def main():
             symbol_default = inputs_defaults.get("symbol", symbol_default)
             timeframe_default = inputs_defaults.get("timeframe", timeframe_default)
             try:
-                default_start = datetime.fromisoformat(
+                default_start = dt.datetime.fromisoformat(
                     inputs_defaults.get("start", default_start.isoformat())
                 )
-                default_end = datetime.fromisoformat(
+                default_end = dt.datetime.fromisoformat(
                     inputs_defaults.get("end", default_end.isoformat())
                 )
             except (TypeError, ValueError):
-                default_start = default_end - timedelta(hours=72)
+                default_start = default_end - dt.timedelta(hours=72)
 
         if default_start >= default_end:
-            default_start = default_end - timedelta(hours=72)
+            default_start = default_end - dt.timedelta(hours=72)
 
         col_symbol, col_timeframe = st.columns([2, 1])
         with col_symbol:
@@ -1894,8 +1894,8 @@ def main():
                 key=ui_key("automated_signals", "end_time"),
             )
 
-        start_dt = datetime.combine(start_date, start_time, tzinfo=timezone.utc)
-        end_dt = datetime.combine(end_date, end_time, tzinfo=timezone.utc)
+        start_dt = dt.datetime.combine(start_date, start_time, tzinfo=dt.timezone.utc)
+        end_dt = dt.datetime.combine(end_date, end_time, tzinfo=dt.timezone.utc)
 
         symbol_clean = symbol_input.strip().upper()
         try:
@@ -1966,10 +1966,10 @@ def main():
             inputs_used = state.get("inputs", current_inputs_snapshot)
             candles = result.get("candles", [])
             try:
-                result_start = datetime.fromisoformat(
+                result_start = dt.datetime.fromisoformat(
                     inputs_used.get("start", current_inputs_snapshot["start"])
                 )
-                result_end = datetime.fromisoformat(
+                result_end = dt.datetime.fromisoformat(
                     inputs_used.get("end", current_inputs_snapshot["end"])
                 )
             except (TypeError, ValueError):
@@ -2422,11 +2422,10 @@ def main():
                         st.info("📊 Using sample historical data for demonstration. In production, this would load actual historical signals.")
                         
                         # Generate sample data
-                        from datetime import datetime, timedelta
                         import random
                         
                         sample_payloads = []
-                        base_timestamp = int((datetime.now() - timedelta(days=lookback_days)).timestamp() * 1000)
+                        base_timestamp = int((dt.datetime.now() - dt.timedelta(days=lookback_days)).timestamp() * 1000)
                         
                         for i in range(min(500, int(lookback_days * 0.7))):
                             signal_type = random.choice(["BUY", "SELL", "NEUTRAL"])
@@ -2673,10 +2672,9 @@ def main():
                         
                         # Create sample signal outcomes (in real implementation, this would be historical data)
                         import random
-                        from datetime import datetime, timedelta
                         
                         outcomes = []
-                        base_timestamp = int((datetime.now() - timedelta(days=rolling_window)).timestamp() * 1000)
+                        base_timestamp = int((dt.datetime.now() - dt.timedelta(days=rolling_window)).timestamp() * 1000)
                         
                         for i in range(int(min_signals * 2)):  # Generate more than minimum
                             success = random.random() > 0.4  # 60% win rate

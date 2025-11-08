@@ -19,6 +19,7 @@ from indicator_collector.indicator_metrics import (
     MarketSnapshot,
     PnLStats,
     SuccessStats,
+    SignalRecord,
 )
 
 
@@ -526,6 +527,148 @@ class TestConvenienceFunctions:
         assert payload["metadata"]["timestamp_iso"] == expected_iso
         assert payload["latest"]["timestamp"] == timestamp
         assert payload["latest"]["time_iso"] == expected_iso
+
+    def test_meta_timestamp_from_last_closed_candle(self):
+        """Future snapshots should not drive the payload timestamp."""
+        now_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
+        one_hour_ms = 60 * 60 * 1000
+        closed_ts = (now_ms // one_hour_ms) * one_hour_ms
+        if closed_ts >= now_ms - 60000:
+            closed_ts -= one_hour_ms
+        future_ts = closed_ts + one_hour_ms
+
+        closed_snapshot = MarketSnapshot(
+            timestamp=closed_ts,
+            close=50500.0,
+            open=50400.0,
+            high=50600.0,
+            low=50300.0,
+            volume=150.0,
+            trend_strength=70.0,
+            pattern_score=75.0,
+            sentiment=65.0,
+            structure_state="bullish",
+            structure_event=None,
+            volume_confirmed=True,
+            volume_ratio=1.3,
+            confluence_score=8.0,
+            signal="BUY",
+            volume_confidence=0.9,
+            confluence_bias="bullish",
+            confluence_bullish=8.5,
+            confluence_bearish=2.0,
+            rsi=60.0,
+            macd=1.5,
+            macd_signal=1.1,
+            macd_histogram=0.4,
+            bollinger_upper=51000.0,
+            bollinger_middle=50500.0,
+            bollinger_lower=50000.0,
+            atr=160.0,
+            atr_channels={"atr_trend_3x": 160.0},
+            vwap=50520.0,
+            sma_fast=50480.0,
+            sma_slow=50350.0,
+            rsi_divergence=None,
+            macd_divergence=None,
+        )
+
+        future_snapshot = MarketSnapshot(
+            timestamp=future_ts,
+            close=52000.0,
+            open=51900.0,
+            high=52100.0,
+            low=51800.0,
+            volume=140.0,
+            trend_strength=80.0,
+            pattern_score=85.0,
+            sentiment=75.0,
+            structure_state="bullish",
+            structure_event=None,
+            volume_confirmed=True,
+            volume_ratio=1.4,
+            confluence_score=9.0,
+            signal="BUY",
+            volume_confidence=0.95,
+            confluence_bias="bullish",
+            confluence_bullish=9.0,
+            confluence_bearish=1.5,
+            rsi=65.0,
+            macd=1.8,
+            macd_signal=1.3,
+            macd_histogram=0.5,
+            bollinger_upper=52500.0,
+            bollinger_middle=52000.0,
+            bollinger_lower=51500.0,
+            atr=170.0,
+            atr_channels={"atr_trend_3x": 170.0},
+            vwap=52020.0,
+            sma_fast=51980.0,
+            sma_slow=51850.0,
+            rsi_divergence=None,
+            macd_divergence=None,
+        )
+
+        closed_signal = SignalRecord(
+            bar_index=5,
+            timestamp=closed_ts,
+            signal_type="bullish",
+            price=50500.0,
+            strength=0.85,
+        )
+        future_signal = SignalRecord(
+            bar_index=6,
+            timestamp=future_ts,
+            signal_type="bullish",
+            price=52000.0,
+            strength=0.9,
+        )
+
+        summary = SimulationSummary(
+            snapshots=[closed_snapshot, future_snapshot],
+            signals=[closed_signal, future_signal],
+            pnl=PnLStats(),
+            success=SuccessStats(),
+            active_fvg_zones=[],
+            active_ob_zones=[],
+            last_structure_levels={},
+            multi_timeframe_trend={"1h": 70.0},
+            multi_timeframe_direction={"1h": "bullish"},
+            market_sentiment=65.0,
+            pattern_prediction=60.0,
+            multi_symbol=None,
+        )
+
+        payload = summary_to_payload(summary, "BINANCE:BTCUSDT", "1h", 200, "test-token")
+
+        expected_iso = datetime.fromtimestamp(closed_ts / 1000, tz=timezone.utc).isoformat()
+
+        assert payload["metadata"]["timestamp"] == closed_ts
+        assert payload["latest"]["timestamp"] == closed_ts
+        assert payload["latest"]["time_iso"] == expected_iso
+        assert payload["latest"]["close"] == closed_snapshot.close
+        assert all(signal["timestamp"] <= closed_ts for signal in payload["signals"])
+        assert payload["metadata"]["timestamp"] <= int(datetime.now(tz=timezone.utc).timestamp() * 1000) + 60000
+
+    def test_meta_timestamp_omitted_when_no_candles(self):
+        """Raise a clear error when no snapshots are available."""
+        summary = SimulationSummary(
+            snapshots=[],
+            signals=[],
+            pnl=PnLStats(),
+            success=SuccessStats(),
+            active_fvg_zones=[],
+            active_ob_zones=[],
+            last_structure_levels={},
+            multi_timeframe_trend={},
+            multi_timeframe_direction={},
+            market_sentiment=0.0,
+            pattern_prediction=0.0,
+            multi_symbol=None,
+        )
+
+        with pytest.raises(ValueError, match="No closed candles available for timeframe 1h"):
+            summary_to_payload(summary, "BINANCE:BTCUSDT", "1h", 200, "test-token")
 
 
 class TestGlobalProcessor:

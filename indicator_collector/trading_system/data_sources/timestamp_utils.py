@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import math
 from datetime import datetime
-from typing import Union
+from typing import Optional, Union
+
+import pandas as pd
+
+from ...timeframes import Timeframe
 
 
 def normalize_timestamp(ts: Union[int, float]) -> int:
@@ -78,28 +82,88 @@ def validate_timestamps_monotonic(timestamps: list[int]) -> bool:
     return True
 
 
-def validate_no_future_timestamps(timestamps: list[int]) -> bool:
+def validate_no_future_timestamps(timestamps: list[int], tolerance_ms: int = 60 * 1000) -> bool:
     """
     Validate that no timestamps are in the future.
 
     Args:
         timestamps: List of timestamps (in milliseconds)
+        tolerance_ms: Allowed future tolerance in milliseconds
 
     Raises:
-        ValueError: If any timestamp is in the future
+        ValueError: If any timestamp is in the future beyond the tolerance
     """
     if not timestamps:
         return True
 
+    if tolerance_ms < 0:
+        raise ValueError("tolerance_ms must be non-negative")
+
     current_ms = int(datetime.utcnow().timestamp() * 1000)
-    # Allow 1 minute tolerance for real-world data
-    future_tolerance_ms = 60 * 1000
 
     for ts in timestamps:
-        if ts > current_ms + future_tolerance_ms:
+        if ts > current_ms + tolerance_ms:
             raise ValueError(
                 f"Future timestamp detected: {ts} "
-                f"(current: {current_ms}, tolerance: {future_tolerance_ms}ms)"
+                f"(current: {current_ms}, tolerance: {tolerance_ms}ms)"
             )
 
     return True
+
+
+def get_last_closed_candle_ts(
+    candles_df: "pd.DataFrame",
+    timeframe: Union[str, Timeframe],
+    tolerance_ms: int = 60 * 1000,
+) -> int:
+    """
+    Determine the last fully closed candle timestamp for the given timeframe.
+
+    Args:
+        candles_df: DataFrame containing candle data with a 'ts' column representing open times.
+        timeframe: Candle timeframe (e.g. "1h", "3h", "15m").
+        tolerance_ms: Allowed future tolerance when validating the closed timestamp.
+
+    Returns:
+        Timestamp in milliseconds representing the last closed candle.
+
+    Raises:
+        ValueError: If no candles are available or all candles are in the future.
+    """
+    if candles_df is None or candles_df.empty:
+        raise ValueError("Cannot determine last closed candle timestamp: no candles provided")
+
+    if "ts" not in candles_df.columns:
+        raise ValueError("Candles dataframe must contain 'ts' column")
+
+    df = candles_df.sort_values("ts")
+    tf = Timeframe.from_value(timeframe)
+    interval_ms = tf.to_milliseconds()
+
+    last_close_ts: Optional[int] = None
+    last_error: Optional[Exception] = None
+
+    for raw_ts in reversed(df["ts"].tolist()):
+        normalized_open = normalize_timestamp(raw_ts)
+        bucket_index = normalized_open // interval_ms
+        close_ts = (bucket_index + 1) * interval_ms
+        last_close_ts = close_ts
+
+        try:
+            validate_no_future_timestamps([close_ts], tolerance_ms=tolerance_ms)
+        except ValueError as exc:
+            last_error = exc
+            continue
+
+        return close_ts
+
+    if last_close_ts is None:
+        raise ValueError(f"No candles provided for timeframe {tf.value}")
+
+    message = (
+        f"No closed candles available for timeframe {tf.value}; "
+        f"latest candle close ts={last_close_ts}"
+    )
+    if last_error:
+        raise ValueError(message) from last_error
+    raise ValueError(message)

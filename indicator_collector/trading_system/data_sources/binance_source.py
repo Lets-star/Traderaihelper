@@ -6,7 +6,7 @@ import json
 import logging
 import time
 from datetime import datetime, timedelta
-from typing import Dict, Optional, Union
+from typing import Callable, Dict, Optional, Union
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
@@ -26,6 +26,14 @@ BINANCE_BASE_URL = "https://api.binance.com/api/v3/klines"
 BINANCE_RATE_LIMIT_DELAY = 0.1  # 100ms between requests to respect rate limits
 MAX_RETRIES = 3
 RETRY_BACKOFF = 2  # Exponential backoff multiplier
+BINANCE_INTERVAL_TO_MILLISECONDS = {
+    "1m": 60 * 1000,
+    "5m": 5 * 60 * 1000,
+    "15m": 15 * 60 * 1000,
+    "1h": 60 * 60 * 1000,
+    "4h": 4 * 60 * 60 * 1000,
+    "1d": 24 * 60 * 60 * 1000,
+}
 
 
 class BinanceKlinesSource(HistoricalDataSource):
@@ -51,6 +59,8 @@ class BinanceKlinesSource(HistoricalDataSource):
         api_secret: Optional[str] = None,
         rate_limit_delay: float = BINANCE_RATE_LIMIT_DELAY,
         max_retries: int = MAX_RETRIES,
+        backoff_base: float = 0.5,
+        sleep_func: Optional[Callable[[float], None]] = None,
     ):
         """
         Initialize Binance data source.
@@ -60,11 +70,20 @@ class BinanceKlinesSource(HistoricalDataSource):
             api_secret: Binance API secret (optional for public endpoints)
             rate_limit_delay: Delay between requests in seconds
             max_retries: Maximum retry attempts for failed requests
+            backoff_base: Base delay (seconds) used for exponential backoff between retries
+            sleep_func: Optional sleep function override (useful for testing)
         """
+        if max_retries < 1:
+            raise ValueError("max_retries must be at least 1")
+        if backoff_base < 0:
+            raise ValueError("backoff_base must be non-negative")
+
         self.api_key = api_key
         self.api_secret = api_secret
         self.rate_limit_delay = rate_limit_delay
         self.max_retries = max_retries
+        self.backoff_base = backoff_base
+        self._sleep = sleep_func or time.sleep
 
     def load_candles(
         self,
@@ -145,7 +164,7 @@ class BinanceKlinesSource(HistoricalDataSource):
             List of candle data (each is a list from Binance API)
 
         Raises:
-            ValueError: If API requests fail after retries
+            RuntimeError: If API requests fail after retries
         """
         all_candles = []
         start_ms = int(start.timestamp() * 1000)
@@ -168,7 +187,8 @@ class BinanceKlinesSource(HistoricalDataSource):
                 current_start_ms = last_candle_time + 1  # Start after last candle
 
                 # Respect rate limits
-                time.sleep(self.rate_limit_delay)
+                if self.rate_limit_delay > 0:
+                    self._sleep(self.rate_limit_delay)
 
             except Exception as e:
                 logger.error(f"Error fetching batch starting at {current_start_ms}: {e}")
@@ -189,48 +209,116 @@ class BinanceKlinesSource(HistoricalDataSource):
             List of candle data from Binance API
 
         Raises:
-            ValueError: If all retries fail
+            RuntimeError: If all retries fail
         """
-        for attempt in range(self.max_retries):
-            try:
-                url = (
-                    f"{BINANCE_BASE_URL}?"
-                    f"symbol={symbol}&"
-                    f"interval={interval}&"
-                    f"startTime={start_ms}&"
-                    f"limit={self.MAX_CANDLES_PER_REQUEST}"
-                )
+        url = (
+            f"{BINANCE_BASE_URL}?"
+            f"symbol={symbol}&"
+            f"interval={interval}&"
+            f"startTime={start_ms}&"
+            f"limit={self.MAX_CANDLES_PER_REQUEST}"
+        )
 
+        last_error: Optional[Exception] = None
+
+        for attempt in range(1, self.max_retries + 1):
+            try:
                 with urlopen(url) as response:
                     raw_data = response.read()
 
-                data = json.loads(raw_data)
-                return data
+                return json.loads(raw_data)
 
-            except HTTPError as e:
-                if e.code == 429:  # Rate limited
-                    backoff_time = RETRY_BACKOFF ** attempt
+            except HTTPError as exc:
+                last_error = exc
+                if exc.code == 429 and attempt < self.max_retries:
+                    backoff_time = self._compute_backoff_delay(attempt)
                     logger.warning(
-                        f"Rate limited on attempt {attempt + 1}, backing off {backoff_time}s"
+                        "Rate limited while fetching %s %s (attempt %s/%s); backing off %.2fs",
+                        symbol,
+                        interval,
+                        attempt,
+                        self.max_retries,
+                        backoff_time,
                     )
-                    time.sleep(backoff_time)
-                else:
-                    raise ValueError(f"HTTP error {e.code}: {e.reason}") from e
+                    if backoff_time > 0:
+                        self._sleep(backoff_time)
+                    continue
 
-            except URLError as e:
-                if attempt < self.max_retries - 1:
-                    backoff_time = RETRY_BACKOFF ** attempt
+                reason = exc.reason or getattr(exc, "msg", "")
+                message = (
+                    f"HTTP error {exc.code} while fetching klines for {symbol} "
+                    f"interval={interval} startTime={start_ms}"
+                )
+                if reason:
+                    message += f": {reason}"
+                logger.error(message)
+                raise RuntimeError(message) from exc
+
+            except URLError as exc:
+                last_error = exc
+                if attempt < self.max_retries:
+                    backoff_time = self._compute_backoff_delay(attempt)
                     logger.warning(
-                        f"Network error on attempt {attempt + 1}, backing off {backoff_time}s"
+                        "Network error while fetching %s %s (attempt %s/%s): %s – retrying after %.2fs",
+                        symbol,
+                        interval,
+                        attempt,
+                        self.max_retries,
+                        exc.reason,
+                        backoff_time,
                     )
-                    time.sleep(backoff_time)
-                else:
-                    raise ValueError(f"Network error: {e.reason}") from e
+                    if backoff_time > 0:
+                        self._sleep(backoff_time)
+                    continue
+                break
 
-            except json.JSONDecodeError as e:
-                raise ValueError(f"Failed to decode Binance response: {e}") from e
+            except json.JSONDecodeError as exc:
+                message = (
+                    f"Failed to decode Binance response for {symbol} interval={interval} "
+                    f"startTime={start_ms}: {exc}"
+                )
+                logger.error(message)
+                raise RuntimeError(message) from exc
 
-        raise ValueError(f"Failed to fetch klines after {self.max_retries} retries")
+        max_retry_message = self._format_max_retry_message(symbol, interval, start_ms, last_error)
+        logger.error(max_retry_message)
+        raise RuntimeError(max_retry_message) from last_error
+
+    def _compute_backoff_delay(self, attempt: int) -> float:
+        """Compute exponential backoff delay for the given attempt."""
+        if attempt <= 0 or self.backoff_base == 0:
+            return 0.0
+        return self.backoff_base * (RETRY_BACKOFF ** (attempt - 1))
+
+    def _estimate_end_time(self, start_ms: int, interval: str) -> Optional[int]:
+        """Estimate end time for request based on interval and limit."""
+        interval_ms = BINANCE_INTERVAL_TO_MILLISECONDS.get(interval)
+        if interval_ms is None:
+            return None
+        return start_ms + interval_ms * self.MAX_CANDLES_PER_REQUEST
+
+    def _format_max_retry_message(
+        self,
+        symbol: str,
+        interval: str,
+        start_ms: int,
+        last_error: Optional[Exception],
+    ) -> str:
+        """Create a detailed error message when retry budget is exhausted."""
+        end_ms = self._estimate_end_time(start_ms, interval)
+        message = (
+            f"Max retries exceeded while fetching klines for {symbol} "
+            f"interval={interval} startTime={start_ms}"
+        )
+        if end_ms is not None:
+            message += f" endTime≈{end_ms}"
+
+        if last_error is not None:
+            reason = getattr(last_error, "reason", None) or getattr(last_error, "msg", None) or str(last_error)
+            if reason:
+                message += f": {reason}"
+
+        return message
 
     def _candles_to_dataframe(self, candles: list[list]) -> pd.DataFrame:
         """

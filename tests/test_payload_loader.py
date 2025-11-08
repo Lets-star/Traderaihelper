@@ -2,7 +2,7 @@
 
 import json
 import pytest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from indicator_collector.trading_system.payload_loader import (
     PayloadProcessor,
@@ -13,6 +13,13 @@ from indicator_collector.trading_system.payload_loader import (
     payload_processor,
 )
 from indicator_collector.real_data_validator import DataValidationError
+from indicator_collector.indicator_metrics import (
+    summary_to_payload,
+    SimulationSummary,
+    MarketSnapshot,
+    PnLStats,
+    SuccessStats,
+)
 
 
 class TestPayloadProcessor:
@@ -458,6 +465,67 @@ class TestConvenienceFunctions:
         assert context.current_price == 50050.0
         assert context.indicators["trend_strength"] == 65.0
         assert context.indicators["rsi"] == 55.0
+
+    def test_summary_to_payload_adds_metadata_timestamp(self):
+        """Ensure summary_to_payload populates metadata timestamp from latest snapshot."""
+        timestamp = 1640995200000
+        snapshot = MarketSnapshot(
+            timestamp=timestamp,
+            close=50000.0,
+            open=49950.0,
+            high=50100.0,
+            low=49800.0,
+            volume=120.0,
+            trend_strength=65.0,
+            pattern_score=70.0,
+            sentiment=60.0,
+            structure_state="bullish",
+            structure_event=None,
+            volume_confirmed=True,
+            volume_ratio=1.2,
+            confluence_score=7.5,
+            signal="BUY",
+            volume_confidence=0.8,
+            confluence_bias="bullish",
+            confluence_bullish=7.0,
+            confluence_bearish=3.0,
+            rsi=55.0,
+            macd=1.2,
+            macd_signal=0.9,
+            macd_histogram=0.3,
+            bollinger_upper=50500.0,
+            bollinger_middle=50000.0,
+            bollinger_lower=49500.0,
+            atr=150.0,
+            atr_channels={"atr_trend_3x": 150.0},
+            vwap=50020.0,
+            sma_fast=49980.0,
+            sma_slow=49850.0,
+            rsi_divergence=None,
+            macd_divergence=None,
+        )
+        summary = SimulationSummary(
+            snapshots=[snapshot],
+            signals=[],
+            pnl=PnLStats(),
+            success=SuccessStats(),
+            active_fvg_zones=[],
+            active_ob_zones=[],
+            last_structure_levels={},
+            multi_timeframe_trend={"1h": 65.0},
+            multi_timeframe_direction={"1h": "bullish"},
+            market_sentiment=60.0,
+            pattern_prediction=55.0,
+            multi_symbol=None,
+        )
+        payload = summary_to_payload(summary, "BINANCE:BTCUSDT", "1h", 200, "test-token")
+
+        expected_iso = datetime.fromtimestamp(timestamp / 1000, tz=timezone.utc).isoformat()
+
+        assert payload["metadata"]["timestamp"] == timestamp
+        assert payload["metadata"]["timestamp_iso"] == expected_iso
+        assert payload["latest"]["timestamp"] == timestamp
+        assert payload["latest"]["time_iso"] == expected_iso
 
 
 class TestGlobalProcessor:

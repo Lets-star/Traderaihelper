@@ -1040,6 +1040,8 @@ def summary_to_payload(
 ) -> Dict[str, object]:
     latest_snapshot = summary.snapshots[-1]
     generated_at = datetime.now(tz=timezone.utc).isoformat()
+    latest_timestamp = latest_snapshot.timestamp
+    latest_time_iso = datetime.fromtimestamp(latest_timestamp / 1000, tz=timezone.utc).isoformat()
 
     signals_payload = [
         {
@@ -1132,10 +1134,12 @@ def summary_to_payload(
             "period": period,
             "token": token,
             "generated_at": generated_at,
+            "timestamp": latest_timestamp,
+            "timestamp_iso": latest_time_iso,
         },
         "latest": {
-            "timestamp": latest_snapshot.timestamp,
-            "time_iso": datetime.fromtimestamp(latest_snapshot.timestamp / 1000, tz=timezone.utc).isoformat(),
+            "timestamp": latest_timestamp,
+            "time_iso": latest_time_iso,
             "close": latest_snapshot.close,
             "open": latest_snapshot.open,
             "high": latest_snapshot.high,

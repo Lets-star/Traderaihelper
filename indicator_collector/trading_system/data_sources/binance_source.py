@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timezone
 from typing import Callable, Dict, Optional, Union
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
@@ -18,6 +18,9 @@ from .timestamp_utils import (
     normalize_timestamp,
     validate_no_future_timestamps,
     validate_timestamps_monotonic,
+    ensure_utc_datetime,
+    datetime_to_milliseconds,
+    floor_to_interval,
 )
 
 logger = logging.getLogger(__name__)
@@ -34,6 +37,7 @@ BINANCE_INTERVAL_TO_MILLISECONDS = {
     "4h": 4 * 60 * 60 * 1000,
     "1d": 24 * 60 * 60 * 1000,
 }
+DEFAULT_FUTURE_TOLERANCE_MS = 60 * 1000
 
 
 class BinanceKlinesSource(HistoricalDataSource):
@@ -112,6 +116,21 @@ class BinanceKlinesSource(HistoricalDataSource):
         tf = Timeframe.from_value(timeframe)
         symbol = symbol.upper().strip()
 
+        start_utc = ensure_utc_datetime(start)
+        end_utc = ensure_utc_datetime(end)
+        if start_utc >= end_utc:
+            raise ValueError(
+                f"Start time {start} must be before end time {end} for Binance candles"
+            )
+
+        user_start_ms = datetime_to_milliseconds(start_utc)
+        user_end_ms = datetime_to_milliseconds(end_utc)
+        tolerance_ms = DEFAULT_FUTURE_TOLERANCE_MS
+
+        server_now_ms = datetime_to_milliseconds(datetime.now(timezone.utc))
+        allowed_server_ms = max(server_now_ms - tolerance_ms, 0)
+        effective_end_ms = min(user_end_ms, allowed_server_ms)
+
         # Determine if 3h aggregation is needed
         is_3h = tf.value == "3h"
         source_timeframe = "1h" if is_3h else tf.value
@@ -120,7 +139,7 @@ class BinanceKlinesSource(HistoricalDataSource):
         try:
             # Fetch raw candles
             raw_candles = self._fetch_candles_paginated(
-                symbol, binance_interval, start, end
+                symbol, binance_interval, start_utc, end_utc
             )
 
             if not raw_candles:
@@ -135,8 +154,27 @@ class BinanceKlinesSource(HistoricalDataSource):
             if is_3h:
                 df = self._aggregate_to_3h(df)
 
-            # Validate and normalize
-            df = self._validate_and_normalize(df, tf)
+            # Validate and normalize without future validation (handled after filtering)
+            df = self._validate_and_normalize(
+                df,
+                tf,
+                skip_future_validation=True,
+            )
+
+            df = self._apply_time_range_filters(
+                df,
+                tf,
+                user_start_ms=user_start_ms,
+                user_end_ms=user_end_ms,
+                effective_end_ms=effective_end_ms,
+                tolerance_ms=tolerance_ms,
+            )
+
+            if df.empty:
+                raise ValueError(
+                    f"No candles within requested range for {symbol} {tf.value} "
+                    "after applying boundaries"
+                )
 
             return df
 
@@ -167,8 +205,8 @@ class BinanceKlinesSource(HistoricalDataSource):
             RuntimeError: If API requests fail after retries
         """
         all_candles = []
-        start_ms = int(start.timestamp() * 1000)
-        end_ms = int(end.timestamp() * 1000)
+        start_ms = datetime_to_milliseconds(ensure_utc_datetime(start))
+        end_ms = datetime_to_milliseconds(ensure_utc_datetime(end))
 
         current_start_ms = start_ms
 
@@ -392,13 +430,79 @@ class BinanceKlinesSource(HistoricalDataSource):
 
         return result
 
-    def _validate_and_normalize(self, df: pd.DataFrame, timeframe: Timeframe) -> pd.DataFrame:
+    def _apply_time_range_filters(
+        self,
+        df: pd.DataFrame,
+        timeframe: Timeframe,
+        *,
+        user_start_ms: int,
+        user_end_ms: int,
+        effective_end_ms: int,
+        tolerance_ms: int,
+    ) -> pd.DataFrame:
+        """Apply user range and closed-candle constraints to candle data."""
+        if user_end_ms <= user_start_ms:
+            raise ValueError("Normalized end time must be after start time")
+
+        interval_ms = timeframe.to_milliseconds()
+        start_boundary = floor_to_interval(user_start_ms, interval_ms)
+        adjusted_end = max(user_end_ms - 1, user_start_ms)
+        end_boundary = floor_to_interval(adjusted_end, interval_ms)
+
+        if end_boundary < start_boundary:
+            return df.iloc[0:0]
+
+        filtered = df[(df["ts"] >= start_boundary) & (df["ts"] <= end_boundary)].copy()
+        if filtered.empty:
+            return filtered
+
+        last_closed_reference_ms = max(effective_end_ms, 0)
+        last_closed_close_ms = floor_to_interval(last_closed_reference_ms, interval_ms)
+
+        if last_closed_close_ms < start_boundary + interval_ms:
+            # No fully closed candles available within the requested window
+            return filtered.iloc[0:0]
+
+        close_times = filtered["ts"] + interval_ms
+        filtered = filtered[close_times <= last_closed_close_ms].copy()
+        if filtered.empty:
+            return filtered
+
+        filtered = (
+            filtered.drop_duplicates(subset="ts")
+            .sort_values("ts")
+            .reset_index(drop=True)
+        )
+
+        validate_timestamps_monotonic(filtered["ts"].tolist())
+
+        close_time_list = (filtered["ts"] + interval_ms).tolist()
+        validate_no_future_timestamps(
+            close_time_list,
+            tolerance_ms=tolerance_ms,
+            reference_ms=effective_end_ms,
+        )
+
+        return filtered
+
+    def _validate_and_normalize(
+        self,
+        df: pd.DataFrame,
+        timeframe: Timeframe,
+        *,
+        skip_future_validation: bool = False,
+        tolerance_ms: int = 60 * 1000,
+        future_reference_ms: Optional[int] = None,
+    ) -> pd.DataFrame:
         """
         Validate and normalize the candle DataFrame.
 
         Args:
             df: DataFrame with candle data
             timeframe: Expected timeframe
+            skip_future_validation: When True, skip future timestamp validation.
+            tolerance_ms: Future tolerance window in milliseconds.
+            future_reference_ms: Optional reference timestamp for future validation.
 
         Returns:
             Validated and normalized DataFrame
@@ -438,10 +542,15 @@ class BinanceKlinesSource(HistoricalDataSource):
             raise ValueError(f"Timestamps not monotonic: {e}") from e
 
         # Validate no future timestamps
-        try:
-            validate_no_future_timestamps(df["ts"].tolist())
-        except Exception as e:
-            raise ValueError(f"Future timestamps detected: {e}") from e
+        if not skip_future_validation:
+            try:
+                validate_no_future_timestamps(
+                    df["ts"].tolist(),
+                    tolerance_ms=tolerance_ms,
+                    reference_ms=future_reference_ms,
+                )
+            except Exception as e:
+                raise ValueError(f"Future timestamps detected: {e}") from e
 
         # Validate no zero prices (before OHLC relationships)
         if (df[["open", "high", "low", "close"]] == 0).any().any():

@@ -315,7 +315,7 @@ class TestBinanceKlinesSourceFetching:
 
         mock_urlopen.side_effect = URLError("Connection failed")
 
-        with pytest.raises(ValueError, match="Failed to fetch klines"):
+        with pytest.raises(RuntimeError, match=r"Max retries exceeded while fetching klines.*BTCUSDT"):
             source._fetch_klines_batch("BTCUSDT", "1h", 1704067200000)
 
 

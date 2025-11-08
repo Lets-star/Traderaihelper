@@ -7,9 +7,13 @@ is processed by the trading system, rejecting synthetic/mock data.
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any, Dict, List, Optional, Set, Union
+
+
+logger = logging.getLogger(__name__)
 
 
 def timeframe_to_minutes(timeframe: str) -> int:
@@ -68,8 +72,9 @@ class RealDataValidator:
         "source", "exchange", "timestamp", "granularity"
     }
     
-    def __init__(self):
+    def __init__(self, marker_preview_limit: int = 3):
         self.validation_errors: List[str] = []
+        self.marker_preview_limit = max(0, marker_preview_limit)
     
     def validate_payload_sources(self, payload: Dict[str, Any]) -> bool:
         """
@@ -187,9 +192,18 @@ class RealDataValidator:
         _scan_for_markers(payload)
         
         if synthetic_flags_found:
+            preview = synthetic_flags_found[: self.marker_preview_limit]
+            preview_text = ", ".join(preview)
+            message = f"Synthetic data markers detected: {len(synthetic_flags_found)} instances"
+            if preview:
+                message += f" (e.g., {preview_text})"
+            logger.debug("Synthetic data markers detected: %s", preview_text or "no preview")
             raise DataValidationError(
-                f"Synthetic data markers detected: {len(synthetic_flags_found)} instances",
-                {"synthetic_flags": synthetic_flags_found}
+                message,
+                {
+                    "synthetic_flags": synthetic_flags_found,
+                    "preview": preview,
+                },
             )
         
         return True

@@ -22,6 +22,10 @@ from .math_utils import (
     sma,
     vwap,
 )
+from .trading_system.data_sources.timestamp_utils import (
+    normalize_timestamp,
+    validate_no_future_timestamps,
+)
 from .time_series import MetricPoint, TimeframeMetricSeries, TimeframeSeries
 
 ZoneType = Literal["BullFVG", "BearFVG", "BullOB", "BearOB"]
@@ -1038,10 +1042,58 @@ def summary_to_payload(
     period: int,
     token: str,
 ) -> Dict[str, object]:
-    latest_snapshot = summary.snapshots[-1]
+    snapshots = list(summary.snapshots)
+    if not snapshots:
+        raise ValueError(
+            f"No closed candles available for timeframe {timeframe}; summary contains no snapshots"
+        )
+
     generated_at = datetime.now(tz=timezone.utc).isoformat()
-    latest_timestamp = latest_snapshot.timestamp
+    tolerance_ms = 60 * 1000
+
+    latest_snapshot: Optional[MarketSnapshot] = None
+    latest_timestamp: Optional[int] = None
+    last_candidate_ts: Optional[int] = None
+    last_error: Optional[Exception] = None
+
+    for snapshot in reversed(snapshots):
+        try:
+            candidate_ts = normalize_timestamp(snapshot.timestamp)
+        except ValueError as exc:
+            last_error = exc
+            last_candidate_ts = snapshot.timestamp
+            continue
+
+        last_candidate_ts = candidate_ts
+
+        try:
+            validate_no_future_timestamps([candidate_ts], tolerance_ms=tolerance_ms)
+        except ValueError as exc:
+            last_error = exc
+            continue
+
+        latest_snapshot = snapshot
+        latest_timestamp = candidate_ts
+        break
+
+    if latest_snapshot is None or latest_timestamp is None:
+        fallback_ts = last_candidate_ts if last_candidate_ts is not None else snapshots[-1].timestamp
+        if isinstance(fallback_ts, (int, float)):
+            try:
+                fallback_ts = normalize_timestamp(fallback_ts)
+            except ValueError:
+                pass
+        message = (
+            f"No closed candles available for timeframe {timeframe}; "
+            f"latest candle ts={fallback_ts}"
+        )
+        if last_error:
+            raise ValueError(message) from last_error
+        raise ValueError(message)
+
     latest_time_iso = datetime.fromtimestamp(latest_timestamp / 1000, tz=timezone.utc).isoformat()
+
+    filtered_signals = [s for s in summary.signals if s.timestamp <= latest_timestamp]
 
     signals_payload = [
         {
@@ -1052,7 +1104,7 @@ def summary_to_payload(
             "price": s.price,
             "strength": s.strength,
         }
-        for s in summary.signals
+        for s in filtered_signals
     ]
 
     active_zones_payload = [

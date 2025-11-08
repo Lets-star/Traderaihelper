@@ -6,6 +6,7 @@ from .timestamp_utils import (
     normalize_timestamp,
     validate_no_future_timestamps,
     validate_timestamps_monotonic,
+    get_last_closed_candle_ts,
 )
 
 __all__ = [
@@ -14,4 +15,5 @@ __all__ = [
     "normalize_timestamp",
     "validate_timestamps_monotonic",
     "validate_no_future_timestamps",
+    "get_last_closed_candle_ts",
 ]

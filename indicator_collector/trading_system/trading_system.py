@@ -6,10 +6,9 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Set, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Set, Tuple, Union
 from unittest.mock import Mock
 
-from ..collector import CollectionResult
 from .interfaces import (
     AnalyzerContext,
     JsonDict,
@@ -40,6 +39,9 @@ from .technical_analysis import analyze_technical_factors
 from .sentiment_analyzer import analyze_sentiment_factors
 from .multitimeframe_analyzer import analyze_multitimeframe_factors
 from .volume_orderbook_analyzer import analyze_volume_orderbook
+
+if TYPE_CHECKING:
+    from ..types import CollectionResult
 
 
 @dataclass
@@ -281,7 +283,7 @@ class TradingOrchestrator:
         except Exception as e:
             print(f"Warning: Failed to save outcomes file: {e}")
     
-    def process_collection_result(self, result: CollectionResult) -> TradingSignalPayload:
+    def process_collection_result(self, result: "CollectionResult") -> TradingSignalPayload:
         """Process a CollectionResult and generate a complete trading signal."""
         
         # Parse collector result into analyzer context

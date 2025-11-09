@@ -20,7 +20,7 @@ from .interfaces import (
     parse_collector_payload,
     deserialize_signal_payload,
 )
-from .signal_generator import SignalGenerator, generate_trading_signal
+from .signal_generator import SignalConfig, SignalGenerator, generate_trading_signal
 from .position_manager import create_position_plan
 from .statistics_optimizer import StatisticsOptimizer
 from ..timeframes import Timeframe, timeframe_params
@@ -34,9 +34,14 @@ class PayloadProcessor:
         self.signal_generator = SignalGenerator()
         self.statistics_optimizer = StatisticsOptimizer()
     
-    def load_full_payload(self, json_data: Union[str, Dict[str, Any]], 
-                        timeframe: Optional[str] = None,
-                        validate_real_data: bool = True) -> TradingSignalPayload:
+    def load_full_payload(
+        self,
+        json_data: Union[str, Dict[str, Any]],
+        timeframe: Optional[str] = None,
+        validate_real_data: bool = True,
+        signal_config: Optional[SignalConfig] = None,
+        indicator_params: Optional[Dict[str, Any]] = None,
+    ) -> TradingSignalPayload:
         """
         Automatically load, validate, and process a complete JSON payload.
         
@@ -44,6 +49,8 @@ class PayloadProcessor:
             json_data: JSON string or dictionary containing trading data
             timeframe: Trading timeframe (extracted from payload if not provided)
             validate_real_data: Whether to validate real data constraints
+            signal_config: Optional signal configuration overrides (weights, thresholds)
+            indicator_params: Optional indicator parameter overrides keyed by indicator
             
         Returns:
             Processed TradingSignalPayload with complete analysis
@@ -91,10 +98,22 @@ class PayloadProcessor:
         
         # Update context with timeframe-specific parameters
         self._apply_timeframe_parameters(context, timeframe)
+
+        if indicator_params:
+            if not context.extras:
+                context.extras = {}
+            existing_params = context.extras.get("indicator_params")
+            merged_params = dict(existing_params) if isinstance(existing_params, dict) else {}
+            merged_params.update(indicator_params)
+            context.extras["indicator_params"] = merged_params
         
         # Generate trading signal
         try:
-            signal_payload = self.signal_generator.analyze(context)
+            signal_payload = self.signal_generator.analyze(
+                context,
+                config=signal_config,
+                indicator_params=indicator_params,
+            )
         except Exception as e:
             raise ValueError(f"Signal generation failed: {e}")
         
@@ -182,42 +201,54 @@ class PayloadProcessor:
 payload_processor = PayloadProcessor()
 
 
-def load_full_payload(json_data: Union[str, Dict[str, Any]], 
-                    timeframe: Optional[str] = None,
-                    validate_real_data: bool = True) -> TradingSignalPayload:
-    """
-    Convenience function to load and process a complete JSON payload.
-    
+def load_full_payload(
+    json_data: Union[str, Dict[str, Any]],
+    timeframe: Optional[str] = None,
+    validate_real_data: bool = True,
+    signal_config: Optional[SignalConfig] = None,
+    indicator_params: Optional[Dict[str, Any]] = None,
+) -> TradingSignalPayload:
+    """Convenience function to load and process a complete JSON payload.
+
     Args:
         json_data: JSON string or dictionary containing trading data
         timeframe: Trading timeframe (extracted from payload if not provided)
         validate_real_data: Whether to validate real data constraints
-        
+        signal_config: Optional signal configuration overrides
+        indicator_params: Optional indicator parameter overrides (e.g., MACD/RSI/ATR)
+
     Returns:
         Processed TradingSignalPayload with complete analysis
-        
+
     Raises:
         DataValidationError: If real data validation fails
         ValueError: If payload format is invalid
     """
-    return payload_processor.load_full_payload(json_data, timeframe, validate_real_data)
+    return payload_processor.load_full_payload(
+        json_data,
+        timeframe,
+        validate_real_data,
+        signal_config=signal_config,
+        indicator_params=indicator_params,
+    )
 
 
-def load_and_process_payload_dict(json_data: Union[str, Dict[str, Any]], 
-                               timeframe: Optional[str] = None,
-                               validate_real_data: bool = True) -> Dict[str, Any]:
-    """
-    Convenience function to load and process payload as dictionary.
-    
-    Args:
-        json_data: JSON string or dictionary containing trading data
-        timeframe: Trading timeframe
-        validate_real_data: Whether to validate real data constraints
-        
-    Returns:
-        Processed payload as dictionary
-    """
-    return payload_processor.process_payload_to_dict(json_data, timeframe, validate_real_data)
+def load_and_process_payload_dict(
+    json_data: Union[str, Dict[str, Any]],
+    timeframe: Optional[str] = None,
+    validate_real_data: bool = True,
+    signal_config: Optional[SignalConfig] = None,
+    indicator_params: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Convenience function to load and process payload as dictionary."""
+    payload = payload_processor.load_full_payload(
+        json_data,
+        timeframe,
+        validate_real_data,
+        signal_config=signal_config,
+        indicator_params=indicator_params,
+    )
+    return payload.to_dict()
 
 
 def validate_and_normalize_payload(json_data: Union[str, Dict[str, Any]], 

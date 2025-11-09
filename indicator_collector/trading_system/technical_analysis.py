@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import statistics
-from typing import Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, TYPE_CHECKING, Union
 
 from indicator_collector import math_utils
+
+
+if TYPE_CHECKING:  # pragma: no cover - typing helper
+    from .interfaces import AnalyzerContext
 
 
 def _clamp(value: float, lower: float, upper: float) -> float:
@@ -21,8 +25,28 @@ def _normalize_to_01(value: float, min_val: float = 0.0, max_val: float = 100.0)
     return _clamp(normalized, 0.0, 1.0)
 
 
+def _safe_int(value: Any, default: int) -> int:
+    """Safely convert a value to int with a fallback default."""
+    try:
+        result = int(value)
+        return result if result > 0 else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_float(value: Any, default: float) -> float:
+    """Safely convert a value to float with a fallback default."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def analyze_macd(
     candles: List[Dict[str, float]],
+    fast_length: int = 12,
+    slow_length: int = 26,
+    signal_length: int = 9,
 ) -> Dict[str, object]:
     """
     Analyze MACD indicator from candle data.
@@ -44,7 +68,12 @@ def analyze_macd(
     closes = [float(c.get("close", 0)) for c in candles]
     
     try:
-        macd_line, signal_line, histogram = math_utils.macd(closes)
+        macd_line, signal_line, histogram = math_utils.macd(
+            closes,
+            fast_length=fast_length,
+            slow_length=slow_length,
+            signal_length=signal_length,
+        )
     except (ValueError, IndexError):
         return {
             "macd_score": 0.5,
@@ -77,7 +106,7 @@ def analyze_macd(
     
     # Get previous histogram for momentum
     prev_histogram = histogram[-2] if len(histogram) > 1 else current_histogram
-    histogram_momentum = current_histogram - prev_histogram if len(histogram) > 1 else 0.0
+    histogram_momentum = histogram[-1] - prev_histogram if len(histogram) > 1 else 0.0
     
     # Determine direction and score
     macd_direction = "neutral"
@@ -138,6 +167,7 @@ def analyze_macd(
 
 def analyze_rsi(
     candles: List[Dict[str, float]],
+    period: int = 14,
     threshold_overbought: float = 70.0,
     threshold_oversold: float = 30.0,
 ) -> Dict[str, object]:
@@ -146,7 +176,7 @@ def analyze_rsi(
     
     Returns score based on RSI level, with extremes indicating potential reversals.
     """
-    if not candles or len(candles) < 16:
+    if not candles or len(candles) < max(16, period + 2):
         return {
             "rsi_score": 0.5,
             "rsi_direction": "neutral",
@@ -159,7 +189,7 @@ def analyze_rsi(
     closes = [float(c.get("close", 0)) for c in candles]
     
     try:
-        rsi_values = math_utils.rsi(closes, length=14)
+        rsi_values = math_utils.rsi(closes, length=period)
     except (ValueError, IndexError):
         return {
             "rsi_score": 0.5,
@@ -225,13 +255,15 @@ def analyze_rsi(
 
 def analyze_atr(
     candles: List[Dict[str, float]],
+    period: int = 14,
+    multiplier: float = 1.0,
 ) -> Dict[str, object]:
     """
     Analyze ATR (Average True Range) to assess volatility context.
     
     Returns volatility level and channel boundaries.
     """
-    if not candles or len(candles) < 16:
+    if not candles or len(candles) < max(16, period + 2):
         return {
             "atr_score": 0.5,
             "atr_volatility": "neutral",
@@ -264,7 +296,7 @@ def analyze_atr(
         }
     
     try:
-        atr_values = math_utils.atr(highs, lows, closes, length=14)
+        atr_values = math_utils.atr(highs, lows, closes, length=period)
     except (ValueError, IndexError):
         return {
             "atr_score": 0.5,
@@ -279,7 +311,8 @@ def analyze_atr(
             },
         }
     
-    current_atr = atr_values[-1]
+    raw_atr = atr_values[-1]
+    current_atr = raw_atr * multiplier
     current_close = closes[-1]
     
     if not isinstance(current_atr, (int, float)) or current_atr != current_atr:  # NaN check
@@ -300,8 +333,8 @@ def analyze_atr(
     atr_percent = (current_atr / current_close * 100) if current_close > 0 else 0.0
     
     # Get historical ATR for context
-    historical_atr = [v for v in atr_values if isinstance(v, (int, float)) and v == v]
-    avg_atr = statistics.fmean(historical_atr) if len(historical_atr) >= 5 else current_atr
+    historical_atr = [float(v) for v in atr_values if isinstance(v, (int, float)) and v == v]
+    avg_atr = statistics.fmean(historical_atr) if len(historical_atr) >= 5 else raw_atr
     atr_ma = statistics.fmean(historical_atr[-20:]) if len(historical_atr) >= 20 else avg_atr
     
     # Determine volatility state
@@ -310,7 +343,7 @@ def analyze_atr(
     confidence = 50.0
     rationale_parts = []
     
-    atr_ratio = current_atr / atr_ma if atr_ma > 0 else 1.0
+    atr_ratio = raw_atr / atr_ma if atr_ma > 0 else 1.0
     
     if atr_ratio > 1.3:
         atr_volatility = "high"
@@ -351,6 +384,11 @@ def analyze_atr(
             "upper": upper_channel,
             "lower": lower_channel,
             "width": channel_width,
+        },
+        "metadata": {
+            "raw_atr": round(raw_atr, 4),
+            "multiplier": multiplier,
+            "period": period,
         },
     }
 
@@ -554,14 +592,92 @@ def detect_divergences(
 
 
 def analyze_technical_factors(
-    candles: List[Dict[str, float]],
+    data: Union[List[Dict[str, float]], "AnalyzerContext"],
+    indicator_params: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, object]:
     """
     Comprehensive technical analysis combining MACD, RSI, ATR, Bollinger Bands, and divergences.
     
-    Returns normalized technical factor score (0-1) with detailed breakdown.
+    Supports both raw candle lists and ``AnalyzerContext`` inputs. Indicator parameters can be
+    overridden via ``indicator_params`` or ``context.extras['indicator_params']``.
     """
-    if not candles or len(candles) < 30:
+    context: Optional["AnalyzerContext"] = None
+    candles: List[Dict[str, float]] = []
+
+    if isinstance(data, list):
+        candles = [c for c in data if isinstance(c, dict)]
+    else:
+        try:
+            from .interfaces import AnalyzerContext as _AnalyzerContext  # type: ignore
+        except Exception:  # pragma: no cover - defensive
+            _AnalyzerContext = None  # type: ignore
+        if _AnalyzerContext is not None and isinstance(data, _AnalyzerContext):  # type: ignore[arg-type]
+            context = data  # type: ignore[assignment]
+            extras = context.extras if isinstance(context.extras, dict) else {}
+            metadata_dict = context.metadata if isinstance(context.metadata, dict) else {}
+            candle_source = extras.get("candles")
+            if not isinstance(candle_source, list):
+                candle_source = metadata_dict.get("candles")
+            if isinstance(candle_source, list):
+                candles = [c for c in candle_source if isinstance(c, dict)]
+        elif isinstance(data, dict):
+            candles = [data]
+
+    # Ensure candle ordering and structure
+    sanitized_candles: List[Dict[str, float]] = []
+    for candle in candles:
+        if not isinstance(candle, dict):
+            continue
+        sanitized_candles.append(candle)
+    candles = sanitized_candles
+
+    if candles and all(isinstance(candle.get("ts"), (int, float)) for candle in candles):
+        candles = sorted(candles, key=lambda item: item.get("ts", 0))
+
+    params_source: Dict[str, Any]
+    params_source = indicator_params if isinstance(indicator_params, dict) else {}
+    if context and isinstance(context.extras, dict):
+        contextual_params = context.extras.get("indicator_params")
+        if isinstance(contextual_params, dict):
+            merged = dict(contextual_params)
+            merged.update(params_source)
+            params_source = merged
+
+    resolved_params = {
+        "macd": {
+            "fast": _safe_int(params_source.get("macd", {}).get("fast"), 12),
+            "slow": _safe_int(params_source.get("macd", {}).get("slow"), 26),
+            "signal": _safe_int(params_source.get("macd", {}).get("signal"), 9),
+        },
+        "rsi": {
+            "period": _safe_int(params_source.get("rsi", {}).get("period"), 14),
+            "overbought": _safe_float(params_source.get("rsi", {}).get("overbought"), 70.0),
+            "oversold": _safe_float(params_source.get("rsi", {}).get("oversold"), 30.0),
+        },
+        "atr": {
+            "period": _safe_int(params_source.get("atr", {}).get("period"), 14),
+            "mult": _safe_float(params_source.get("atr", {}).get("mult"), 1.0),
+        },
+    }
+
+    min_required_candles = max(
+        30,
+        resolved_params["rsi"]["period"] + 2,
+        resolved_params["atr"]["period"] + 2,
+        resolved_params["macd"]["slow"] + resolved_params["macd"]["signal"],
+    )
+
+    analysis_timestamp: Optional[int] = None
+    if candles:
+        ts_value = candles[-1].get("ts")
+        if isinstance(ts_value, (int, float)):
+            analysis_timestamp = int(ts_value)
+    elif context is not None:
+        potential_ts = getattr(context, "timestamp", None)
+        if isinstance(potential_ts, (int, float)):
+            analysis_timestamp = int(potential_ts)
+
+    if len(candles) < min_required_candles:
         return {
             "final_score": 0.5,
             "direction": "neutral",
@@ -572,25 +688,41 @@ def analyze_technical_factors(
             "factor_scores": {},
             "metadata": {
                 "total_candles": len(candles),
-                "analysis_timestamp": None,
+                "analysis_timestamp": analysis_timestamp,
+                "indicator_params": resolved_params,
+                "context_symbol": getattr(context, "symbol", None),
+                "context_timeframe": getattr(context, "timeframe", None),
             },
         }
-    
-    # Analyze each component
-    macd_analysis = analyze_macd(candles)
-    rsi_analysis = analyze_rsi(candles)
-    atr_analysis = analyze_atr(candles)
+
+    # Analyze each component with resolved parameters
+    macd_analysis = analyze_macd(
+        candles,
+        fast_length=resolved_params["macd"]["fast"],
+        slow_length=resolved_params["macd"]["slow"],
+        signal_length=resolved_params["macd"]["signal"],
+    )
+    rsi_analysis = analyze_rsi(
+        candles,
+        period=resolved_params["rsi"]["period"],
+        threshold_overbought=resolved_params["rsi"]["overbought"],
+        threshold_oversold=resolved_params["rsi"]["oversold"],
+    )
+    atr_analysis = analyze_atr(
+        candles,
+        period=resolved_params["atr"]["period"],
+        multiplier=resolved_params["atr"]["mult"],
+    )
     bollinger_analysis = analyze_bollinger_bands(candles)
     divergence_analysis = detect_divergences(candles)
-    
+
     # Extract normalized scores
     macd_score = float(macd_analysis.get("macd_score", 0.5))
     rsi_score = float(rsi_analysis.get("rsi_score", 0.5))
     atr_score = float(atr_analysis.get("atr_score", 0.5))
     bollinger_score = float(bollinger_analysis.get("bollinger_score", 0.5))
     divergence_score = float(divergence_analysis.get("divergence_score", 0.5))
-    
-    # Define component weights (sum to 1.0)
+
     weights = {
         "macd": 0.25,
         "rsi": 0.25,
@@ -598,90 +730,90 @@ def analyze_technical_factors(
         "bollinger": 0.20,
         "divergence": 0.15,
     }
-    
-    # Calculate weighted score
+
     weighted_score = (
-        macd_score * weights["macd"] +
-        rsi_score * weights["rsi"] +
-        atr_score * weights["atr"] +
-        bollinger_score * weights["bollinger"] +
-        divergence_score * weights["divergence"]
+        macd_score * weights["macd"]
+        + rsi_score * weights["rsi"]
+        + atr_score * weights["atr"]
+        + bollinger_score * weights["bollinger"]
+        + divergence_score * weights["divergence"]
     )
-    
+
     final_score = _clamp(weighted_score, 0.0, 1.0)
-    
-    # Determine direction based on weighted signals
+
     bullish_votes = 0
     bearish_votes = 0
     neutral_votes = 0
-    
+
     if str(macd_analysis.get("macd_direction", "")) == "bullish":
         bullish_votes += 1
     elif str(macd_analysis.get("macd_direction", "")) == "bearish":
         bearish_votes += 1
     else:
         neutral_votes += 1
-    
+
     if str(rsi_analysis.get("rsi_direction", "")) == "bullish":
         bullish_votes += 1
     elif str(rsi_analysis.get("rsi_direction", "")) == "bearish":
         bearish_votes += 1
     else:
         neutral_votes += 1
-    
-    if str(bollinger_analysis.get("bollinger_state", "")).startswith("near_upper"):
+
+    bollinger_state = str(bollinger_analysis.get("bollinger_state", ""))
+    if bollinger_state.startswith("near_upper"):
         bullish_votes += 1
-    elif str(bollinger_analysis.get("bollinger_state", "")).startswith("near_lower"):
+    elif bollinger_state.startswith("near_lower"):
         bearish_votes += 1
     else:
         neutral_votes += 1
-    
-    if str(divergence_analysis.get("divergence_type", "")) in ("bullish", "hidden_bullish"):
+
+    divergence_type = str(divergence_analysis.get("divergence_type", ""))
+    if divergence_type in ("bullish", "hidden_bullish"):
         bullish_votes += 1
-    elif str(divergence_analysis.get("divergence_type", "")) in ("bearish", "hidden_bearish"):
+    elif divergence_type in ("bearish", "hidden_bearish"):
         bearish_votes += 1
     else:
         neutral_votes += 1
-    
+
     if bullish_votes > bearish_votes:
         direction = "bullish"
     elif bearish_votes > bullish_votes:
         direction = "bearish"
     else:
         direction = "neutral"
-    
-    # Build rationale
-    rationale_parts = []
-    
+
+    rationale_parts: List[str] = []
     if macd_analysis.get("macd_direction") == "bullish":
         rationale_parts.append(f"✓ MACD bullish ({macd_analysis.get('momentum')})")
     elif macd_analysis.get("macd_direction") == "bearish":
         rationale_parts.append(f"✗ MACD bearish ({macd_analysis.get('momentum')})")
-    
+
     if rsi_analysis.get("rsi_state"):
-        rationale_parts.append(f"RSI {rsi_analysis.get('rsi_state')} ({rsi_analysis.get('rsi_value'):.1f})")
-    
+        rationale_parts.append(
+            f"RSI {rsi_analysis.get('rsi_state')} ({rsi_analysis.get('rsi_value'):.1f})"
+        )
+
     if atr_analysis.get("atr_volatility") != "normal":
         rationale_parts.append(f"ATR {atr_analysis.get('atr_volatility')}")
-    
-    bollinger_state = str(bollinger_analysis.get("bollinger_state", "neutral"))
-    if "squeeze" in bollinger_state or "upper" in bollinger_state or "lower" in bollinger_state:
+
+    if bollinger_state and any(token in bollinger_state for token in ("squeeze", "upper", "lower")):
         rationale_parts.append(f"Bollinger {bollinger_state}")
-    
-    if divergence_analysis.get("divergence_type") != "none":
-        rationale_parts.append(f"Divergence: {divergence_analysis.get('divergence_type')}")
-    
+
+    if divergence_type != "none":
+        rationale_parts.append(f"Divergence: {divergence_type}")
+
     final_rationale = "; ".join(rationale_parts) if rationale_parts else "Neutral technical setup"
-    
-    # Calculate average confidence
-    avg_confidence = statistics.fmean([
-        float(macd_analysis.get("confidence", 50)),
-        float(rsi_analysis.get("confidence", 50)),
-        float(atr_analysis.get("confidence", 50)),
-        float(bollinger_analysis.get("confidence", 50)),
-        float(divergence_analysis.get("confidence", 30)),
-    ])
-    
+
+    avg_confidence = statistics.fmean(
+        [
+            float(macd_analysis.get("confidence", 50)),
+            float(rsi_analysis.get("confidence", 50)),
+            float(atr_analysis.get("confidence", 50)),
+            float(bollinger_analysis.get("confidence", 50)),
+            float(divergence_analysis.get("confidence", 30)),
+        ]
+    )
+
     return {
         "final_score": round(final_score, 3),
         "direction": direction,
@@ -704,7 +836,10 @@ def analyze_technical_factors(
         },
         "metadata": {
             "total_candles": len(candles),
-            "analysis_timestamp": None,
+            "analysis_timestamp": analysis_timestamp,
+            "indicator_params": resolved_params,
+            "context_symbol": getattr(context, "symbol", None),
+            "context_timeframe": getattr(context, "timeframe", None),
         },
     }
 

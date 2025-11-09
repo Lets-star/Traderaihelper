@@ -14,6 +14,7 @@ from .data_sources.binance_source import BinanceKlinesSource
 from .data_sources.timestamp_utils import ensure_utc_datetime, get_last_closed_candle_ts
 from .generate_signals import generate_signals
 from .payload_loader import load_full_payload
+from .signal_generator import SignalConfig
 
 
 @dataclass(frozen=True)
@@ -140,6 +141,9 @@ def run_automated_signal_flow(
     data_source: Optional[BinanceKlinesSource] = None,
     validate_real_data: bool = True,
     min_candles: int = 30,
+    signal_config: Optional[SignalConfig] = None,
+    indicator_params: Optional[Dict[str, Any]] = None,
+    signal_params: Optional[Dict[str, Any]] = None,
 ) -> AutomatedSignalResult:
     """Fetch Binance candles and generate trading signals.
 
@@ -151,6 +155,9 @@ def run_automated_signal_flow(
         data_source: Optional Binance data source override (useful for tests).
         validate_real_data: Whether to run ``RealDataValidator`` during processing.
         min_candles: Minimum number of candles required to generate signals.
+        signal_config: Optional ``SignalConfig`` overrides for analyzer weights and thresholds.
+        indicator_params: Optional indicator parameter overrides (e.g., MACD/RSI/ATR).
+        signal_params: Optional explicit signal generation parameters (risk settings, etc.).
 
     Returns:
         ``AutomatedSignalResult`` containing candles, processed payload, and explicit signal.
@@ -181,9 +188,26 @@ def run_automated_signal_flow(
         payload,
         timeframe=tf.value,
         validate_real_data=validate_real_data,
+        signal_config=signal_config,
+        indicator_params=indicator_params,
     ).to_dict()
 
-    explicit_signal = generate_signals(processed_payload)
+    params: Dict[str, Any] = {}
+    if signal_params:
+        params.update(signal_params)
+    if indicator_params and "indicator_params" not in params:
+        params["indicator_params"] = indicator_params
+    if signal_config:
+        params.setdefault("weights", {
+            "technical": signal_config.technical_weight,
+            "sentiment": signal_config.sentiment_weight,
+            "multitimeframe": signal_config.multitimeframe_weight,
+            "volume": signal_config.volume_weight,
+            "market_structure": signal_config.structure_weight,
+            "composite": signal_config.composite_weight,
+        })
+
+    explicit_signal = generate_signals(processed_payload, params=params or None)
 
     return AutomatedSignalResult(
         candles=candles,

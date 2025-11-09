@@ -350,6 +350,7 @@ def parse_collector_payload(collector_payload: Mapping[str, Any]) -> AnalyzerCon
         "composite_indicators": advanced.get("composite_indicators"),
         "market_context": advanced.get("market_context"),
         "signal_analysis": advanced.get("signal_analysis"),
+        "candles": collector_payload.get("candles"),
     }
     extras = {key: value for key, value in extras.items() if value not in (None, {}, [])}
 

@@ -393,18 +393,30 @@ class TestSignalGeneration(unittest.TestCase):
     def test_buy_signal_generation(self, mock_mt, mock_sentiment, mock_technical):
         """Test BUY signal generation."""
         # Mock analyzer responses
-        mock_technical.return_value = TradingSignalPayload(
-            signal_type="BUY",
-            confidence=0.8,
-            timestamp=1234567890,
-            symbol="BTC/USDT",
-            timeframe="1h",
-            factors=[
-                FactorScore("macd", 0.8, weight=0.3, metadata={"direction": "bullish"}),
-                FactorScore("rsi", 0.7, weight=0.3, metadata={"direction": "bullish"}),
-            ]
-        )
-        
+        mock_technical.return_value = {
+            "final_score": 0.78,
+            "direction": "bullish",
+            "confidence": 82.0,
+            "rationale": "MACD and RSI indicate strong bullish momentum",
+            "factor_scores": {
+                "macd": 0.8,
+                "rsi": 0.72,
+                "atr": 0.6,
+                "bollinger": 0.68,
+                "divergence": 0.7,
+            },
+            "factor_weights": {
+                "macd": 0.25,
+                "rsi": 0.25,
+                "atr": 0.15,
+                "bollinger": 0.20,
+                "divergence": 0.15,
+            },
+            "metadata": {
+                "total_candles": 120,
+            },
+        }
+
         mock_sentiment.return_value = TradingSignalPayload(
             signal_type="BUY",
             confidence=0.7,
@@ -415,7 +427,7 @@ class TestSignalGeneration(unittest.TestCase):
                 FactorScore("sentiment", 0.75, weight=0.15, metadata={"direction": "bullish"}),
             ]
         )
-        
+
         mock_mt.return_value = TradingSignalPayload(
             signal_type="BUY",
             confidence=0.6,
@@ -456,18 +468,30 @@ class TestSignalGeneration(unittest.TestCase):
     def test_sell_signal_generation(self, mock_mt, mock_sentiment, mock_technical):
         """Test SELL signal generation."""
         # Mock analyzer responses
-        mock_technical.return_value = TradingSignalPayload(
-            signal_type="SELL",
-            confidence=0.8,
-            timestamp=1234567890,
-            symbol="BTC/USDT",
-            timeframe="1h",
-            factors=[
-                FactorScore("macd", 0.2, weight=0.3, metadata={"direction": "bearish"}),
-                FactorScore("rsi", 0.3, weight=0.3, metadata={"direction": "bearish"}),
-            ]
-        )
-        
+        mock_technical.return_value = {
+            "final_score": 0.28,
+            "direction": "bearish",
+            "confidence": 78.0,
+            "rationale": "Momentum indicators show strong bearish pressure",
+            "factor_scores": {
+                "macd": 0.2,
+                "rsi": 0.3,
+                "atr": 0.55,
+                "bollinger": 0.35,
+                "divergence": 0.25,
+            },
+            "factor_weights": {
+                "macd": 0.25,
+                "rsi": 0.25,
+                "atr": 0.15,
+                "bollinger": 0.20,
+                "divergence": 0.15,
+            },
+            "metadata": {
+                "total_candles": 120,
+            },
+        }
+
         mock_sentiment.return_value = TradingSignalPayload(
             signal_type="SELL",
             confidence=0.7,
@@ -478,7 +502,7 @@ class TestSignalGeneration(unittest.TestCase):
                 FactorScore("sentiment", 0.25, weight=0.15, metadata={"direction": "bearish"}),
             ]
         )
-        
+
         mock_mt.return_value = TradingSignalPayload(
             signal_type="SELL",
             confidence=0.6,
@@ -516,16 +540,21 @@ class TestSignalGeneration(unittest.TestCase):
     def test_hold_signal_insufficient_factors(self, mock_technical):
         """Test HOLD signal due to insufficient factors."""
         # Mock only one factor
-        mock_technical.return_value = TradingSignalPayload(
-            signal_type="BUY",
-            confidence=0.8,
-            timestamp=1234567890,
-            symbol="BTC/USDT",
-            timeframe="1h",
-            factors=[
-                FactorScore("macd", 0.8, weight=0.3, metadata={"direction": "bullish"}),
-            ]
-        )
+        mock_technical.return_value = {
+            "final_score": 0.55,
+            "direction": "bullish",
+            "confidence": 60.0,
+            "rationale": "Limited technical confirmation available",
+            "factor_scores": {
+                "macd": 0.8,
+            },
+            "factor_weights": {
+                "macd": 1.0,
+            },
+            "metadata": {
+                "total_candles": 60,
+            },
+        }
         
         context = AnalyzerContext(
             symbol="BTC/USDT",
@@ -544,17 +573,29 @@ class TestSignalGeneration(unittest.TestCase):
     @patch('indicator_collector.trading_system.signal_generator.analyze_technical_factors')
     def test_hold_signal_cancellation_trigger(self, mock_technical):
         """Test HOLD signal due to cancellation trigger."""
-        mock_technical.return_value = TradingSignalPayload(
-            signal_type="BUY",
-            confidence=0.8,
-            timestamp=1234567890,
-            symbol="BTC/USDT",
-            timeframe="1h",
-            factors=[
-                FactorScore("macd", 0.8, weight=0.3, metadata={"direction": "bullish"}),
-                FactorScore("rsi", 0.7, weight=0.3, metadata={"direction": "bullish"}),
-            ]
-        )
+        mock_technical.return_value = {
+            "final_score": 0.72,
+            "direction": "bullish",
+            "confidence": 78.0,
+            "rationale": "Bullish technical structure but risk metrics elevated",
+            "factor_scores": {
+                "macd": 0.82,
+                "rsi": 0.74,
+                "atr": 0.65,
+                "bollinger": 0.70,
+                "divergence": 0.6,
+            },
+            "factor_weights": {
+                "macd": 0.25,
+                "rsi": 0.25,
+                "atr": 0.15,
+                "bollinger": 0.20,
+                "divergence": 0.15,
+            },
+            "metadata": {
+                "total_candles": 80,
+            },
+        }
         
         context = AnalyzerContext(
             symbol="BTC/USDT",

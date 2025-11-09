@@ -5,7 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import sys
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 try:
     import pandas as pd
@@ -66,6 +66,66 @@ def ui_key(prefix: str, label: str) -> str:
     """
     label_slug = label.lower().replace(" ", "_").replace("%", "pct")
     return f"{prefix}_{label_slug}"
+
+
+def num_int(
+    label: str,
+    *,
+    min_v: int,
+    value: int,
+    max_v: Optional[int] = None,
+    step: int = 1,
+    key: Optional[str] = None,
+    ui: Optional[Any] = None,
+    help_text: Optional[str] = None,
+    format_str: Optional[str] = "%d",
+) -> int:
+    """Render an integer-based number input ensuring consistent typing."""
+    target = ui if ui is not None else st
+    kwargs = {
+        "min_value": int(min_v),
+        "value": int(value),
+        "step": int(step),
+    }
+    if max_v is not None:
+        kwargs["max_value"] = int(max_v)
+    if key is not None:
+        kwargs["key"] = key
+    if help_text is not None:
+        kwargs["help"] = help_text
+    if format_str is not None:
+        kwargs["format"] = format_str
+    return int(target.number_input(label, **kwargs))
+
+
+def num_float(
+    label: str,
+    *,
+    min_v: float,
+    value: float,
+    max_v: Optional[float] = None,
+    step: float = 0.1,
+    key: Optional[str] = None,
+    ui: Optional[Any] = None,
+    help_text: Optional[str] = None,
+    format_str: Optional[str] = None,
+) -> float:
+    """Render a float-based number input ensuring consistent typing."""
+    target = ui if ui is not None else st
+    kwargs = {
+        "min_value": float(min_v),
+        "value": float(value),
+        "step": float(step),
+    }
+    if max_v is not None:
+        kwargs["max_value"] = float(max_v)
+    if key is not None:
+        kwargs["key"] = key
+    if help_text is not None:
+        kwargs["help"] = help_text
+    if format_str is not None:
+        kwargs["format"] = format_str
+    return float(target.number_input(label, **kwargs))
 
 
 st.set_page_config(
@@ -554,32 +614,29 @@ def render_indicator_controls(config_store: ConfigStore) -> None:
 
     macd_params = params.get("macd", {})
     macd_cols = st.columns(3)
-    fast_length = macd_cols[0].number_input(
+    fast_length = num_int(
         "MACD Fast Length",
-        min_value=2,
-        max_value=60,
-        value=int(macd_params.get("fast", 12)),
-        step=1,
-        format="%d",
+        min_v=2,
+        max_v=60,
+        value=macd_params.get("fast", 12),
         key=ui_key("indicator", "macd_fast"),
+        ui=macd_cols[0],
     )
-    slow_length = macd_cols[1].number_input(
+    slow_length = num_int(
         "MACD Slow Length",
-        min_value=fast_length + 1,
-        max_value=200,
-        value=int(macd_params.get("slow", 26)),
-        step=1,
-        format="%d",
+        min_v=fast_length + 1,
+        max_v=200,
+        value=macd_params.get("slow", 26),
         key=ui_key("indicator", "macd_slow"),
+        ui=macd_cols[1],
     )
-    signal_length = macd_cols[2].number_input(
+    signal_length = num_int(
         "MACD Signal Length",
-        min_value=1,
-        max_value=60,
-        value=int(macd_params.get("signal", 9)),
-        step=1,
-        format="%d",
+        min_v=1,
+        max_v=60,
+        value=macd_params.get("signal", 9),
         key=ui_key("indicator", "macd_signal"),
+        ui=macd_cols[2],
     )
     config_store.update_indicator_param("macd", "fast", int(fast_length))
     config_store.update_indicator_param("macd", "slow", int(slow_length))
@@ -587,53 +644,52 @@ def render_indicator_controls(config_store: ConfigStore) -> None:
 
     rsi_params = params.get("rsi", {})
     rsi_cols = st.columns(3)
-    rsi_period = rsi_cols[0].number_input(
+    rsi_period = num_int(
         "RSI Period",
-        min_value=5,
-        max_value=100,
-        value=int(rsi_params.get("period", 14)),
-        step=1,
-        format="%d",
+        min_v=5,
+        max_v=100,
+        value=rsi_params.get("period", 14),
         key=ui_key("indicator", "rsi_period"),
+        ui=rsi_cols[0],
     )
-    rsi_overbought = rsi_cols[1].number_input(
+    rsi_overbought = num_int(
         "RSI Overbought",
-        min_value=50,
-        max_value=100,
-        value=float(rsi_params.get("overbought", 70.0)),
-        step=1.0,
+        min_v=50,
+        max_v=100,
+        value=rsi_params.get("overbought", 70),
         key=ui_key("indicator", "rsi_overbought"),
+        ui=rsi_cols[1],
     )
-    rsi_oversold = rsi_cols[2].number_input(
+    rsi_oversold = num_int(
         "RSI Oversold",
-        min_value=0,
-        max_value=50,
-        value=float(rsi_params.get("oversold", 30.0)),
-        step=1.0,
+        min_v=0,
+        max_v=50,
+        value=rsi_params.get("oversold", 30),
         key=ui_key("indicator", "rsi_oversold"),
+        ui=rsi_cols[2],
     )
     config_store.update_indicator_param("rsi", "period", int(rsi_period))
-    config_store.update_indicator_param("rsi", "overbought", float(rsi_overbought))
-    config_store.update_indicator_param("rsi", "oversold", float(rsi_oversold))
+    config_store.update_indicator_param("rsi", "overbought", int(rsi_overbought))
+    config_store.update_indicator_param("rsi", "oversold", int(rsi_oversold))
 
     atr_params = params.get("atr", {})
     atr_cols = st.columns(2)
-    atr_period = atr_cols[0].number_input(
+    atr_period = num_int(
         "ATR Period",
-        min_value=5,
-        max_value=100,
-        value=int(atr_params.get("period", 14)),
-        step=1,
-        format="%d",
+        min_v=5,
+        max_v=100,
+        value=atr_params.get("period", 14),
         key=ui_key("indicator", "atr_period"),
+        ui=atr_cols[0],
     )
-    atr_mult = atr_cols[1].number_input(
+    atr_mult = num_float(
         "ATR Multiplier",
-        min_value=0.5,
-        max_value=5.0,
-        value=float(atr_params.get("mult", 1.0)),
+        min_v=0.5,
+        max_v=5.0,
+        value=atr_params.get("mult", 1.0),
         step=0.1,
         key=ui_key("indicator", "atr_mult"),
+        ui=atr_cols[1],
     )
     config_store.update_indicator_param("atr", "period", int(atr_period))
     config_store.update_indicator_param("atr", "mult", float(atr_mult))
@@ -644,30 +700,33 @@ def render_signal_risk_controls(config_store: ConfigStore) -> None:
     risk = config_store.risk_settings()
     risk_cols = st.columns(3)
 
-    account_balance = risk_cols[0].number_input(
+    account_balance = num_float(
         "Account Balance (USD)",
-        min_value=100.0,
-        value=float(risk.get("account_balance", 10_000.0)),
+        min_v=100.0,
+        value=risk.get("account_balance", 10_000.0),
         step=100.0,
         key=ui_key("risk", "account_balance"),
+        ui=risk_cols[0],
     )
     risk_per_trade_pct = float(risk.get("max_risk_per_trade_pct", 0.02) * 100.0)
-    risk_per_trade = risk_cols[1].number_input(
+    risk_per_trade = num_float(
         "Max Risk per Trade (%)",
-        min_value=0.0,
-        max_value=10.0,
+        min_v=0.0,
+        max_v=10.0,
         value=risk_per_trade_pct,
         step=0.1,
         key=ui_key("risk", "risk_per_trade"),
+        ui=risk_cols[1],
     )
     max_position_pct = float(risk.get("max_position_size_pct", 0.05) * 100.0)
-    max_position_size = risk_cols[2].number_input(
+    max_position_size = num_float(
         "Max Position Size (%)",
-        min_value=0.0,
-        max_value=100.0,
+        min_v=0.0,
+        max_v=100.0,
         value=max_position_pct,
         step=0.5,
         key=ui_key("risk", "position_size"),
+        ui=risk_cols[2],
     )
     config_store.update_risk_setting("account_balance", float(account_balance))
     config_store.update_risk_setting("max_risk_per_trade_pct", float(risk_per_trade) / 100.0)
@@ -676,14 +735,13 @@ def render_signal_risk_controls(config_store: ConfigStore) -> None:
     signal_settings = config_store.signal_settings()
     signal_cols = st.columns(3)
 
-    min_confirmations = signal_cols[0].number_input(
+    min_confirmations = num_int(
         "Min Confirmations",
-        min_value=1,
-        max_value=5,
-        value=int(signal_settings.get("min_confirmations", 3)),
-        step=1,
-        format="%d",
+        min_v=1,
+        max_v=5,
+        value=signal_settings.get("min_confirmations", 3),
         key=ui_key("signal", "min_confirmations"),
+        ui=signal_cols[0],
     )
     buy_threshold = signal_cols[1].slider(
         "Buy Threshold",
@@ -2033,13 +2091,13 @@ def main():
             
             col1, col2, col3 = st.columns(3)
             with col1:
-                custom_position_size = st.number_input(
+                custom_position_size = num_float(
                     "Position Size (USD)",
-                    min_value=10.0,
-                    max_value=100000.0,
-                    value=float(risk.get('risk_amount', 100)),
+                    min_v=10.0,
+                    max_v=100000.0,
+                    value=risk.get('risk_amount', 100.0),
                     step=10.0,
-                    key="custom_position_size"
+                    key="custom_position_size",
                 )
             with col2:
                 custom_leverage = st.slider(
@@ -2558,42 +2616,43 @@ def main():
 
         backtest_settings = config_store.backtest_settings()
         settings_cols = st.columns(3)
-        max_bars = settings_cols[0].number_input(
+        max_bars = num_int(
             "Max Bars",
-            min_value=120,
-            max_value=5000,
-            value=int(backtest_settings.get("max_bars", 320)),
+            min_v=120,
+            max_v=5000,
+            value=backtest_settings.get("max_bars", 320),
             step=20,
             key=ui_key("backtest", "max_bars"),
+            ui=settings_cols[0],
         )
-        step = settings_cols[1].number_input(
+        signal_step = num_int(
             "Signal Step",
-            min_value=1,
-            max_value=24,
-            value=int(backtest_settings.get("step", 1)),
-            step=1,
+            min_v=1,
+            max_v=24,
+            value=backtest_settings.get("step", 1),
             key=ui_key("backtest", "step"),
+            ui=settings_cols[1],
         )
-        holding_bars = settings_cols[2].number_input(
+        holding_bars = num_int(
             "Holding Horizon (bars)",
-            min_value=5,
-            max_value=240,
-            value=int(backtest_settings.get("holding_bars", 24)),
-            step=1,
+            min_v=5,
+            max_v=240,
+            value=backtest_settings.get("holding_bars", 24),
             key=ui_key("backtest", "holding_bars"),
+            ui=settings_cols[2],
         )
         config_store.update_backtest_setting("max_bars", int(max_bars))
-        config_store.update_backtest_setting("step", int(step))
+        config_store.update_backtest_setting("step", int(signal_step))
         config_store.update_backtest_setting("holding_bars", int(holding_bars))
 
         misc_cols = st.columns(2)
-        min_trades = misc_cols[0].number_input(
+        min_trades = num_int(
             "Minimum Trades",
-            min_value=1,
-            max_value=200,
-            value=int(backtest_settings.get("min_trades", 5)),
-            step=1,
+            min_v=1,
+            max_v=200,
+            value=backtest_settings.get("min_trades", 5),
             key=ui_key("backtest", "min_trades"),
+            ui=misc_cols[0],
         )
         config_store.update_backtest_setting("min_trades", int(min_trades))
 
@@ -2613,7 +2672,7 @@ def main():
                     indicator_params,
                     signal_params,
                     max_bars=int(max_bars),
-                    step=int(step),
+                    step=int(signal_step),
                     holding_bars=int(holding_bars),
                     min_required_bars=max(int(holding_bars) * 3, 120),
                 )
@@ -2692,23 +2751,23 @@ def main():
                 col1, col2 = st.columns(2)
                 
                 with col1:
-                    rolling_window = st.number_input(
+                    rolling_window = num_int(
                         "Rolling Window (days)",
-                        min_value=7,
-                        max_value=90,
+                        min_v=7,
+                        max_v=90,
                         value=30,
-                        help="Number of days to consider for performance tracking",
-                        key=ui_key("adaptive_tab", "rolling_window")
+                        help_text="Number of days to consider for performance tracking",
+                        key=ui_key("adaptive_tab", "rolling_window"),
                     )
-                    min_signals = st.number_input(
+                    min_signals = num_int(
                         "Min Signals for Adaptation",
-                        min_value=10,
-                        max_value=200,
+                        min_v=10,
+                        max_v=200,
                         value=50,
-                        help="Minimum signals required before adapting weights",
-                        key=ui_key("adaptive_tab", "min_signals")
+                        help_text="Minimum signals required before adapting weights",
+                        key=ui_key("adaptive_tab", "min_signals"),
                     )
-                    adaptation_strategy = st.selectbox(
+
                         "Adaptation Strategy",
                         ["performance_based", "volatility_adjusted", "hybrid"],
                         index=2,

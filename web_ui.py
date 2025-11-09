@@ -2022,28 +2022,49 @@ def main():
             with col1:
                 st.markdown("### 📈 Entry & Exit Levels")
 
-                entries = signal_data.get("entries", [])
+                entries = signal_data.get("entries") or []
+                metadata_summary = signal_data.get("metadata", {})
+                entry_zone = {}
+                if isinstance(metadata_summary, dict):
+                    entry_zone = metadata_summary.get("entry_zone", {}) or {}
+
                 if entries:
                     st.write("**Entry Levels:**")
                     for i, entry in enumerate(entries[:3], 1):
                         st.write(f"  Entry {i}: ${entry:.4f}")
+                elif signal_type == "HOLD":
+                    st.info("No tradable entry levels; signal is on hold pending additional confirmations.")
+                else:
+                    st.warning("Entry levels were not provided by the analyzers.")
+
+                if entry_zone:
+                    lower = entry_zone.get("lower")
+                    upper = entry_zone.get("upper")
+                    if lower is not None and upper is not None:
+                        st.write(f"**Entry Confluence Zone:** ${lower:.4f} - ${upper:.4f}")
 
                 stop_loss = signal_data.get("stop_loss")
-                if stop_loss:
+                if stop_loss is not None:
                     st.write(f"**Stop Loss:** ${stop_loss:.4f}")
+                elif signal_type == "HOLD":
+                    st.write("**Stop Loss:** N/A (signal on hold)")
 
-                take_profits = signal_data.get("take_profits", {})
+                take_profits = signal_data.get("take_profits", {}) or {}
                 if take_profits:
                     st.write("**Take Profits:**")
                     for tp_key, tp_price in take_profits.items():
                         st.write(f"  {tp_key.upper()}: ${tp_price:.4f}")
+                elif signal_type == "HOLD":
+                    st.write("**Take Profits:** N/A (signal on hold)")
 
             with col2:
                 st.markdown("### 📊 Position & Risk")
 
                 position_size = signal_data.get("position_size_pct")
-                if position_size:
+                if position_size is not None:
                     st.write(f"**Position Size:** {position_size:.1f}%")
+                elif signal_type == "HOLD":
+                    st.write("**Position Size:** N/A (signal on hold)")
 
                 weights = signal_data.get("weights", {})
                 if weights:
@@ -2072,6 +2093,11 @@ def main():
                 st.write(f"**Real Data Validated:** {processing_info.get('real_data_validated', False)}")
                 st.write(f"**Source Data Quality:** {processing_info.get('source_data_quality', 'Unknown')}")
                 st.write("**Signal Format:** Explicit JSON Schema v1.0")
+
+                debug_payload = signal_data.get("debug")
+                if debug_payload:
+                    st.write("**Debug Details:**")
+                    st.json(debug_payload, expanded=False)
 
             # Factor Analysis
             factors = signal_data.get("factors", [])

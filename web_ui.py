@@ -16,6 +16,8 @@ import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 
+from backtest_utils import simulate_backtest
+from config_store import ConfigStore
 from indicator_collector.collector import collect_metrics
 from indicator_collector.indicator_metrics import SimulationSummary
 from indicator_collector.real_data_validator import DataValidationError
@@ -24,6 +26,7 @@ from indicator_collector.timeframes import Timeframe
 from indicator_collector.trade_signals import calculate_position_metrics, calculate_tp_sl_levels
 from indicator_collector.trading_system import indicator_defaults_for
 from indicator_collector.trading_system.automated_signals import run_automated_signal_flow
+from indicator_collector.trading_system.signal_generator import SignalConfig
 from indicator_collector.trading_system.signal_schema import is_valid_signal_structure
 
 
@@ -86,7 +89,6 @@ POPULAR_TOKENS = [
 ]
 
 TIMEFRAMES = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "3h", "4h", "6h", "8h", "12h", "1d", "3d", "1w"]
-AUTOMATED_SIGNALS_TIMEFRAMES = ["1m", "5m", "15m", "1h", "3h", "4h", "1d"]
 AUTOMATED_SIGNALS_STATE_KEY = "automated_signals_state"
 
 CACHE_VERSION = "binance-real-data-v1"
@@ -505,30 +507,295 @@ def create_multi_timeframe_chart(payload: dict):
     return fig
 
 
+FACTOR_WEIGHT_FIELDS = [
+    ("market_structure", "Market Structure"),
+    ("technical", "Technical Indicators"),
+    ("volume", "Orderbook & Volume"),
+    ("sentiment", "Sentiment & Fundamentals"),
+    ("multitimeframe", "Multi-timeframe Alignment"),
+]
+
+
+def render_weight_controls(config_store: ConfigStore) -> Dict[str, float]:
+    """Render sliders for adjusting category weights and return normalized weights."""
+    st.markdown("#### Category Weights")
+    weights = config_store.weights()
+    columns = st.columns(len(FACTOR_WEIGHT_FIELDS))
+
+    for column, (key, label) in zip(columns, FACTOR_WEIGHT_FIELDS):
+        current_value = float(weights.get(key, 0.0))
+        with column:
+            slider_value = st.slider(
+                label,
+                min_value=0.0,
+                max_value=1.0,
+                value=round(current_value, 2),
+                step=0.05,
+                key=ui_key("weights", key),
+            )
+        if abs(slider_value - current_value) > 1e-6:
+            config_store.update_weight(key, slider_value)
+
+    normalized = config_store.normalized_weights()
+    weight_table = pd.DataFrame(
+        {
+            "Category": [label for _, label in FACTOR_WEIGHT_FIELDS],
+            "Weight": [normalized.get(key, 0.0) for key, _ in FACTOR_WEIGHT_FIELDS],
+        }
+    )
+    st.caption("Normalized allocation across confirmation categories")
+    st.table(weight_table.set_index("Category"))
+    return normalized
+
+
+def render_indicator_controls(config_store: ConfigStore) -> None:
+    """Render indicator parameter controls for MACD, RSI, and ATR."""
+    params = config_store.get_indicator_params()
+
+    macd_params = params.get("macd", {})
+    macd_cols = st.columns(3)
+    fast_length = macd_cols[0].number_input(
+        "MACD Fast Length",
+        min_value=2,
+        max_value=60,
+        value=int(macd_params.get("fast", 12)),
+        step=1,
+        format="%d",
+        key=ui_key("indicator", "macd_fast"),
+    )
+    slow_length = macd_cols[1].number_input(
+        "MACD Slow Length",
+        min_value=fast_length + 1,
+        max_value=200,
+        value=int(macd_params.get("slow", 26)),
+        step=1,
+        format="%d",
+        key=ui_key("indicator", "macd_slow"),
+    )
+    signal_length = macd_cols[2].number_input(
+        "MACD Signal Length",
+        min_value=1,
+        max_value=60,
+        value=int(macd_params.get("signal", 9)),
+        step=1,
+        format="%d",
+        key=ui_key("indicator", "macd_signal"),
+    )
+    config_store.update_indicator_param("macd", "fast", int(fast_length))
+    config_store.update_indicator_param("macd", "slow", int(slow_length))
+    config_store.update_indicator_param("macd", "signal", int(signal_length))
+
+    rsi_params = params.get("rsi", {})
+    rsi_cols = st.columns(3)
+    rsi_period = rsi_cols[0].number_input(
+        "RSI Period",
+        min_value=5,
+        max_value=100,
+        value=int(rsi_params.get("period", 14)),
+        step=1,
+        format="%d",
+        key=ui_key("indicator", "rsi_period"),
+    )
+    rsi_overbought = rsi_cols[1].number_input(
+        "RSI Overbought",
+        min_value=50,
+        max_value=100,
+        value=float(rsi_params.get("overbought", 70.0)),
+        step=1.0,
+        key=ui_key("indicator", "rsi_overbought"),
+    )
+    rsi_oversold = rsi_cols[2].number_input(
+        "RSI Oversold",
+        min_value=0,
+        max_value=50,
+        value=float(rsi_params.get("oversold", 30.0)),
+        step=1.0,
+        key=ui_key("indicator", "rsi_oversold"),
+    )
+    config_store.update_indicator_param("rsi", "period", int(rsi_period))
+    config_store.update_indicator_param("rsi", "overbought", float(rsi_overbought))
+    config_store.update_indicator_param("rsi", "oversold", float(rsi_oversold))
+
+    atr_params = params.get("atr", {})
+    atr_cols = st.columns(2)
+    atr_period = atr_cols[0].number_input(
+        "ATR Period",
+        min_value=5,
+        max_value=100,
+        value=int(atr_params.get("period", 14)),
+        step=1,
+        format="%d",
+        key=ui_key("indicator", "atr_period"),
+    )
+    atr_mult = atr_cols[1].number_input(
+        "ATR Multiplier",
+        min_value=0.5,
+        max_value=5.0,
+        value=float(atr_params.get("mult", 1.0)),
+        step=0.1,
+        key=ui_key("indicator", "atr_mult"),
+    )
+    config_store.update_indicator_param("atr", "period", int(atr_period))
+    config_store.update_indicator_param("atr", "mult", float(atr_mult))
+
+
+def render_signal_risk_controls(config_store: ConfigStore) -> None:
+    """Render controls for risk settings and signal thresholds."""
+    risk = config_store.risk_settings()
+    risk_cols = st.columns(3)
+
+    account_balance = risk_cols[0].number_input(
+        "Account Balance (USD)",
+        min_value=100.0,
+        value=float(risk.get("account_balance", 10_000.0)),
+        step=100.0,
+        key=ui_key("risk", "account_balance"),
+    )
+    risk_per_trade_pct = float(risk.get("max_risk_per_trade_pct", 0.02) * 100.0)
+    risk_per_trade = risk_cols[1].number_input(
+        "Max Risk per Trade (%)",
+        min_value=0.0,
+        max_value=10.0,
+        value=risk_per_trade_pct,
+        step=0.1,
+        key=ui_key("risk", "risk_per_trade"),
+    )
+    max_position_pct = float(risk.get("max_position_size_pct", 0.05) * 100.0)
+    max_position_size = risk_cols[2].number_input(
+        "Max Position Size (%)",
+        min_value=0.0,
+        max_value=100.0,
+        value=max_position_pct,
+        step=0.5,
+        key=ui_key("risk", "position_size"),
+    )
+    config_store.update_risk_setting("account_balance", float(account_balance))
+    config_store.update_risk_setting("max_risk_per_trade_pct", float(risk_per_trade) / 100.0)
+    config_store.update_risk_setting("max_position_size_pct", float(max_position_size) / 100.0)
+
+    signal_settings = config_store.signal_settings()
+    signal_cols = st.columns(3)
+
+    min_confirmations = signal_cols[0].number_input(
+        "Min Confirmations",
+        min_value=1,
+        max_value=5,
+        value=int(signal_settings.get("min_confirmations", 3)),
+        step=1,
+        format="%d",
+        key=ui_key("signal", "min_confirmations"),
+    )
+    buy_threshold = signal_cols[1].slider(
+        "Buy Threshold",
+        min_value=0.4,
+        max_value=0.9,
+        value=float(signal_settings.get("buy_threshold", 0.65)),
+        step=0.01,
+        key=ui_key("signal", "buy_threshold"),
+    )
+    sell_threshold = signal_cols[2].slider(
+        "Sell Threshold",
+        min_value=0.1,
+        max_value=0.6,
+        value=float(signal_settings.get("sell_threshold", 0.35)),
+        step=0.01,
+        key=ui_key("signal", "sell_threshold"),
+    )
+    config_store.update_signal_setting("min_confirmations", int(min_confirmations))
+    config_store.update_signal_setting("buy_threshold", float(buy_threshold))
+    config_store.update_signal_setting("sell_threshold", float(sell_threshold))
+
+    min_confidence = st.slider(
+        "Minimum Confidence",
+        min_value=0.0,
+        max_value=1.0,
+        value=float(signal_settings.get("min_confidence", 0.6)),
+        step=0.05,
+        key=ui_key("signal", "min_confidence"),
+    )
+    config_store.update_signal_setting("min_confidence", float(min_confidence))
+
+
 def main():
     st.title("📈 Token Charts & Indicators Dashboard")
     st.markdown("---")
+    config_store = ConfigStore.load()
     
     with st.sidebar:
         st.header("⚙️ Configuration")
-        
-        st.subheader("Token Selection")
-        token_input_mode = st.radio("Input Mode", ["Select from list", "Custom token"], key=ui_key("sidebar", "input_mode"))
+
+        token_mode_index = 0 if config_store.token in POPULAR_TOKENS else 1
+        token_input_mode = st.radio(
+            "Input Mode",
+            ["Select from list", "Custom token"],
+            index=token_mode_index,
+            key=ui_key("sidebar", "input_mode"),
+        )
 
         if token_input_mode == "Select from list":
-            selected_token = st.selectbox("Select Token", POPULAR_TOKENS, index=0, key=ui_key("sidebar", "select_token"))
+            try:
+                default_index = POPULAR_TOKENS.index(config_store.token)
+            except ValueError:
+                default_index = 0
+            selected_token_option = st.selectbox(
+                "Select Token",
+                POPULAR_TOKENS,
+                index=default_index,
+                key=ui_key("sidebar", "select_token"),
+            )
+            config_store.set_token(selected_token_option)
         else:
-            selected_token = st.text_input("Custom Token (e.g., BINANCE:BTCUSDT)", "BINANCE:BTCUSDT", key=ui_key("sidebar", "custom_token"))
+            selected_token_option = st.text_input(
+                "Custom Token (e.g., BINANCE:BTCUSDT)",
+                config_store.token,
+                key=ui_key("sidebar", "custom_token"),
+            )
+            config_store.set_token(selected_token_option)
 
         st.subheader("Timeframe & Period")
-        selected_timeframe = st.selectbox("Timeframe", TIMEFRAMES, index=TIMEFRAMES.index("15m"), key=ui_key("sidebar", "timeframe"))
-        selected_period = st.slider("Analysis Period (bars)", min_value=50, max_value=1000, value=200, step=50, key=ui_key("sidebar", "analysis_period"))
-        
+        try:
+            timeframe_index = TIMEFRAMES.index(config_store.timeframe)
+        except ValueError:
+            timeframe_index = TIMEFRAMES.index("15m")
+        selected_timeframe_option = st.selectbox(
+            "Timeframe",
+            TIMEFRAMES,
+            index=timeframe_index,
+            key=ui_key("sidebar", "timeframe"),
+        )
+        config_store.set_timeframe(selected_timeframe_option)
+
+        analysis_period_default = st.session_state.get(
+            ui_key("sidebar", "analysis_period_value"), 200
+        )
+        analysis_period = st.slider(
+            "Analysis Period (bars)",
+            min_value=50,
+            max_value=1000,
+            value=int(analysis_period_default),
+            step=50,
+            key=ui_key("sidebar", "analysis_period"),
+        )
+        st.session_state[ui_key("sidebar", "analysis_period_value")] = analysis_period
+
         st.subheader("Export Options")
-        export_token = st.text_input("Export Token/ID", value="export-session-001", help="Token to identify this analysis session", key=ui_key("sidebar", "export_token"))
-        
-        analyze_button = st.button("🔄 Analyze", type="primary", use_container_width=True)
-    
+        export_default = st.session_state.get("export_token", "export-session-001")
+        export_token = st.text_input(
+            "Export Token/ID",
+            value=export_default,
+            help="Token to identify this analysis session",
+            key=ui_key("sidebar", "export_token"),
+        )
+        st.session_state.export_token = export_token
+
+        analyze_button = st.button(
+            "🔄 Analyze", type="primary", use_container_width=True
+        )
+
+    selected_token = config_store.token
+    selected_timeframe = config_store.timeframe
+    selected_period = analysis_period
+
     if analyze_button or "summary" not in st.session_state:
         if analyze_button:
             load_indicator_data.clear()
@@ -1860,136 +2127,112 @@ def main():
             st.info("⚠️ **Disclaimer:** This is a calculated trade plan based on ATR channels. Always manage your risk and use proper position sizing.")
     
     with automated_signals_tab:
-        st.subheader("🤖 Automated Trading Signals")
+        st.subheader("🤖 Automated Signals")
+        state = st.session_state.setdefault(AUTOMATED_SIGNALS_STATE_KEY, {})
 
-        state: Dict[str, Any] = st.session_state.setdefault(AUTOMATED_SIGNALS_STATE_KEY, {})
+        st.caption(
+            f"Symbol: **{config_store.symbol.upper()}** · Timeframe: **{config_store.timeframe.upper()}**"
+        )
 
-        default_end = dt.datetime.now(dt.timezone.utc).replace(second=0, microsecond=0)
-        default_start = default_end - dt.timedelta(hours=72)
+        normalized_weights = render_weight_controls(config_store)
 
-        inputs_defaults = state.get("inputs")
-        symbol_default = "BTCUSDT"
-        timeframe_default = "1h"
-        if inputs_defaults:
-            symbol_default = inputs_defaults.get("symbol", symbol_default)
-            timeframe_default = inputs_defaults.get("timeframe", timeframe_default)
-            try:
-                default_start = dt.datetime.fromisoformat(
-                    inputs_defaults.get("start", default_start.isoformat())
-                )
-                default_end = dt.datetime.fromisoformat(
-                    inputs_defaults.get("end", default_end.isoformat())
-                )
-            except (TypeError, ValueError):
-                default_start = default_end - dt.timedelta(hours=72)
+        with st.expander("Indicator Parameters", expanded=False):
+            render_indicator_controls(config_store)
 
-        if default_start >= default_end:
-            default_start = default_end - dt.timedelta(hours=72)
+        with st.expander("Risk & Signal Settings", expanded=False):
+            render_signal_risk_controls(config_store)
 
-        col_symbol, col_timeframe = st.columns([2, 1])
-        with col_symbol:
-            symbol_input = st.text_input(
-                "Symbol (Binance spot)",
-                value=symbol_default,
-                help="Enter the Binance spot symbol, e.g. BTCUSDT",
-                key=ui_key("automated_signals", "symbol"),
-            )
-        with col_timeframe:
-            try:
-                timeframe_index = AUTOMATED_SIGNALS_TIMEFRAMES.index(timeframe_default)
-            except ValueError:
-                timeframe_index = AUTOMATED_SIGNALS_TIMEFRAMES.index("1h")
-            timeframe_selection = st.selectbox(
-                "Timeframe",
-                AUTOMATED_SIGNALS_TIMEFRAMES,
-                index=timeframe_index,
-                key=ui_key("automated_signals", "timeframe"),
-            )
+        date_cols = st.columns(2)
+        start_dt = config_store.start_datetime
+        end_dt = config_store.end_datetime
 
-        start_col, end_col = st.columns(2)
-        with start_col:
+        with date_cols[0]:
             start_date = st.date_input(
                 "Start date (UTC)",
-                value=default_start.date(),
+                value=start_dt.date(),
                 key=ui_key("automated_signals", "start_date"),
             )
             start_time = st.time_input(
                 "Start time (UTC)",
-                value=default_start.time().replace(microsecond=0),
+                value=start_dt.time().replace(microsecond=0),
                 key=ui_key("automated_signals", "start_time"),
             )
-        with end_col:
+
+        with date_cols[1]:
             end_date = st.date_input(
                 "End date (UTC)",
-                value=default_end.date(),
+                value=end_dt.date(),
                 key=ui_key("automated_signals", "end_date"),
             )
             end_time = st.time_input(
                 "End time (UTC)",
-                value=default_end.time().replace(microsecond=0),
+                value=end_dt.time().replace(microsecond=0),
                 key=ui_key("automated_signals", "end_time"),
             )
 
-        start_dt = dt.datetime.combine(start_date, start_time, tzinfo=dt.timezone.utc)
-        end_dt = dt.datetime.combine(end_date, end_time, tzinfo=dt.timezone.utc)
+        updated_start = dt.datetime.combine(start_date, start_time, tzinfo=dt.timezone.utc)
+        updated_end = dt.datetime.combine(end_date, end_time, tzinfo=dt.timezone.utc)
 
-        symbol_clean = symbol_input.strip().upper()
-        try:
-            tf_minutes = Timeframe.to_minutes(timeframe_selection)
-        except ValueError:
-            tf_minutes = 0
+        if updated_end <= updated_start:
+            state["result"] = None
+            state["error"] = "End time must be after start time."
+        else:
+            config_store.set_date_range(updated_start, updated_end)
+            start_dt = config_store.start_datetime
+            end_dt = config_store.end_datetime
 
-        duration_minutes = max((end_dt - start_dt).total_seconds() / 60, 0.0)
-        estimated_bars = duration_minutes / tf_minutes if tf_minutes else 0.0
+            signal_config = config_store.build_signal_config()
+            indicator_params = config_store.get_indicator_params()
+            signal_params = config_store.build_signal_params()
+            signal_config_payload = {
+                "weights": {
+                    "technical": signal_config.technical_weight,
+                    "sentiment": signal_config.sentiment_weight,
+                    "multitimeframe": signal_config.multitimeframe_weight,
+                    "volume": signal_config.volume_weight,
+                    "market_structure": signal_config.structure_weight,
+                    "composite": signal_config.composite_weight,
+                },
+                "min_confirmations": signal_config.min_factors_confirm,
+                "buy_threshold": signal_config.buy_threshold,
+                "sell_threshold": signal_config.sell_threshold,
+                "min_confidence": signal_config.min_confidence,
+            }
 
-        if start_dt >= end_dt:
-            st.warning("Start time must be before end time.")
-        if estimated_bars < 30:
-            st.info("Select a range with at least 30 completed candles to generate signals.")
-
-        current_inputs_snapshot = {
-            "symbol": symbol_clean,
-            "timeframe": timeframe_selection,
-            "start": start_dt.isoformat(),
-            "end": end_dt.isoformat(),
-        }
-        if "inputs" not in state:
-            state["inputs"] = current_inputs_snapshot
-
-        inputs_valid = bool(symbol_clean) and start_dt < end_dt and estimated_bars >= 30
-
-        run_button = st.button(
-            "🚀 Run with Binance Data",
-            type="primary",
-            use_container_width=True,
-            disabled=not inputs_valid,
-        )
-
-        if run_button:
-            previous_inputs = state.get("inputs")
-            if previous_inputs and previous_inputs != current_inputs_snapshot:
-                cached_run_automated_signals.clear()
             try:
                 with st.spinner(
-                    f"Fetching Binance candles for {symbol_clean} on {timeframe_selection} timeframe..."
+                    f"Fetching Binance candles for {config_store.symbol.upper()} on {config_store.timeframe.upper()}..."
                 ):
                     result_dict = cached_run_automated_signals(
-                        symbol_clean,
-                        timeframe_selection,
-                        current_inputs_snapshot["start"],
-                        current_inputs_snapshot["end"],
+                        config_store.symbol,
+                        config_store.timeframe,
+                        config_store.start_iso(),
+                        config_store.end_iso(),
+                        json.dumps(signal_config_payload, sort_keys=True),
+                        json.dumps(indicator_params, sort_keys=True),
+                        json.dumps(signal_params, sort_keys=True),
                     )
+
                 if not is_valid_signal_structure(result_dict["explicit_signal"]):
                     raise ValueError("Generated signal does not match required schema")
-                state["inputs"] = current_inputs_snapshot
-                state["result"] = result_dict
-                state["error"] = None
+
+                state.update(
+                    {
+                        "result": result_dict,
+                        "error": None,
+                        "candles": result_dict.get("candles", []),
+                        "processed_payload": result_dict.get("processed_payload"),
+                        "explicit_signal": result_dict.get("explicit_signal"),
+                        "weights": normalized_weights,
+                        "indicator_params": indicator_params,
+                        "signal_params": signal_params,
+                        "signal_config": signal_config_payload,
+                    }
+                )
             except DataValidationError as exc:
-                state["inputs"] = current_inputs_snapshot
                 state["result"] = None
                 state["error"] = f"Data validation failed: {exc}"
             except Exception as exc:
-                state["inputs"] = current_inputs_snapshot
                 state["result"] = None
                 state["error"] = str(exc)
 
@@ -1999,22 +2242,24 @@ def main():
         if error_message:
             st.error(error_message)
         elif result:
-            inputs_used = state.get("inputs", current_inputs_snapshot)
             candles = result.get("candles", [])
-            try:
-                result_start = dt.datetime.fromisoformat(
-                    inputs_used.get("start", current_inputs_snapshot["start"])
-                )
-                result_end = dt.datetime.fromisoformat(
-                    inputs_used.get("end", current_inputs_snapshot["end"])
-                )
-            except (TypeError, ValueError):
-                result_start = start_dt
-                result_end = end_dt
+            if candles:
+                first_ts = candles[0].get("ts")
+                last_ts = candles[-1].get("ts")
+                try:
+                    result_start = dt.datetime.fromtimestamp(float(first_ts) / 1000.0, tz=dt.timezone.utc)
+                except (TypeError, ValueError):
+                    result_start = config_store.start_datetime
+                try:
+                    result_end = dt.datetime.fromtimestamp(float(last_ts) / 1000.0, tz=dt.timezone.utc)
+                except (TypeError, ValueError):
+                    result_end = config_store.end_datetime
+            else:
+                result_start = config_store.start_datetime
+                result_end = config_store.end_datetime
 
             st.caption(
-                f"Source: Binance | {inputs_used.get('symbol', symbol_clean)} "
-                f"{inputs_used.get('timeframe', timeframe_selection)} | {len(candles)} candles "
+                f"Source: Binance | {config_store.symbol.upper()} {config_store.timeframe.upper()} | {len(candles)} candles "
                 f"from {result_start.strftime('%Y-%m-%d %H:%M UTC')} to {result_end.strftime('%Y-%m-%d %H:%M UTC')}"
             )
 
@@ -2042,16 +2287,16 @@ def main():
                     st.metric("Confidence", f"{confidence}/10", "⚪ Low")
 
             with col3:
-                timeframe_value = str(
-                    signal_data.get(
-                        "timeframe", inputs_used.get("timeframe", timeframe_selection)
-                    )
-                ).upper()
+                timeframe_value = str(signal_data.get("timeframe") or config_store.timeframe).upper()
                 holding_period = str(signal_data.get("holding_period", "medium")).title()
                 st.metric("Timeframe", timeframe_value)
                 st.metric("Holding Period", holding_period)
 
             st.markdown("---")
+
+    config_store = ConfigStore.load()
+
+    config_store = ConfigStore.load()
 
             col1, col2 = st.columns(2)
 
@@ -2110,6 +2355,8 @@ def main():
 
             st.markdown("---")
 
+    config_store = ConfigStore.load()
+
             rationale = signal_data.get("rationale", [])
             if rationale:
                 st.markdown("### 💡 Signal Rationale")
@@ -2158,6 +2405,8 @@ def main():
                     st.dataframe(factors_df, use_container_width=True, hide_index=True)
 
             st.markdown("---")
+
+    config_store = ConfigStore.load()
 
             # Position Plan
             position_plan = signal_data.get("position_plan", {})
@@ -2218,6 +2467,8 @@ def main():
 
             st.markdown("---")
 
+    config_store = ConfigStore.load()
+
             if signal_data.get("holding_horizon_bars"):
                 holding_horizon = signal_data.get("holding_horizon_bars")
                 st.markdown("### ⏱️ Holding Horizon")
@@ -2249,6 +2500,8 @@ def main():
 
             st.markdown("---")
 
+    config_store = ConfigStore.load()
+
             if signal_data.get("cancellation_reasons"):
                 cancellation_reasons = signal_data.get("cancellation_reasons", [])
                 st.warning("### ⛔ Signal Rejection Reasons")
@@ -2256,6 +2509,8 @@ def main():
                     st.write(f"• {reason}")
 
             st.markdown("---")
+
+    config_store = ConfigStore.load()
 
             optimization_stats = signal_data.get("optimization_stats", {})
             if optimization_stats:
@@ -2308,307 +2563,128 @@ def main():
             st.info("Configure symbol, timeframe, and date range to run automated signals with real Binance data.")
     
     with backtest_tab:
-        st.subheader("🔬 Backtesting Engine")
-        
-        # Import backtesting components
-        try:
-            from indicator_collector.trading_system import (
-                Backtester, BacktestConfig, ParameterSet, 
-                PerformanceKPIs, BacktestResult
-            )
-            
-            st.markdown("""
-            ### 🎯 Backtesting Configuration
-            
-            Configure and run backtests on historical data to validate trading strategies
-            and optimize parameters for target performance metrics.
-            """)
-            
-            # Backtest configuration
-            with st.expander("⚙️ Backtest Configuration", expanded=True):
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    lookback_days = st.number_input(
-                        "Lookback Period (days)", 
-                        min_value=30, 
-                        max_value=3650, 
-                        value=730,
-                        help="Number of days of historical data to use",
-                        key=ui_key("backtest_tab", "lookback_days")
+        st.subheader("🔬 Backtesting")
+        state = st.session_state.setdefault(AUTOMATED_SIGNALS_STATE_KEY, {})
+
+        st.caption(
+            "Backtest uses the same symbol, timeframe, and configuration as the automated signal analysis."
+        )
+
+        backtest_settings = config_store.backtest_settings()
+        settings_cols = st.columns(3)
+        max_bars = settings_cols[0].number_input(
+            "Max Bars",
+            min_value=120,
+            max_value=5000,
+            value=int(backtest_settings.get("max_bars", 320)),
+            step=20,
+            key=ui_key("backtest", "max_bars"),
+        )
+        step = settings_cols[1].number_input(
+            "Signal Step",
+            min_value=1,
+            max_value=24,
+            value=int(backtest_settings.get("step", 1)),
+            step=1,
+            key=ui_key("backtest", "step"),
+        )
+        holding_bars = settings_cols[2].number_input(
+            "Holding Horizon (bars)",
+            min_value=5,
+            max_value=240,
+            value=int(backtest_settings.get("holding_bars", 24)),
+            step=1,
+            key=ui_key("backtest", "holding_bars"),
+        )
+        config_store.update_backtest_setting("max_bars", int(max_bars))
+        config_store.update_backtest_setting("step", int(step))
+        config_store.update_backtest_setting("holding_bars", int(holding_bars))
+
+        misc_cols = st.columns(2)
+        min_trades = misc_cols[0].number_input(
+            "Minimum Trades",
+            min_value=1,
+            max_value=200,
+            value=int(backtest_settings.get("min_trades", 5)),
+            step=1,
+            key=ui_key("backtest", "min_trades"),
+        )
+        config_store.update_backtest_setting("min_trades", int(min_trades))
+
+        candles = state.get("candles")
+        if not candles:
+            st.info("Run the automated signals analysis to fetch Binance candles before backtesting.")
+        else:
+            try:
+                signal_config = config_store.build_signal_config()
+                indicator_params = config_store.get_indicator_params()
+                signal_params = config_store.build_signal_params()
+                backtest_result = simulate_backtest(
+                    candles,
+                    config_store.symbol,
+                    config_store.timeframe,
+                    signal_config,
+                    indicator_params,
+                    signal_params,
+                    max_bars=int(max_bars),
+                    step=int(step),
+                    holding_bars=int(holding_bars),
+                    min_required_bars=max(int(holding_bars) * 3, 120),
+                )
+            except ValueError as exc:
+                st.warning(str(exc))
+            else:
+                trade_count = len(backtest_result.trades)
+                if trade_count < int(min_trades):
+                    st.warning(
+                        f"Backtest generated {trade_count} trades, fewer than the minimum of {int(min_trades)}. "
+                        "Consider expanding the date range or adjusting holding parameters."
                     )
-                    split_method = st.selectbox(
-                        "Data Split Method",
-                        ["walk_forward", "time_split", "k_fold"],
-                        index=0,
-                        help="Method for splitting training and test data",
-                        key=ui_key("backtest_tab", "split_method")
+
+                metric_cols = st.columns(5)
+                metric_cols[0].metric("Win Rate", f"{backtest_result.win_rate:.1f}%")
+                metric_cols[1].metric("Total Return", f"{backtest_result.total_return_pct:.1f}%")
+                metric_cols[2].metric("Profit Factor", f"{backtest_result.profit_factor:.2f}")
+                metric_cols[3].metric("Max Drawdown", f"{backtest_result.max_drawdown_pct:.1f}%")
+                metric_cols[4].metric("Sharpe Ratio", f"{backtest_result.sharpe_ratio:.2f}")
+                st.metric("Average R Multiple", f"{backtest_result.average_r_multiple:.2f}")
+
+                equity_df = pd.DataFrame(backtest_result.equity_curve, columns=["timestamp", "equity"])
+                if not equity_df.empty:
+                    equity_df["time"] = pd.to_datetime(equity_df["timestamp"], unit="ms", utc=True).dt.tz_convert("UTC")
+                    equity_fig = go.Figure(
+                        go.Scatter(x=equity_df["time"], y=equity_df["equity"], mode="lines", name="Equity")
                     )
-                    train_ratio = st.slider(
-                        "Training Ratio", 
-                        min_value=0.5, 
-                        max_value=0.9, 
-                        value=0.7,
-                        help="Proportion of data used for training",
-                        key=ui_key("backtest_tab", "train_ratio")
+                    equity_fig.update_layout(
+                        title="Equity Curve",
+                        xaxis_title="Time",
+                        yaxis_title="Equity (USD)",
+                        height=400,
+                        template="plotly_dark",
                     )
-                
-                with col2:
-                    target_win_rate = st.slider(
-                        "Target Win Rate", 
-                        min_value=0.3, 
-                        max_value=0.9, 
-                        value=0.55,
-                        help="Target win rate for optimization",
-                        key=ui_key("backtest_tab", "target_win_rate")
-                    )
-                    target_profit_factor = st.slider(
-                        "Target Profit Factor", 
-                        min_value=1.0, 
-                        max_value=3.0, 
-                        value=1.5,
-                        help="Target profit factor (profit/loss ratio)",
-                        key=ui_key("backtest_tab", "target_profit_factor")
-                    )
-                    target_sharpe = st.slider(
-                        "Target Sharpe Ratio", 
-                        min_value=0.5, 
-                        max_value=3.0, 
-                        value=1.0,
-                        help="Target Sharpe ratio for risk-adjusted returns",
-                        key=ui_key("backtest_tab", "target_sharpe")
-                    )
-            
-            # Parameter configuration
-            with st.expander("🎛️ Parameter Configuration", expanded=True):
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    st.markdown("**Signal Weights**")
-                    technical_weight = st.slider("Technical Analysis", 0.0, 1.0, 0.4, 0.05, key=ui_key("backtest_tab", "technical_weight"))
-                    volume_weight = st.slider("Volume Analysis", 0.0, 1.0, 0.3, 0.05, key=ui_key("backtest_tab", "volume_weight"))
-                    sentiment_weight = st.slider("Sentiment Analysis", 0.0, 1.0, 0.2, 0.05, key=ui_key("backtest_tab", "sentiment_weight"))
-                    structure_weight = st.slider("Market Structure", 0.0, 1.0, 0.1, 0.05, key=ui_key("backtest_tab", "structure_weight"))
-                
-                with col2:
-                    st.markdown("**Risk Parameters**")
-                    stop_loss_pct = st.slider("Stop Loss pct", 0.5, 5.0, 2.0, 0.5, key=ui_key("backtest_tab", "stop_loss_pct"))
-                    take_profit_pct = st.slider("Take Profit pct", 1.0, 10.0, 4.0, 0.5, key=ui_key("backtest_tab", "take_profit_pct"))
-                    max_position_size = st.slider("Max Position Size pct", 0.01, 0.2, 0.05, 0.01, key=ui_key("backtest_tab", "max_position_size"))
-                    confirmation_threshold = st.slider("Confirmation Threshold", 0.3, 0.9, 0.6, 0.1, key=ui_key("backtest_tab", "confirmation_threshold"))
-            
-            # Optimization settings
-            with st.expander("🔍 Optimization Settings"):
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    search_method = st.selectbox(
-                        "Search Method",
-                        ["grid", "random"],
-                        index=0,
-                        help="Method for parameter optimization",
-                        key=ui_key("backtest_tab", "search_method")
-                    )
-                    max_iterations = st.number_input(
-                        "Max Iterations",
-                        min_value=5,
-                        max_value=200,
-                        value=20,
-                        help="Maximum number of optimization iterations",
-                        key=ui_key("backtest_tab", "max_iterations")
-                    )
-                
-                with col2:
-                    validate_real_data = st.checkbox(
-                        "Validate Real Data Only",
-                        value=True,
-                        help="Only use validated real market data",
-                        key=ui_key("backtest_tab", "validate_real_data")
-                    )
-                    min_confirmations = st.number_input(
-                        "Min Confirmation Categories",
-                        min_value=1,
-                        max_value=5,
-                        value=3,
-                        help="Minimum number of confirming factors required",
-                        key=ui_key("backtest_tab", "min_confirmations")
-                    )
-            
-            # Run backtest button
-            run_backtest = st.button("🚀 Run Backtest", type="primary", use_container_width=True)
-            
-            if run_backtest:
-                with st.spinner("Running backtest..."):
-                    try:
-                        # Create backtest configuration
-                        config = BacktestConfig(
-                            lookback_days=int(lookback_days),
-                            split_method=split_method,
-                            train_ratio=train_ratio,
-                            target_win_rate=target_win_rate,
-                            target_profit_factor=target_profit_factor,
-                            target_sharpe=target_sharpe,
-                            search_method=search_method,
-                            max_iterations=int(max_iterations),
-                            validate_real_data=validate_real_data,
-                            min_confirmation_categories=int(min_confirmations),
-                        )
-                        
-                        # Create parameter set
-                        total_weight = technical_weight + volume_weight + sentiment_weight + structure_weight
-                        if total_weight > 0:
-                            weights = {
-                                "technical": technical_weight / total_weight,
-                                "volume": volume_weight / total_weight,
-                                "sentiment": sentiment_weight / total_weight,
-                                "market_structure": structure_weight / total_weight,
+                    st.plotly_chart(equity_fig, use_container_width=True)
+
+                if trade_count:
+                    trades_df = pd.DataFrame(
+                        [
+                            {
+                                "Direction": trade.direction,
+                                "Entry": trade.entry_price,
+                                "Exit": trade.exit_price,
+                                "Return %": trade.return_pct,
+                                "R Multiple": trade.r_multiple,
+                                "Outcome": trade.outcome,
+                                "Entry Time": dt.datetime.fromtimestamp(trade.entry_timestamp / 1000, tz=dt.timezone.utc).strftime("%Y-%m-%d %H:%M"),
+                                "Exit Time": dt.datetime.fromtimestamp(trade.exit_timestamp / 1000, tz=dt.timezone.utc).strftime("%Y-%m-%d %H:%M"),
                             }
-                        else:
-                            weights = {"technical": 0.25, "volume": 0.25, "sentiment": 0.25, "market_structure": 0.25}
-                        
-                        indicator_params = indicator_defaults_for(selected_timeframe)
-                        params = ParameterSet(
-                            weights=weights,
-                            indicator_params=indicator_params,
-                            timeframe=selected_timeframe,
-                            stop_loss_pct=stop_loss_pct,
-                            take_profit_pct=take_profit_pct,
-                            max_position_size_pct=max_position_size,
-                            confirmation_threshold=confirmation_threshold,
-                        )
-                        
-                        # Create backtester and run
-                        backtester = Backtester(config)
-                        
-                        # Create sample historical data (in real implementation, this would load from file/database)
-                        st.info("📊 Using sample historical data for demonstration. In production, this would load actual historical signals.")
-                        
-                        # Generate sample data
-                        import random
-                        
-                        sample_payloads = []
-                        base_timestamp = int((dt.datetime.now() - dt.timedelta(days=lookback_days)).timestamp() * 1000)
-                        
-                        for i in range(min(500, int(lookback_days * 0.7))):
-                            signal_type = random.choice(["BUY", "SELL", "NEUTRAL"])
-                            price = 50000 + random.uniform(-5000, 5000)
-                            
-                            sample_payload = {
-                                "timestamp": base_timestamp + i * 86400000,  # Daily
-                                "signal_type": signal_type,
-                                "entry_price": price,
-                                "factors": [
-                                    {"factor_name": "technical", "score": random.uniform(0.3, 0.9)},
-                                    {"factor_name": "volume", "score": random.uniform(0.3, 0.9)},
-                                    {"factor_name": "sentiment", "score": random.uniform(0.3, 0.9)},
-                                ] if signal_type != "NEUTRAL" else [],
-                            }
-                            sample_payloads.append(sample_payload)
-                        
-                        # Load data
-                        backtester.load_historical_data(sample_payloads)
-                        
-                        # Run backtest
-                        result = backtester.run_backtest(params)
-                        
-                        # Display results
-                        st.success("✅ Backtest completed successfully!")
-                        
-                        # Performance metrics
-                        st.markdown("### 📊 Performance Results")
-                        
-                        col1, col2, col3, col4 = st.columns(4)
-                        
-                        with col1:
-                            st.metric(
-                                "Win Rate",
-                                f"{result.test_kpis.win_rate:.3f}",
-                                delta=f"{result.test_kpis.win_rate - target_win_rate:+.3f}",
-                                delta_color="normal" if result.test_kpis.win_rate >= target_win_rate else "inverse"
-                            )
-                        
-                        with col2:
-                            st.metric(
-                                "Profit Factor",
-                                f"{result.test_kpis.profit_factor:.3f}",
-                                delta=f"{result.test_kpis.profit_factor - target_profit_factor:+.3f}",
-                                delta_color="normal" if result.test_kpis.profit_factor >= target_profit_factor else "inverse"
-                            )
-                        
-                        with col3:
-                            st.metric(
-                                "Sharpe Ratio",
-                                f"{result.test_kpis.sharpe_ratio:.3f}",
-                                delta=f"{result.test_kpis.sharpe_ratio - target_sharpe:+.3f}",
-                                delta_color="normal" if result.test_kpis.sharpe_ratio >= target_sharpe else "inverse"
-                            )
-                        
-                        with col4:
-                            st.metric(
-                                "Max Drawdown",
-                                f"{result.test_kpis.max_drawdown_pct:.3f}",
-                                delta=None,
-                                delta_color="normal"
-                            )
-                        
-                        # Detailed metrics
-                        st.markdown("### 📈 Detailed Metrics")
-                        
-                        col1, col2 = st.columns(2)
-                        
-                        with col1:
-                            st.markdown("**Training Performance**")
-                            st.write(f"• Total Signals: {result.train_kpis.total_signals}")
-                            st.write(f"• Profitable: {result.train_kpis.profitable_signals}")
-                            st.write(f"• Win Rate: {result.train_kpis.win_rate:.3f}")
-                            st.write(f"• Profit Factor: {result.train_kpis.profit_factor:.3f}")
-                            st.write(f"• Avg Profit: {result.train_kpis.avg_profit_pct:.3f}%")
-                            st.write(f"• Avg Loss: {result.train_kpis.avg_loss_pct:.3f}%")
-                        
-                        with col2:
-                            st.markdown("**Test Performance**")
-                            st.write(f"• Total Signals: {result.test_kpis.total_signals}")
-                            st.write(f"• Profitable: {result.test_kpis.profitable_signals}")
-                            st.write(f"• Win Rate: {result.test_kpis.win_rate:.3f}")
-                            st.write(f"• Profit Factor: {result.test_kpis.profit_factor:.3f}")
-                            st.write(f"• Avg Profit: {result.test_kpis.avg_profit_pct:.3f}%")
-                            st.write(f"• Avg Loss: {result.test_kpis.avg_loss_pct:.3f}%")
-                        
-                        # Target achievement
-                        st.markdown("### 🎯 Target Achievement")
-                        targets_met = (
-                            result.test_kpis.win_rate >= target_win_rate and
-                            result.test_kpis.profit_factor >= target_profit_factor and
-                            result.test_kpis.sharpe_ratio >= target_sharpe and
-                            result.test_kpis.max_drawdown_pct <= 0.25
-                        )
-                        
-                        if targets_met:
-                            st.success("🎉 All targets achieved!")
-                        else:
-                            st.warning("⚠️ Some targets not met. Consider parameter optimization.")
-                        
-                        # Optimization score
-                        st.markdown("### 📊 Optimization Score")
-                        st.progress(result.optimization_score)
-                        st.write(f"Score: {result.optimization_score:.4f}")
-                        
-                        # Execution info
-                        st.markdown("### ℹ️ Execution Info")
-                        st.write(f"• Execution Time: {result.execution_time_seconds:.2f} seconds")
-                        st.write(f"• Data Points Used: {len(sample_payloads)}")
-                        st.write(f"• Split Method: {split_method}")
-                        st.write(f"• Search Method: {search_method}")
-                        
-                    except Exception as e:
-                        st.error(f"❌ Backtest failed: {str(e)}")
-                        import traceback
-                        st.code(traceback.format_exc())
-        
-        except ImportError as e:
-            st.error(f"❌ Backtesting components not available: {str(e)}")
-            st.info("Please ensure the trading system backtesting modules are properly installed.")
-    
+                            for trade in backtest_result.trades
+                        ]
+                    )
+                    st.markdown("### Trades Summary")
+                    st.dataframe(trades_df, use_container_width=True)
+                else:
+                    st.info("No trades met the criteria within the selected horizon.")
+
     with adaptive_tab:
         st.subheader("⚖️ Adaptive Weight Management")
         

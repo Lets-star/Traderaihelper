@@ -2294,10 +2294,6 @@ def main():
 
             st.markdown("---")
 
-    config_store = ConfigStore.load()
-
-    config_store = ConfigStore.load()
-
             col1, col2 = st.columns(2)
 
             with col1:
@@ -2355,8 +2351,6 @@ def main():
 
             st.markdown("---")
 
-    config_store = ConfigStore.load()
-
             rationale = signal_data.get("rationale", [])
             if rationale:
                 st.markdown("### 💡 Signal Rationale")
@@ -2405,8 +2399,6 @@ def main():
                     st.dataframe(factors_df, use_container_width=True, hide_index=True)
 
             st.markdown("---")
-
-    config_store = ConfigStore.load()
 
             # Position Plan
             position_plan = signal_data.get("position_plan", {})
@@ -2467,8 +2459,6 @@ def main():
 
             st.markdown("---")
 
-    config_store = ConfigStore.load()
-
             if signal_data.get("holding_horizon_bars"):
                 holding_horizon = signal_data.get("holding_horizon_bars")
                 st.markdown("### ⏱️ Holding Horizon")
@@ -2500,8 +2490,6 @@ def main():
 
             st.markdown("---")
 
-    config_store = ConfigStore.load()
-
             if signal_data.get("cancellation_reasons"):
                 cancellation_reasons = signal_data.get("cancellation_reasons", [])
                 st.warning("### ⛔ Signal Rejection Reasons")
@@ -2509,8 +2497,6 @@ def main():
                     st.write(f"• {reason}")
 
             st.markdown("---")
-
-    config_store = ConfigStore.load()
 
             optimization_stats = signal_data.get("optimization_stats", {})
             if optimization_stats:

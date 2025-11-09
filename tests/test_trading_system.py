@@ -279,16 +279,16 @@ class TestTradingOrchestrator:
         """Test normal processing of collection result."""
         # Mock analyzer responses
         mock_technical_analysis.return_value = [
-            Mock(factor_name="technical", score=0.7, weight=1.0)
+            FactorScore("technical_analysis", 0.7, weight=1.0, metadata={"direction": "bullish"})
         ]
         mock_sentiment_analysis.return_value = [
-            Mock(factor_name="sentiment", score=0.6, weight=0.8)
+            FactorScore("sentiment", 0.6, weight=0.8, metadata={"direction": "bullish"})
         ]
         mock_mtf_analysis.return_value = [
-            Mock(factor_name="multitimeframe", score=0.5, weight=0.6)
+            FactorScore("multitimeframe_alignment", 0.5, weight=0.6, metadata={"direction": "bullish"})
         ]
         mock_volume_analysis.return_value = [
-            Mock(factor_name="volume", score=0.8, weight=0.7)
+            FactorScore("volume_analysis", 0.8, weight=0.7, metadata={"direction": "bullish"})
         ]
         
         # Mock signal generation

@@ -165,18 +165,54 @@ def cached_run_automated_signals(
     timeframe: str,
     start_iso: str,
     end_iso: str,
-    source: str = "binance",
+    signal_config_json: str,
+    indicator_params_json: str,
+    signal_params_json: str,
 ) -> Dict[str, Any]:
     """Cache Binance signal generation results for performance."""
-    _ = source  # Included to differentiate cache keys if needed
     start_dt = dt.datetime.fromisoformat(start_iso)
     end_dt = dt.datetime.fromisoformat(end_iso)
+
+    signal_config_payload = json.loads(signal_config_json) if signal_config_json else {}
+    indicator_params = json.loads(indicator_params_json) if indicator_params_json else {}
+    signal_params = json.loads(signal_params_json) if signal_params_json else {}
+
+    weights = signal_config_payload.get("weights", {})
+    signal_config = SignalConfig(
+        technical_weight=weights.get("technical", 0.25),
+        sentiment_weight=weights.get("sentiment", 0.15),
+        multitimeframe_weight=weights.get("multitimeframe", 0.10),
+        volume_weight=weights.get("volume", 0.20),
+        structure_weight=weights.get("market_structure", 0.15),
+        composite_weight=weights.get("composite", 0.0),
+        min_factors_confirm=int(signal_config_payload.get("min_confirmations", 3)),
+        buy_threshold=float(signal_config_payload.get("buy_threshold", 0.65)),
+        sell_threshold=float(signal_config_payload.get("sell_threshold", 0.35)),
+        min_confidence=float(signal_config_payload.get("min_confidence", 0.6)),
+    )
+
+    indicator_periods = indicator_params.get("rsi", {})
+    atr_period = int(indicator_params.get("atr", {}).get("period", 14))
+    macd_slow = int(indicator_params.get("macd", {}).get("slow", 26))
+    macd_signal = int(indicator_params.get("macd", {}).get("signal", 9))
+    rsi_period = int(indicator_periods.get("period", 14))
+    min_candles = max(
+        30,
+        rsi_period + 2,
+        atr_period + 2,
+        macd_slow + macd_signal,
+    )
+
     result = run_automated_signal_flow(
         symbol,
         timeframe,
         start_dt,
         end_dt,
         validate_real_data=True,
+        signal_config=signal_config,
+        indicator_params=indicator_params,
+        signal_params=signal_params,
+        min_candles=min_candles,
     )
     return {
         "candles": result.candles,

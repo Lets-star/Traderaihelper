@@ -464,7 +464,8 @@ def _generate_explanation(
 
 def generate_trading_signal(
     context: AnalyzerContext,
-    config: Optional[SignalConfig] = None
+    config: Optional[SignalConfig] = None,
+    indicator_params: Optional[Dict[str, Any]] = None,
 ) -> TradingSignalPayload:
     """Generate a comprehensive trading signal combining all analyzer outputs."""
     
@@ -475,21 +476,76 @@ def generate_trading_signal(
     factors = SignalFactors()
     
     # Technical analysis (25%)
+    technical_analysis_summary: Optional[Any] = None
+    technical_analysis_snapshot: Optional[Dict[str, Any]] = None
     try:
-        technical_payload = analyze_technical_factors(context)
-        if technical_payload.factors:
-            # Combine technical factors into weighted average
-            tech_score = sum(f.score * f.weight for f in technical_payload.factors) / sum(f.weight for f in technical_payload.factors)
-            tech_direction = technical_payload.factors[0].metadata.get("direction", "neutral")
+        technical_analysis_summary = analyze_technical_factors(
+            context,
+            indicator_params=indicator_params,
+        )
+    except Exception:
+        technical_analysis_summary = None
+    
+    if isinstance(technical_analysis_summary, dict) and technical_analysis_summary:
+        technical_analysis_snapshot = technical_analysis_summary
+        tech_score = float(technical_analysis_summary.get("final_score", 0.5))
+        tech_direction = str(technical_analysis_summary.get("direction", "neutral"))
+        tech_confidence = float(technical_analysis_summary.get("confidence", 0.0))
+        tech_rationale = technical_analysis_summary.get("rationale") or "Technical analysis summary unavailable."
+        factor_scores = technical_analysis_summary.get("factor_scores", {})
+        factor_metadata = technical_analysis_summary.get("metadata", {})
+        emoji_map = {"bullish": "🟢", "bearish": "🔴", "neutral": "⚪"}
+        factors.technical = FactorScore(
+            factor_name="technical_analysis",
+            score=min(max(tech_score, 0.0), 1.0),
+            weight=config.technical_weight,
+            description=tech_rationale,
+            emoji=emoji_map.get(tech_direction, "⚪"),
+            metadata={
+                "direction": tech_direction,
+                "confidence": tech_confidence,
+                "factor_scores": factor_scores,
+                "factor_weights": technical_analysis_summary.get("factor_weights", {}),
+                "components": technical_analysis_summary.get("components", {}),
+                "analysis_metadata": factor_metadata,
+                "sub_factors": len(factor_scores),
+            },
+        )
+    elif isinstance(technical_analysis_summary, (list, tuple)) and technical_analysis_summary:
+        technical_factors: List[FactorScore] = []
+        for item in technical_analysis_summary:
+            if isinstance(item, FactorScore):
+                technical_factors.append(item)
+            elif isinstance(item, dict):
+                direction = str(item.get("direction", item.get("metadata", {}).get("direction", "neutral")))
+                emoji_map = {"bullish": "🟢", "bearish": "🔴", "neutral": "⚪"}
+                technical_factors.append(
+                    FactorScore(
+                        factor_name=item.get("factor_name", "technical_analysis"),
+                        score=float(item.get("score", 0.5)),
+                        weight=float(item.get("weight", 1.0)),
+                        description=item.get("description"),
+                        emoji=item.get("emoji") or emoji_map.get(direction, "⚪"),
+                        metadata=item.get("metadata", {}),
+                    )
+                )
+        if technical_factors:
+            total_weight = sum(f.weight for f in technical_factors) or 1.0
+            tech_score = sum(f.score * f.weight for f in technical_factors) / total_weight
+            primary = technical_factors[0]
+            direction = primary.metadata.get("direction", "neutral")
             factors.technical = FactorScore(
                 factor_name="technical_analysis",
-                score=tech_score,
+                score=min(max(tech_score, 0.0), 1.0),
                 weight=config.technical_weight,
-                description="Technical analysis combining MACD, RSI, ATR, and Bollinger Bands",
-                emoji=technical_payload.factors[0].emoji,
-                metadata={"direction": tech_direction, "sub_factors": len(technical_payload.factors)}
+                description=primary.description,
+                emoji=primary.emoji,
+                metadata={
+                    "direction": direction,
+                    "sub_factors": len(technical_factors),
+                },
             )
-    except Exception:
+    else:
         factors.technical = None
     
     # Sentiment analysis (15%)
@@ -597,7 +653,9 @@ def generate_trading_signal(
                 "volume": config.volume_weight,
                 "structure": config.structure_weight,
                 "composite": config.composite_weight,
-            }
+            },
+            "technical_analysis_summary": technical_analysis_snapshot,
+            "indicator_params": indicator_params,
         }
     )
 
@@ -619,16 +677,21 @@ class SignalGenerator:
         """
         self.config = config or SignalConfig()
     
-    def analyze(self, context: AnalyzerContext, 
-               config: Optional[SignalConfig] = None) -> TradingSignalPayload:
+    def analyze(
+        self,
+        context: AnalyzerContext,
+        config: Optional[SignalConfig] = None,
+        indicator_params: Optional[Dict[str, Any]] = None,
+    ) -> TradingSignalPayload:
         """Analyze trading context and generate signal.
-        
+
         Args:
             context: AnalyzerContext with market data
             config: Optional SignalConfig to override instance config
-            
+            indicator_params: Optional indicator parameter overrides
+
         Returns:
             TradingSignalPayload with generated signal
         """
         signal_config = config or self.config
-        return generate_trading_signal(context, signal_config)
+        return generate_trading_signal(context, signal_config, indicator_params=indicator_params)

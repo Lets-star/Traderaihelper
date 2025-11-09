@@ -201,42 +201,54 @@ class PayloadProcessor:
 payload_processor = PayloadProcessor()
 
 
-def load_full_payload(json_data: Union[str, Dict[str, Any]], 
-                    timeframe: Optional[str] = None,
-                    validate_real_data: bool = True) -> TradingSignalPayload:
-    """
-    Convenience function to load and process a complete JSON payload.
-    
+def load_full_payload(
+    json_data: Union[str, Dict[str, Any]],
+    timeframe: Optional[str] = None,
+    validate_real_data: bool = True,
+    signal_config: Optional[SignalConfig] = None,
+    indicator_params: Optional[Dict[str, Any]] = None,
+) -> TradingSignalPayload:
+    """Convenience function to load and process a complete JSON payload.
+
     Args:
         json_data: JSON string or dictionary containing trading data
         timeframe: Trading timeframe (extracted from payload if not provided)
         validate_real_data: Whether to validate real data constraints
-        
+        signal_config: Optional signal configuration overrides
+        indicator_params: Optional indicator parameter overrides (e.g., MACD/RSI/ATR)
+
     Returns:
         Processed TradingSignalPayload with complete analysis
-        
+
     Raises:
         DataValidationError: If real data validation fails
         ValueError: If payload format is invalid
     """
-    return payload_processor.load_full_payload(json_data, timeframe, validate_real_data)
+    return payload_processor.load_full_payload(
+        json_data,
+        timeframe,
+        validate_real_data,
+        signal_config=signal_config,
+        indicator_params=indicator_params,
+    )
 
 
-def load_and_process_payload_dict(json_data: Union[str, Dict[str, Any]], 
-                               timeframe: Optional[str] = None,
-                               validate_real_data: bool = True) -> Dict[str, Any]:
-    """
-    Convenience function to load and process payload as dictionary.
-    
-    Args:
-        json_data: JSON string or dictionary containing trading data
-        timeframe: Trading timeframe
-        validate_real_data: Whether to validate real data constraints
-        
-    Returns:
-        Processed payload as dictionary
-    """
-    return payload_processor.process_payload_to_dict(json_data, timeframe, validate_real_data)
+def load_and_process_payload_dict(
+    json_data: Union[str, Dict[str, Any]],
+    timeframe: Optional[str] = None,
+    validate_real_data: bool = True,
+    signal_config: Optional[SignalConfig] = None,
+    indicator_params: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Convenience function to load and process payload as dictionary."""
+    payload = payload_processor.load_full_payload(
+        json_data,
+        timeframe,
+        validate_real_data,
+        signal_config=signal_config,
+        indicator_params=indicator_params,
+    )
+    return payload.to_dict()
 
 
 def validate_and_normalize_payload(json_data: Union[str, Dict[str, Any]], 

@@ -2732,11 +2732,13 @@ def main():
 
     with adaptive_tab:
         st.subheader("⚖️ Adaptive Weight Management")
-        
+
         try:
             from indicator_collector.trading_system import (
-                AdaptiveWeightManager, AdaptiveWeightConfig,
-                Backtester, ParameterSet
+                AdaptiveWeightConfig,
+                AdaptiveWeightManager,
+                Backtester,
+                ParameterSet,
             )
             
             st.markdown("""
@@ -2768,11 +2770,12 @@ def main():
                         key=ui_key("adaptive_tab", "min_signals"),
                     )
 
+                    adaptation_strategy = st.selectbox(
                         "Adaptation Strategy",
                         ["performance_based", "volatility_adjusted", "hybrid"],
                         index=2,
                         help="Method for calculating weight adjustments",
-                        key=ui_key("adaptive_tab", "adaptation_strategy")
+                        key=ui_key("adaptive_tab", "adaptation_strategy"),
                     )
                 
                 with col2:

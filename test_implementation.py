@@ -106,7 +106,7 @@ def test_explicit_json_signals():
     signal = generate_signals(result)
     
     # Validate signal structure
-    assert is_valid_signal_structure(signal) == True
+    assert is_valid_signal_structure(signal) is True
     
     # Check required fields
     required_fields = [
@@ -123,19 +123,26 @@ def test_explicit_json_signals():
     assert isinstance(signal['confidence'], int)
     assert 1 <= signal['confidence'] <= 10
     assert isinstance(signal['entries'], list)
-    assert len(signal['entries']) >= 1
-    assert isinstance(signal['stop_loss'], (int, float))
-    assert signal['stop_loss'] > 0
-    assert isinstance(signal['take_profits'], dict)
-    assert 'tp1' in signal['take_profits']
-    assert 'tp2' in signal['take_profits']
-    assert 'tp3' in signal['take_profits']
-    assert isinstance(signal['position_size_pct'], (int, float))
-    assert 0 <= signal['position_size_pct'] <= 100
     assert signal['holding_period'] in ['short', 'medium', 'long']
     assert isinstance(signal['rationale'], list)
-    assert len(signal['rationale']) >= 1
     assert isinstance(signal['weights'], dict)
+    
+    if signal['signal'] in {'BUY', 'SELL'}:
+        assert len(signal['entries']) >= 1
+        assert isinstance(signal['stop_loss'], (int, float))
+        assert signal['stop_loss'] > 0
+        assert isinstance(signal['take_profits'], dict)
+        assert {'tp1', 'tp2', 'tp3'}.issubset(signal['take_profits'].keys())
+        assert isinstance(signal['position_size_pct'], (int, float))
+        assert 0 <= signal['position_size_pct'] <= 100
+        assert len(signal['rationale']) >= 1
+    else:
+        # HOLD signal should not fabricate execution levels
+        assert signal['entries'] == []
+        assert signal['stop_loss'] is None
+        assert signal['take_profits'] == {}
+        assert signal['position_size_pct'] is None
+        assert len(signal['rationale']) >= 1
     
     # Check weights sum to approximately 1.0
     weight_sum = sum(signal['weights'].values())
@@ -143,10 +150,13 @@ def test_explicit_json_signals():
     
     print("✅ Explicit JSON signals generated successfully!")
     print(f"✅ Signal: {signal['signal']} (confidence: {signal['confidence']}/10)")
-    print(f"✅ Entry: ${signal['entries'][0]:.2f}")
-    print(f"✅ Stop Loss: ${signal['stop_loss']:.2f}")
-    print(f"✅ Take Profits: {signal['take_profits']}")
-    print(f"✅ Position Size: {signal['position_size_pct']:.1f}%")
+    if signal['signal'] in {'BUY', 'SELL'}:
+        print(f"✅ Entry: ${signal['entries'][0]:.2f}")
+        print(f"✅ Stop Loss: ${signal['stop_loss']:.2f}")
+        print(f"✅ Take Profits: {signal['take_profits']}")
+        print(f"✅ Position Size: {signal['position_size_pct']:.1f}%")
+    else:
+        print("✅ No actionable levels returned; signal remains on HOLD")
     print(f"✅ Weights: {signal['weights']}")
 
 

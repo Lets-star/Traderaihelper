@@ -11,6 +11,9 @@ from indicator_collector.trading_system.data_sources import (
     normalize_timestamp,
     validate_timestamps_monotonic,
     validate_no_future_timestamps,
+    floor_to_interval,
+    datetime_to_milliseconds,
+    ensure_utc_datetime,
 )
 from indicator_collector.timeframes import Timeframe
 
@@ -82,6 +85,32 @@ class TestTimestampUtils:
         future_ts = int((datetime.utcnow().timestamp() + 120) * 1000)
         with pytest.raises(ValueError, match="Future timestamp"):
             validate_no_future_timestamps([future_ts])
+
+    def test_floor_to_interval_exact_boundary(self):
+        """Flooring at an exact boundary should return the same timestamp."""
+        interval_ms = 15 * 60 * 1000
+        base_ts = 1704067200000
+        assert floor_to_interval(base_ts, interval_ms) == base_ts
+
+    def test_floor_to_interval_one_ms_before_boundary(self):
+        """Flooring one millisecond before boundary should return previous bucket."""
+        interval_ms = 15 * 60 * 1000
+        base_ts = 1704067200000
+        ts = base_ts + interval_ms - 1
+        assert floor_to_interval(ts, interval_ms) == base_ts
+
+    def test_validate_no_future_timestamps_with_reference(self):
+        """Validation should use provided reference timestamp when supplied."""
+        reference_ts = 1704067200000
+        within_tolerance = reference_ts + 30_000  # 30 seconds ahead, within tolerance
+        assert (
+            validate_no_future_timestamps(
+                [within_tolerance],
+                tolerance_ms=60_000,
+                reference_ms=reference_ts,
+            )
+            is True
+        )
 
 
 class TestBinanceKlinesSourceDataConversion:
@@ -407,3 +436,92 @@ class TestBinanceKlinesSourceIntegration:
         # Should have fetched multiple pages
         assert len(df) > 0
         assert mock_fetch.call_count > 1
+
+    @patch("indicator_collector.trading_system.data_sources.binance_source.BinanceKlinesSource._fetch_klines_batch")
+    def test_load_candles_past_range_m15_filters_future(self, mock_fetch):
+        """Past date ranges should not trigger future timestamp errors on M15."""
+        source = BinanceKlinesSource(sleep_func=lambda _: None)
+
+        start = datetime(2023, 7, 1, 12, 17, 13)
+        end = datetime(2023, 7, 7, 18, 42, 27)
+
+        start_ms = datetime_to_milliseconds(ensure_utc_datetime(start))
+        end_ms = datetime_to_milliseconds(ensure_utc_datetime(end))
+        interval_ms = Timeframe.M15.to_milliseconds()
+
+        start_boundary = floor_to_interval(start_ms, interval_ms)
+        expected_last_close = floor_to_interval(end_ms, interval_ms)
+        expected_last_open = expected_last_close - interval_ms
+        assert expected_last_open >= start_boundary
+
+        total_candles = ((expected_last_open - start_boundary) // interval_ms) + 1 + 10
+
+        candles_data = [
+            [
+                start_boundary + i * interval_ms,
+                f"{50000 + i * 0.1:.1f}",
+                f"{50010 + i * 0.1:.1f}",
+                f"{49990 + i * 0.1:.1f}",
+                f"{50005 + i * 0.1:.1f}",
+                f"{100 + i}",
+                start_boundary + (i + 1) * interval_ms,
+                f"{1000 + i}",
+            ]
+            for i in range(total_candles)
+        ]
+        mock_fetch.return_value = candles_data
+
+        df = source.load_candles("BTCUSDT", "15m", start, end)
+
+        assert not df.empty
+        assert df["ts"].min() == start_boundary
+        assert df["ts"].max() == expected_last_open
+        assert (df["ts"] <= expected_last_open).all()
+        assert df["ts"].iloc[-1] + interval_ms == expected_last_close
+
+        expected_count = (expected_last_open - start_boundary) // interval_ms + 1
+        assert len(df) == expected_count
+
+    @patch("indicator_collector.trading_system.data_sources.binance_source.BinanceKlinesSource._fetch_klines_batch")
+    def test_load_candles_past_range_h1_filters_future(self, mock_fetch):
+        """Past date ranges should not trigger future timestamp errors on 1h."""
+        source = BinanceKlinesSource(sleep_func=lambda _: None)
+
+        start = datetime(2022, 3, 1, 5, 12, 33)
+        end = datetime(2022, 3, 10, 17, 45, 20)
+
+        start_ms = datetime_to_milliseconds(ensure_utc_datetime(start))
+        end_ms = datetime_to_milliseconds(ensure_utc_datetime(end))
+        interval_ms = Timeframe.H1.to_milliseconds()
+
+        start_boundary = floor_to_interval(start_ms, interval_ms)
+        expected_last_close = floor_to_interval(end_ms, interval_ms)
+        expected_last_open = expected_last_close - interval_ms
+        assert expected_last_open >= start_boundary
+
+        total_candles = ((expected_last_open - start_boundary) // interval_ms) + 1 + 24
+
+        candles_data = [
+            [
+                start_boundary + i * interval_ms,
+                f"{40000 + i * 1.0:.1f}",
+                f"{40050 + i * 1.0:.1f}",
+                f"{39950 + i * 1.0:.1f}",
+                f"{40025 + i * 1.0:.1f}",
+                f"{200 + i}",
+                start_boundary + (i + 1) * interval_ms,
+                f"{2000 + i}",
+            ]
+            for i in range(total_candles)
+        ]
+        mock_fetch.return_value = candles_data
+
+        df = source.load_candles("BTCUSDT", "1h", start, end)
+
+        assert not df.empty
+        assert df["ts"].min() == start_boundary
+        assert df["ts"].max() == expected_last_open
+        assert df["ts"].iloc[-1] + interval_ms == expected_last_close
+
+        expected_count = (expected_last_open - start_boundary) // interval_ms + 1
+        assert len(df) == expected_count

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Union
 
 import pandas as pd
@@ -59,6 +59,28 @@ def normalize_timestamp(ts: Union[int, float]) -> int:
     return int(ts_float)
 
 
+def ensure_utc_datetime(value: datetime) -> datetime:
+    """Ensure a datetime value is timezone-aware in UTC."""
+    if not isinstance(value, datetime):
+        raise TypeError("Datetime value expected")
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def datetime_to_milliseconds(value: datetime) -> int:
+    """Convert a datetime to UTC milliseconds since epoch."""
+    utc_value = ensure_utc_datetime(value)
+    return int(round(utc_value.timestamp() * 1000))
+
+
+def floor_to_interval(ts_ms: int, interval_ms: int) -> int:
+    """Floor a timestamp in milliseconds to the nearest interval boundary."""
+    if interval_ms <= 0:
+        raise ValueError("interval_ms must be positive")
+    return (int(ts_ms) // interval_ms) * interval_ms
+
+
 def validate_timestamps_monotonic(timestamps: list[int]) -> bool:
     """
     Validate that timestamps are strictly increasing.
@@ -82,13 +104,19 @@ def validate_timestamps_monotonic(timestamps: list[int]) -> bool:
     return True
 
 
-def validate_no_future_timestamps(timestamps: list[int], tolerance_ms: int = 60 * 1000) -> bool:
+def validate_no_future_timestamps(
+    timestamps: list[int],
+    tolerance_ms: int = 60 * 1000,
+    reference_ms: Optional[int] = None,
+) -> bool:
     """
     Validate that no timestamps are in the future.
 
     Args:
         timestamps: List of timestamps (in milliseconds)
         tolerance_ms: Allowed future tolerance in milliseconds
+        reference_ms: Optional reference timestamp (ms) to compare against.
+            Defaults to current UTC time when not provided.
 
     Raises:
         ValueError: If any timestamp is in the future beyond the tolerance
@@ -99,13 +127,16 @@ def validate_no_future_timestamps(timestamps: list[int], tolerance_ms: int = 60 
     if tolerance_ms < 0:
         raise ValueError("tolerance_ms must be non-negative")
 
-    current_ms = int(datetime.utcnow().timestamp() * 1000)
+    if reference_ms is None:
+        current_ms = int(datetime.utcnow().timestamp() * 1000)
+    else:
+        current_ms = int(reference_ms)
 
     for ts in timestamps:
         if ts > current_ms + tolerance_ms:
             raise ValueError(
                 f"Future timestamp detected: {ts} "
-                f"(current: {current_ms}, tolerance: {tolerance_ms}ms)"
+                f"(reference: {current_ms}, tolerance: {tolerance_ms}ms)"
             )
 
     return True

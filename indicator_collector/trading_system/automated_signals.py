@@ -11,7 +11,7 @@ import pandas as pd
 from indicator_collector.timeframes import Timeframe
 
 from .data_sources.binance_source import BinanceKlinesSource
-from .data_sources.timestamp_utils import get_last_closed_candle_ts
+from .data_sources.timestamp_utils import ensure_utc_datetime, get_last_closed_candle_ts
 from .generate_signals import generate_signals
 from .payload_loader import load_full_payload
 
@@ -155,24 +155,18 @@ def run_automated_signal_flow(
     Returns:
         ``AutomatedSignalResult`` containing candles, processed payload, and explicit signal.
     """
-    if start >= end:
+    start_utc = ensure_utc_datetime(start)
+    end_utc = ensure_utc_datetime(end)
+    if start_utc >= end_utc:
         raise ValueError("Start time must be before end time for automated signals")
 
     tf = Timeframe.from_value(timeframe)
     symbol_norm = _normalize_symbol(symbol)
 
     source = data_source or BinanceKlinesSource()
-    df = source.load_candles(symbol_norm, tf, start, end)
+    df = source.load_candles(symbol_norm, tf, start_utc, end_utc)
     if df is None or df.empty:
         raise ValueError(f"No Binance candles returned for {symbol_norm} {tf.value}")
-
-    start_ms = int(start.timestamp() * 1000)
-    end_ms = int(end.timestamp() * 1000)
-    df = df[(df["ts"] >= start_ms) & (df["ts"] <= end_ms)].copy()
-    if df.empty:
-        raise ValueError(
-            f"No candles within requested range for {symbol_norm} {tf.value}"
-        )
 
     df = df.sort_values("ts").reset_index(drop=True)
     candles = _dataframe_to_candles(df)

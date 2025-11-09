@@ -7,6 +7,9 @@ from .timestamp_utils import (
     validate_no_future_timestamps,
     validate_timestamps_monotonic,
     get_last_closed_candle_ts,
+    ensure_utc_datetime,
+    datetime_to_milliseconds,
+    floor_to_interval,
 )
 
 __all__ = [
@@ -16,4 +19,7 @@ __all__ = [
     "validate_timestamps_monotonic",
     "validate_no_future_timestamps",
     "get_last_closed_candle_ts",
+    "ensure_utc_datetime",
+    "datetime_to_milliseconds",
+    "floor_to_interval",
 ]

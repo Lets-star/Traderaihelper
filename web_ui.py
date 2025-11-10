@@ -7,6 +7,8 @@ import json
 import sys
 from typing import Any, Dict, Optional
 
+import numpy as np
+
 try:
     import pandas as pd
 except Exception as e:
@@ -295,6 +297,202 @@ def load_indicator_data(symbol: str, timeframe: str, period: int, token: str, ca
     return result.summary, result.payload, result.main_series
 
 
+def _rolling_equals(series: pd.Series, window: int, *, method: str) -> pd.Series:
+    """Return a boolean mask where values equal the rolling extremum within tolerance."""
+    if method not in {"min", "max"}:
+        raise ValueError("method must be 'min' or 'max'")
+    rolling_window = getattr(series.rolling(window, min_periods=1), method)()
+    series_values = series.to_numpy()
+    rolling_values = rolling_window.to_numpy()
+    mask = (~np.isnan(series_values)) & (~np.isnan(rolling_values))
+    result = np.zeros(series_values.shape, dtype=bool)
+    result[mask] = np.isclose(series_values[mask], rolling_values[mask], rtol=1e-5, atol=1e-8)
+    return pd.Series(result, index=series.index)
+
+
+def calculate_better_volume_indicator(
+    df: pd.DataFrame,
+    length: int = 8,
+    *,
+    use_two_bars: bool = True,
+    low_vol_enabled: bool = True,
+    climax_up_enabled: bool = True,
+    climax_down_enabled: bool = True,
+    churn_enabled: bool = True,
+    climax_churn_enabled: bool = True,
+) -> tuple[pd.Series, list[str]]:
+    """Compute BVI bar colors and the accompanying volume average series."""
+    if df.empty:
+        return pd.Series(dtype=float), []
+
+    open_ = df["open"].astype(float)
+    high = df["high"].astype(float)
+    low = df["low"].astype(float)
+    close = df["close"].astype(float)
+    volume = df["volume"].astype(float)
+
+    true_range = pd.concat(
+        [(high - low), (high - close.shift(1)).abs(), (low - close.shift(1)).abs()],
+        axis=1,
+    ).max(axis=1, skipna=True)
+
+    denom_base = (2.0 + (true_range.pow(2) / 10.0)) * true_range
+    denom_up = denom_base + (open_ - close)
+    denom_down = denom_base + (close - open_)
+    ratio_up = (true_range / denom_up).replace([np.inf, -np.inf], 0.0).fillna(0.0)
+    numerator_down = true_range + close - open_
+    ratio_down = (numerator_down / denom_down).replace([np.inf, -np.inf], 0.0).fillna(0.0)
+
+    v1 = pd.Series(
+        np.where(close >= open_, volume * ratio_up, volume * ratio_down),
+        index=df.index,
+    )
+    v2 = volume - v1
+    v3 = v1 + v2
+
+    v4 = v1 * true_range
+    v5 = (v1 - v2) * true_range
+    v6 = v2 * true_range
+    v7 = (v2 - v1) * true_range
+
+    true_range_values = true_range.to_numpy()
+    v1_values = v1.to_numpy()
+    v2_values = v2.to_numpy()
+    v3_values = v3.to_numpy()
+    non_zero_range = true_range_values != 0.0
+
+    v8 = pd.Series(
+        np.divide(v1_values, true_range_values, out=np.ones_like(v1_values), where=non_zero_range),
+        index=df.index,
+    )
+    v9 = pd.Series(
+        np.divide(v1_values - v2_values, true_range_values, out=np.ones_like(v1_values), where=non_zero_range),
+        index=df.index,
+    )
+    v10 = pd.Series(
+        np.divide(v2_values, true_range_values, out=np.ones_like(v1_values), where=non_zero_range),
+        index=df.index,
+    )
+    v11 = pd.Series(
+        np.divide(v2_values - v1_values, true_range_values, out=np.ones_like(v1_values), where=non_zero_range),
+        index=df.index,
+    )
+    v12 = pd.Series(
+        np.divide(v3_values, true_range_values, out=np.ones_like(v1_values), where=non_zero_range),
+        index=df.index,
+    )
+
+    if use_two_bars:
+        v13 = v3 + v3.shift(1)
+        highest_high = high.rolling(2, min_periods=1).max()
+        lowest_low = low.rolling(2, min_periods=1).min()
+        range_two = highest_high - lowest_low
+
+        v14 = (v1 + v1.shift(1)) * range_two
+        v15 = (v1 + v1.shift(1) - v2 - v2.shift(1)) * range_two
+        v16 = (v2 + v2.shift(1)) * range_two
+        v17 = (v2 + v2.shift(1) - v1 - v1.shift(1)) * range_two
+
+        range_two_values = range_two.to_numpy()
+        non_zero_range_two = range_two_values != 0.0
+        sum_v1 = (v1 + v1.shift(1)).to_numpy()
+        sum_v2 = (v2 + v2.shift(1)).to_numpy()
+        diff_v12 = (v1 + v1.shift(1) - v2 - v2.shift(1)).to_numpy()
+        diff_v21 = (v2 + v2.shift(1) - v1 - v1.shift(1)).to_numpy()
+        v18 = pd.Series(
+            np.divide(sum_v1, range_two_values, out=np.ones_like(v1_values), where=non_zero_range_two),
+            index=df.index,
+        )
+        v19 = pd.Series(
+            np.divide(diff_v12, range_two_values, out=np.ones_like(v1_values), where=non_zero_range_two),
+            index=df.index,
+        )
+        v20 = pd.Series(
+            np.divide(sum_v2, range_two_values, out=np.ones_like(v1_values), where=non_zero_range_two),
+            index=df.index,
+        )
+        v21 = pd.Series(
+            np.divide(diff_v21, range_two_values, out=np.ones_like(v1_values), where=non_zero_range_two),
+            index=df.index,
+        )
+        v22 = pd.Series(
+            np.divide(v13.to_numpy(), range_two_values, out=np.ones_like(v1_values), where=non_zero_range_two),
+            index=df.index,
+        )
+    else:
+        v13 = v14 = v15 = v16 = v17 = v18 = v19 = v20 = v21 = v22 = pd.Series(1.0, index=df.index)
+
+    close_greater_open = close > open_
+    close_less_open = close < open_
+    prev_close = close.shift(1)
+    prev_open = open_.shift(1)
+    prev_close_greater_prev_open = prev_close > prev_open
+    prev_close_less_prev_open = prev_close < prev_open
+
+    c1 = _rolling_equals(v3, length, method="min")
+    c2 = _rolling_equals(v4, length, method="max") & close_greater_open
+    c3 = _rolling_equals(v5, length, method="max") & close_greater_open
+    c4 = _rolling_equals(v6, length, method="max") & close_less_open
+    c5 = _rolling_equals(v7, length, method="max") & close_less_open
+    c6 = _rolling_equals(v8, length, method="min") & close_less_open
+    c7 = _rolling_equals(v9, length, method="min") & close_less_open
+    c8 = _rolling_equals(v10, length, method="min") & close_greater_open
+    c9 = _rolling_equals(v11, length, method="min") & close_greater_open
+    c10 = _rolling_equals(v12, length, method="max")
+
+    if use_two_bars:
+        c11 = _rolling_equals(v13, length, method="min") & close_greater_open & prev_close_greater_prev_open
+        c12 = _rolling_equals(v14, length, method="max") & close_greater_open & prev_close_greater_prev_open
+        c13 = _rolling_equals(v15, length, method="max") & close_greater_open & prev_close_less_prev_open
+        c14 = _rolling_equals(v16, length, method="min") & close_less_open & prev_close_less_prev_open
+        c15 = _rolling_equals(v17, length, method="min") & close_less_open & prev_close_less_prev_open
+        c16 = _rolling_equals(v18, length, method="min") & close_less_open & prev_close_less_prev_open
+        c17 = _rolling_equals(v19, length, method="min") & close_greater_open & prev_close_less_prev_open
+        c18 = _rolling_equals(v20, length, method="min") & close_greater_open & prev_close_greater_prev_open
+        c19 = _rolling_equals(v21, length, method="min") & close_greater_open & prev_close_greater_prev_open
+        c20 = _rolling_equals(v22, length, method="min")
+    else:
+        false_series = pd.Series(False, index=df.index)
+        c11 = c12 = c13 = c14 = c15 = c16 = c17 = c18 = c19 = c20 = false_series
+
+    low_vol_color = "#FFFF00"
+    climax_up_color = "#FF0000"
+    climax_down_color = "#FFFFFF"
+    churn_color = "#00FF00"
+    climax_churn_color = "#8B008B"
+    default_color = "#00FFFF"
+
+    climax_up_condition = (c2 | c3 | c8 | c9 | c12 | c13 | c18 | c19) & climax_up_enabled
+    climax_down_condition = (c4 | c5 | c6 | c7 | c14 | c15 | c16 | c17) & climax_down_enabled
+    churn_condition = ((c10 & churn_enabled) | c20)
+    low_vol_condition = (c1 | c11) & low_vol_enabled
+    climax_churn_condition = ((c10 | c20) & (c2 | c3 | c4 | c5 | c6 | c7 | c8 | c9) & climax_churn_enabled)
+
+    climax_up_condition_arr = climax_up_condition.to_numpy()
+    climax_down_condition_arr = climax_down_condition.to_numpy()
+    churn_condition_arr = churn_condition.to_numpy()
+
+    base_color = np.select(
+        [
+            climax_up_condition_arr,
+            (~climax_up_condition_arr) & climax_down_condition_arr,
+            (~climax_up_condition_arr) & (~climax_down_condition_arr) & churn_condition_arr,
+        ],
+        [climax_up_color, climax_down_color, churn_color],
+        default=default_color,
+    )
+
+    final_color = np.where(
+        climax_churn_condition.to_numpy(),
+        climax_churn_color,
+        np.where(low_vol_condition.to_numpy(), low_vol_color, base_color),
+    )
+
+    volume_sma = volume.rolling(length, min_periods=1).mean()
+
+    return volume_sma, final_color.tolist()
+
+
 def create_candlestick_chart(summary: SimulationSummary, main_series: TimeframeSeries):
     candles = main_series.candles
     
@@ -310,12 +508,16 @@ def create_candlestick_chart(summary: SimulationSummary, main_series: TimeframeS
         for c in candles
     ])
     
+    bvi_length = 8
+    volume_sma, volume_colors = calculate_better_volume_indicator(df, length=bvi_length, use_two_bars=True)
+    volume_sma_plot = volume_sma.where(volume_sma.notna(), None).tolist()
+    
     fig = make_subplots(
         rows=4, cols=1,
         shared_xaxes=True,
         vertical_spacing=0.03,
         row_heights=[0.5, 0.15, 0.15, 0.20],
-        subplot_titles=("Price & Indicators", "RSI", "MACD", "Volume"),
+        subplot_titles=("Price & Indicators", "RSI", "MACD", "Better Volume Indicator"),
     )
     
     fig.add_trace(
@@ -501,8 +703,17 @@ def create_candlestick_chart(summary: SimulationSummary, main_series: TimeframeS
         go.Bar(
             x=df["timestamp"],
             y=df["volume"],
-            name="Volume",
-            marker_color="rgba(100, 150, 255, 0.5)",
+            name="Better Volume",
+            marker_color=volume_colors if volume_colors else "#00FFFF",
+        ),
+        row=4, col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=df["timestamp"],
+            y=volume_sma_plot,
+            name=f"Volume SMA ({bvi_length})",
+            line=dict(color="orange", width=2),
         ),
         row=4, col=1,
     )
@@ -518,7 +729,7 @@ def create_candlestick_chart(summary: SimulationSummary, main_series: TimeframeS
     fig.update_yaxes(title_text="Price", row=1, col=1)
     fig.update_yaxes(title_text="RSI", range=[0, 100], row=2, col=1)
     fig.update_yaxes(title_text="MACD", row=3, col=1)
-    fig.update_yaxes(title_text="Volume", row=4, col=1)
+    fig.update_yaxes(title_text="Better Volume Indicator", row=4, col=1)
     fig.update_xaxes(title_text="Time", row=4, col=1)
     
     return fig

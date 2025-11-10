@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import statistics
-from typing import Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Union, TYPE_CHECKING
 
 from ..math_utils import Candle
 from .interfaces import FactorScore, JsonDict
 from .utils import clamp
+
+if TYPE_CHECKING:  # pragma: no cover - typing helper
+    from .interfaces import AnalyzerContext
 
 
 def _normalize_to_01(value: float, min_val: float = 0.0, max_val: float = 100.0) -> float:
@@ -367,17 +370,19 @@ def _calculate_multitf_confidence(
 
 
 def analyze_multitimeframe_factors(
-    main_candles: Sequence[Candle],
-    multi_timeframe_candles: Dict[str, Sequence[Candle]],
+    main_candles: Union[Sequence[Candle], "AnalyzerContext"],
+    multi_timeframe_candles: Optional[Dict[str, Sequence[Candle]]] = None,
     multi_timeframe_strengths: Optional[Dict[str, float]] = None,
+    analysis_params: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, object]:
     """
     Analyze multi-timeframe alignment, agreement, and trend force.
     
     Args:
-        main_candles: Candle data for the main timeframe
+        main_candles: Candle data for the main timeframe or AnalyzerContext instance
         multi_timeframe_candles: Dict mapping timeframe names to their candle sequences
         multi_timeframe_strengths: Dict mapping timeframe names to pre-calculated trend strengths
+        analysis_params: Optional analyzer configuration (weights, lookbacks)
         
     Returns:
         Dict with comprehensive multi-timeframe analysis including:

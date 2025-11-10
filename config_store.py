@@ -78,6 +78,7 @@ class ConfigStore:
             "risk": {**_DEFAULT_RISK},
             "signal": {**_DEFAULT_SIGNAL_SETTINGS},
             "backtest": {**_DEFAULT_BACKTEST_SETTINGS},
+            "debug": {"show_debug": False},
         }
 
     @classmethod
@@ -177,6 +178,10 @@ class ConfigStore:
         macd_defaults = defaults.get("macd", {})
         rsi_defaults = defaults.get("rsi", {})
         atr_defaults = defaults.get("atr", {})
+        volume_defaults = defaults.get("volume", {})
+        structure_defaults = defaults.get("structure", {})
+        composite_defaults = defaults.get("composite", {})
+        multitimeframe_defaults = defaults.get("multitimeframe", {})
         return {
             "macd": {
                 "fast": int(macd_defaults.get("fast", 12)),
@@ -191,6 +196,33 @@ class ConfigStore:
             "atr": {
                 "period": int(atr_defaults.get("period", 14)),
                 "mult": float(atr_defaults.get("mult", atr_defaults.get("mult_1x", 1.0))),
+            },
+            "volume": {
+                "ma_period": int(volume_defaults.get("ma_period", 20)),
+                "cvd_atr_multiplier": float(volume_defaults.get("cvd_atr_multiplier", 0.75)),
+                "delta_imbalance_threshold": float(volume_defaults.get("delta_imbalance_threshold", 1.2)),
+                "vpvr_poc_share": float(volume_defaults.get("vpvr_poc_share", 0.04)),
+                "smart_money_multiplier": float(volume_defaults.get("smart_money_multiplier", 1.5)),
+            },
+            "structure": {
+                "lookback": int(structure_defaults.get("lookback", 24)),
+                "swing_window": int(structure_defaults.get("swing_window", 5)),
+                "trend_window": int(structure_defaults.get("trend_window", 12)),
+                "min_sequence": int(structure_defaults.get("min_sequence", 5)),
+                "atr_distance": float(structure_defaults.get("atr_distance", 1.0)),
+            },
+            "composite": {
+                "buy_threshold": float(composite_defaults.get("buy_threshold", 0.6)),
+                "sell_threshold": float(composite_defaults.get("sell_threshold", 0.4)),
+                "confidence_floor": float(composite_defaults.get("confidence_floor", 0.3)),
+                "confidence_ceiling": float(composite_defaults.get("confidence_ceiling", 0.9)),
+                "min_confirmations": int(composite_defaults.get("min_confirmations", 3)),
+            },
+            "multitimeframe": {
+                "trend_lookback": int(multitimeframe_defaults.get("trend_lookback", 14)),
+                "alignment_weight": float(multitimeframe_defaults.get("alignment_weight", 0.4)),
+                "agreement_weight": float(multitimeframe_defaults.get("agreement_weight", 0.3)),
+                "force_weight": float(multitimeframe_defaults.get("force_weight", 0.3)),
             },
         }
 
@@ -221,6 +253,22 @@ class ConfigStore:
     def indicator_signature(self, timeframe: Optional[str] = None) -> str:
         params = self.get_indicator_params(timeframe)
         return str(sorted((k, tuple(sorted(v.items()))) for k, v in params.items()))
+
+    # ------------------------------------------------------------------
+    # Debug / diagnostics
+    # ------------------------------------------------------------------
+    def debug_settings(self) -> Dict[str, Any]:
+        settings = self._state.setdefault("debug", {"show_debug": False})
+        settings.setdefault("show_debug", False)
+        return settings
+
+    def update_debug_setting(self, key: str, value: Any) -> None:
+        settings = self.debug_settings()
+        settings[key] = value
+        self._state["debug"] = settings
+
+    def is_debug_enabled(self) -> bool:
+        return bool(self.debug_settings().get("show_debug", False))
 
     # ------------------------------------------------------------------
     # Risk & signal params
@@ -316,6 +364,7 @@ class ConfigStore:
             "risk": self.risk_settings(),
             "signal": self.signal_settings(),
             "backtest": self.backtest_settings(),
+            "debug": self.debug_settings(),
         }
 
     def cache_payload(self) -> Dict[str, str]:
@@ -323,6 +372,7 @@ class ConfigStore:
             "weights": self.weights_signature(),
             "indicator": self.indicator_signature(),
             "signal": self.signal_params_signature(),
+            "debug": str(self.is_debug_enabled()),
         }
 
     def start_iso(self) -> str:

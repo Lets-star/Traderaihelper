@@ -694,6 +694,214 @@ def render_indicator_controls(config_store: ConfigStore) -> None:
     config_store.update_indicator_param("atr", "period", int(atr_period))
     config_store.update_indicator_param("atr", "mult", float(atr_mult))
 
+    st.markdown("#### Volume & Order Flow")
+    volume_params = params.get("volume", {})
+    volume_cols = st.columns(2)
+    cvd_atr = num_float(
+        "CVD acceleration vs ATR (x)",
+        min_v=0.1,
+        max_v=5.0,
+        value=float(volume_params.get("cvd_atr_multiplier", 0.75)),
+        step=0.05,
+        key=ui_key("indicator", "cvd_atr_multiplier"),
+        ui=volume_cols[0],
+        help_text="Multiplier applied to ATR when evaluating cumulative volume delta acceleration.",
+    )
+    delta_threshold = num_float(
+        "Delta imbalance threshold",
+        min_v=0.1,
+        max_v=5.0,
+        value=float(volume_params.get("delta_imbalance_threshold", 1.2)),
+        step=0.05,
+        key=ui_key("indicator", "delta_threshold"),
+        ui=volume_cols[1],
+        help_text="Relative threshold versus average order flow delta to flag imbalance.",
+    )
+    volume_cols_2 = st.columns(2)
+    poc_share = num_float(
+        "POC minimum volume share",
+        min_v=0.01,
+        max_v=0.20,
+        value=float(volume_params.get("vpvr_poc_share", 0.04)),
+        step=0.01,
+        key=ui_key("indicator", "vpvr_poc_share"),
+        ui=volume_cols_2[0],
+        help_text="Minimum VPVR share required for the point of control to influence scoring.",
+    )
+    smart_money_mult = num_float(
+        "Smart money spike multiple",
+        min_v=1.0,
+        max_v=5.0,
+        value=float(volume_params.get("smart_money_multiplier", 1.5)),
+        step=0.1,
+        key=ui_key("indicator", "smart_money_multiplier"),
+        ui=volume_cols_2[1],
+        help_text="Volume multiple above the rolling average to treat prints as smart money activity.",
+    )
+    config_store.update_indicator_param("volume", "cvd_atr_multiplier", float(cvd_atr))
+    config_store.update_indicator_param("volume", "delta_imbalance_threshold", float(delta_threshold))
+    config_store.update_indicator_param("volume", "vpvr_poc_share", float(poc_share))
+    config_store.update_indicator_param("volume", "smart_money_multiplier", float(smart_money_mult))
+
+    st.markdown("#### Market Structure")
+    structure_params = params.get("structure", {})
+    structure_cols = st.columns(4)
+    structure_lookback = num_int(
+        "Structure lookback (bars)",
+        min_v=4,
+        max_v=200,
+        value=int(structure_params.get("lookback", 24)),
+        key=ui_key("indicator", "structure_lookback"),
+        ui=structure_cols[0],
+    )
+    swing_window = num_int(
+        "Swing window",
+        min_v=2,
+        max_v=50,
+        value=int(structure_params.get("swing_window", 5)),
+        key=ui_key("indicator", "structure_swing_window"),
+        ui=structure_cols[1],
+    )
+    trend_window = num_int(
+        "Trend window",
+        min_v=2,
+        max_v=100,
+        value=int(structure_params.get("trend_window", 12)),
+        key=ui_key("indicator", "structure_trend_window"),
+        ui=structure_cols[2],
+    )
+    min_sequence = num_int(
+        "Minimum sequence",
+        min_v=1,
+        max_v=20,
+        value=int(structure_params.get("min_sequence", 5)),
+        key=ui_key("indicator", "structure_min_sequence"),
+        ui=structure_cols[3],
+    )
+    structure_cols_2 = st.columns(1)
+    atr_distance = num_float(
+        "Liquidity sweep ATR distance",
+        min_v=0.1,
+        max_v=5.0,
+        value=float(structure_params.get("atr_distance", 1.0)),
+        step=0.05,
+        key=ui_key("indicator", "structure_atr_distance"),
+        ui=structure_cols_2[0],
+    )
+    config_store.update_indicator_param("structure", "lookback", int(structure_lookback))
+    config_store.update_indicator_param("structure", "swing_window", int(swing_window))
+    config_store.update_indicator_param("structure", "trend_window", int(trend_window))
+    config_store.update_indicator_param("structure", "min_sequence", int(min_sequence))
+    config_store.update_indicator_param("structure", "atr_distance", float(atr_distance))
+
+    st.markdown("#### Composite Confirmation")
+    composite_params = params.get("composite", {})
+    composite_cols = st.columns(2)
+    composite_buy = num_float(
+        "Composite buy threshold",
+        min_v=0.0,
+        max_v=1.0,
+        value=float(composite_params.get("buy_threshold", 0.6)),
+        step=0.01,
+        key=ui_key("indicator", "composite_buy_threshold"),
+        ui=composite_cols[0],
+    )
+    composite_sell = num_float(
+        "Composite sell threshold",
+        min_v=0.0,
+        max_v=1.0,
+        value=float(composite_params.get("sell_threshold", 0.4)),
+        step=0.01,
+        key=ui_key("indicator", "composite_sell_threshold"),
+        ui=composite_cols[1],
+    )
+    composite_cols_2 = st.columns(2)
+    confidence_floor = num_float(
+        "Confidence floor",
+        min_v=0.0,
+        max_v=1.0,
+        value=float(composite_params.get("confidence_floor", 0.3)),
+        step=0.01,
+        key=ui_key("indicator", "composite_conf_floor"),
+        ui=composite_cols_2[0],
+    )
+    confidence_ceiling = num_float(
+        "Confidence ceiling",
+        min_v=0.0,
+        max_v=1.0,
+        value=float(composite_params.get("confidence_ceiling", 0.9)),
+        step=0.01,
+        key=ui_key("indicator", "composite_conf_ceiling"),
+        ui=composite_cols_2[1],
+    )
+    min_confirmations = num_int(
+        "Min confirmations (composite)",
+        min_v=1,
+        max_v=6,
+        value=int(composite_params.get("min_confirmations", 3)),
+        key=ui_key("indicator", "composite_min_confirmations"),
+    )
+    config_store.update_indicator_param("composite", "buy_threshold", float(composite_buy))
+    config_store.update_indicator_param("composite", "sell_threshold", float(composite_sell))
+    config_store.update_indicator_param("composite", "confidence_floor", float(confidence_floor))
+    config_store.update_indicator_param("composite", "confidence_ceiling", float(confidence_ceiling))
+    config_store.update_indicator_param("composite", "min_confirmations", int(min_confirmations))
+
+    st.markdown("#### Multi-timeframe Alignment")
+    mtf_params = params.get("multitimeframe", {})
+    mtf_cols = st.columns(2)
+    trend_lookback = num_int(
+        "Trend lookback (bars)",
+        min_v=4,
+        max_v=60,
+        value=int(mtf_params.get("trend_lookback", 14)),
+        key=ui_key("indicator", "mtf_trend_lookback"),
+        ui=mtf_cols[0],
+    )
+    alignment_weight = num_float(
+        "Alignment weight",
+        min_v=0.0,
+        max_v=1.0,
+        value=float(mtf_params.get("alignment_weight", 0.4)),
+        step=0.05,
+        key=ui_key("indicator", "mtf_alignment_weight"),
+        ui=mtf_cols[1],
+    )
+    mtf_cols_2 = st.columns(2)
+    agreement_weight = num_float(
+        "Agreement weight",
+        min_v=0.0,
+        max_v=1.0,
+        value=float(mtf_params.get("agreement_weight", 0.3)),
+        step=0.05,
+        key=ui_key("indicator", "mtf_agreement_weight"),
+        ui=mtf_cols_2[0],
+    )
+    force_weight = num_float(
+        "Trend force weight",
+        min_v=0.0,
+        max_v=1.0,
+        value=float(mtf_params.get("force_weight", 0.3)),
+        step=0.05,
+        key=ui_key("indicator", "mtf_force_weight"),
+        ui=mtf_cols_2[1],
+    )
+    config_store.update_indicator_param("multitimeframe", "trend_lookback", int(trend_lookback))
+    config_store.update_indicator_param("multitimeframe", "alignment_weight", float(alignment_weight))
+    config_store.update_indicator_param("multitimeframe", "agreement_weight", float(agreement_weight))
+    config_store.update_indicator_param("multitimeframe", "force_weight", float(force_weight))
+
+    st.markdown("#### Diagnostics")
+    debug_enabled = config_store.is_debug_enabled()
+    show_debug = st.checkbox(
+        "Show analyzer diagnostics in results",
+        value=debug_enabled,
+        key=ui_key("indicator", "show_debug"),
+        help="When enabled, generated signals include per-factor normalization and weighting details.",
+    )
+    if bool(show_debug) != debug_enabled:
+        config_store.update_debug_setting("show_debug", bool(show_debug))
+
 
 def render_signal_risk_controls(config_store: ConfigStore) -> None:
     """Render controls for risk settings and signal thresholds."""

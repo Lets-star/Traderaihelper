@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Optional, Tuple
 import math
+import statistics
 
 
 from .interfaces import (
@@ -14,6 +15,7 @@ from .interfaces import (
     SignalExplanation,
     TradingSignalPayload,
 )
+from .backtester import ParameterSet
 from .technical_analysis import analyze_technical_factors
 from .sentiment_analyzer import analyze_sentiment_factors
 from .multitimeframe_analyzer import analyze_multitimeframe_factors
@@ -168,166 +170,445 @@ class SignalFactors:
         ]
 
 
-def _create_volume_factor(context: AnalyzerContext) -> Optional[FactorScore]:
-    """Create volume factor from context data."""
+def _create_volume_factor(
+    context: AnalyzerContext,
+    parameter_set: Optional[ParameterSet] = None,
+) -> Optional[FactorScore]:
+    """Create volume factor from context data and configurable parameters."""
+
     volume_analysis = context.volume_analysis or {}
     advanced_metrics = context.advanced_metrics or {}
-    
-    # Extract volume metrics
-    volume_ratio = volume_analysis.get("volume_ratio", 1.0)
-    volume_confidence = volume_analysis.get("volume_confidence", 0.5)
-    smart_money = advanced_metrics.get("smart_money_activity", {})
-    
-    # Calculate volume score
-    score = 0.5  # Neutral base
-    
-    # Volume ratio contribution (0-1)
-    if volume_ratio > 2.0:
-        score += 0.2
-    elif volume_ratio > 1.5:
-        score += 0.1
-    elif volume_ratio < 0.5:
-        score -= 0.1
-    
-    # Volume confidence contribution (0-1)
-    score += (volume_confidence - 0.5) * 0.3
-    
-    # Smart money contribution
-    if smart_money:
-        smart_money_score = smart_money.get("score", 0.5)
-        score += (smart_money_score - 0.5) * 0.2
-    
-    # Clamp and normalize
-    score = max(0.0, min(1.0, score))
-    
-    # Determine direction
-    if score > 0.6:
+    indicators = context.indicators or {}
+
+    params = parameter_set.get_indicator_group("volume") if parameter_set else {}
+    cvd_multiplier = float(params.get("cvd_atr_multiplier", 0.75))
+    delta_threshold = float(params.get("delta_imbalance_threshold", 1.2))
+    vpvr_threshold = float(params.get("vpvr_poc_share", 0.04))
+    smart_money_multiplier = float(params.get("smart_money_multiplier", 1.5))
+
+    component_weight_defaults = {
+        "cvd": 0.3,
+        "delta": 0.25,
+        "vpvr": 0.2,
+        "smart_money": 0.25,
+    }
+    component_weight_spec = params.get("component_weights", {})
+    component_weights = {
+        key: float(component_weight_spec.get(key, default))
+        for key, default in component_weight_defaults.items()
+    }
+    total_component_weight = sum(component_weights.values()) or 1.0
+    normalized_component_weights = {
+        key: value / total_component_weight for key, value in component_weights.items()
+    }
+
+    context_metrics = volume_analysis.get("context", {})
+    volume_ratio = float(context_metrics.get("volume_ratio", 1.0) or 1.0)
+    volume_confidence = float(context_metrics.get("volume_confidence", 0.5) or 0.5)
+    atr_value = float(indicators.get("atr") or context_metrics.get("atr") or 0.0)
+
+    cvd = volume_analysis.get("cvd", {})
+    cvd_change = float(cvd.get("change") or 0.0)
+    if atr_value > 0 and cvd_multiplier > 0:
+        cvd_normalized = _clamp(cvd_change / (atr_value * cvd_multiplier), -2.0, 2.0)
+    else:
+        cvd_normalized = 0.0
+    cvd_component = _clamp(0.5 + cvd_normalized * 0.25, 0.0, 1.0)
+    cvd_direction = "bullish" if cvd_component > 0.52 else "bearish" if cvd_component < 0.48 else "neutral"
+
+    delta = volume_analysis.get("delta", {})
+    delta_latest = float(delta.get("latest") or 0.0)
+    delta_average = float(delta.get("average") or 0.0)
+    denom = abs(delta_average) * delta_threshold if delta_threshold > 0 else abs(delta_average)
+    if denom > 0:
+        delta_normalized = _clamp(delta_latest / denom, -2.0, 2.0)
+    else:
+        delta_normalized = 0.0
+    delta_component = _clamp(0.5 + delta_normalized * 0.25, 0.0, 1.0)
+    delta_direction = "bullish" if delta_component > 0.52 else "bearish" if delta_component < 0.48 else "neutral"
+
+    vpvr = volume_analysis.get("vpvr", {})
+    total_volume = float(vpvr.get("total_volume") or 0.0)
+    levels = vpvr.get("levels") or []
+    poc_price = vpvr.get("poc")
+    poc_share = 0.0
+    if total_volume > 0:
+        target_level = None
+        if poc_price is not None:
+            target_level = next((lvl for lvl in levels if lvl.get("price") == poc_price), None)
+        if target_level is None and levels:
+            target_level = max(levels, key=lambda lvl: float(lvl.get("volume") or 0.0))
+        if target_level:
+            poc_share = float(target_level.get("volume", 0.0)) / total_volume
+    if vpvr_threshold > 0:
+        vpvr_ratio = poc_share / vpvr_threshold
+    else:
+        vpvr_ratio = 0.0
+    vpvr_component = _clamp(0.5 + (_clamp(vpvr_ratio, 0.0, 2.0) - 1.0) * 0.25, 0.0, 1.0)
+    vpvr_direction = "bullish" if vpvr_component > 0.55 else "bearish" if vpvr_component < 0.45 else "neutral"
+
+    smart_money_events = volume_analysis.get("smart_money") or []
+    avg_volume = float(context_metrics.get("average_volume") or 0.0)
+    qualified_buys = 0
+    qualified_sells = 0
+    for event in smart_money_events:
+        event_volume = float(event.get("volume") or 0.0)
+        if avg_volume > 0 and event_volume < avg_volume * smart_money_multiplier:
+            continue
+        direction = str(event.get("direction", "")).lower()
+        if direction == "buy":
+            qualified_buys += 1
+        elif direction == "sell":
+            qualified_sells += 1
+    total_qualified = qualified_buys + qualified_sells
+    if total_qualified > 0:
+        smart_money_bias = (qualified_buys - qualified_sells) / total_qualified
+    else:
+        smart_money_bias = 0.0
+    smart_money_component = _clamp(0.5 + smart_money_bias * 0.5, 0.0, 1.0)
+    smart_money_direction = "bullish" if smart_money_component > 0.55 else "bearish" if smart_money_component < 0.45 else "neutral"
+
+    components = {
+        "cvd": cvd_component,
+        "delta": delta_component,
+        "vpvr": vpvr_component,
+        "smart_money": smart_money_component,
+    }
+    component_directions = {
+        "cvd": cvd_direction,
+        "delta": delta_direction,
+        "vpvr": vpvr_direction,
+        "smart_money": smart_money_direction,
+    }
+
+    weighted_score = sum(components[key] * normalized_component_weights[key] for key in components)
+    ratio_adjustment = _clamp((volume_ratio - 1.0) * 0.1, -0.1, 0.1)
+    confidence_adjustment = (volume_confidence - 0.5) * 0.2
+    final_score = _clamp(weighted_score + ratio_adjustment + confidence_adjustment, 0.0, 1.0)
+
+    if final_score >= 0.58:
         direction = "bullish"
         emoji = "🟢"
-    elif score < 0.4:
+    elif final_score <= 0.42:
         direction = "bearish"
         emoji = "🔴"
     else:
         direction = "neutral"
         emoji = "⚪"
-    
+
+    component_confidences = [abs(value - 0.5) * 2 for value in components.values()]
+    avg_component_confidence = _clamp(
+        statistics.fmean(component_confidences) if component_confidences else 0.0,
+        0.0,
+        1.0,
+    )
+
+    metadata = {
+        "direction": direction,
+        "volume_ratio": volume_ratio,
+        "volume_confidence": volume_confidence,
+        "components": components,
+        "component_weights": normalized_component_weights,
+        "component_directions": component_directions,
+        "parameters": {
+            "cvd_atr_multiplier": cvd_multiplier,
+            "delta_imbalance_threshold": delta_threshold,
+            "vpvr_poc_share": vpvr_threshold,
+            "smart_money_multiplier": smart_money_multiplier,
+        },
+        "confidence": avg_component_confidence * 100.0,
+        "atr": atr_value,
+        "poc_share": poc_share,
+        "qualified_smart_money": {
+            "buy": qualified_buys,
+            "sell": qualified_sells,
+            "total": total_qualified,
+        },
+        "smart_money_raw": smart_money_events[:5],
+        "advanced_metrics": advanced_metrics.get("smart_money_activity"),
+    }
+
+    description = (
+        f"Volume composite {final_score:.2f} (ratio {volume_ratio:.2f}, confidence {volume_confidence:.2f})"
+    )
+    weight = (
+        parameter_set.normalized_category_weights().get("volume", 0.20)
+        if parameter_set
+        else 0.20
+    )
+
     return FactorScore(
         factor_name="volume_analysis",
-        score=score,
-        weight=0.20,
-        description=f"Volume analysis with ratio {volume_ratio:.2f} and confidence {volume_confidence:.2f}",
+        score=final_score,
+        weight=weight,
+        description=description,
         emoji=emoji,
-        metadata={
-            "direction": direction,
-            "volume_ratio": volume_ratio,
-            "volume_confidence": volume_confidence,
-            "smart_money_score": smart_money.get("score") if smart_money else None,
-        }
+        metadata=metadata,
     )
 
 
-def _create_structure_factor(context: AnalyzerContext) -> Optional[FactorScore]:
-    """Create market structure factor from context data."""
+def _create_structure_factor(
+    context: AnalyzerContext,
+    parameter_set: Optional[ParameterSet] = None,
+) -> Optional[FactorScore]:
+    """Create market structure factor from context data and configurable parameters."""
+
     market_structure = context.market_structure or {}
     advanced_metrics = context.advanced_metrics or {}
-    
-    # Extract structure metrics
-    structure_state = market_structure.get("structure_state", "neutral")
-    structure_score = market_structure.get("structure_score", 0.5)
+
+    params = parameter_set.get_indicator_group("structure") if parameter_set else {}
+    lookback = max(1, int(params.get("lookback", 24)))
+    swing_window = max(1, int(params.get("swing_window", 5)))
+    trend_window = max(1, int(params.get("trend_window", 12)))
+    min_sequence = max(1, int(params.get("min_sequence", 5)))
+    atr_distance = float(params.get("atr_distance", 1.0))
+
+    component_weight_defaults = {
+        "trend": 0.4,
+        "structure": 0.4,
+        "liquidity": 0.2,
+    }
+    component_weight_spec = params.get("component_weights", {})
+    component_weights = {
+        key: float(component_weight_spec.get(key, default))
+        for key, default in component_weight_defaults.items()
+    }
+    total_component_weight = sum(component_weights.values()) or 1.0
+    normalized_component_weights = {
+        key: value / total_component_weight for key, value in component_weights.items()
+    }
+
+    structure_state = str(market_structure.get("structure_state", "neutral")).lower()
+    structure_score = float(market_structure.get("structure_score", 0.5) or 0.5)
+    liquidity_score = float(market_structure.get("liquidity_score", 0.5) or 0.5)
+    sequence_length = int(market_structure.get("sequence_length", 0) or 0)
+    sweep_distance = float(market_structure.get("liquidity_sweep_atr", 0.0) or 0.0)
     breadth_metrics = advanced_metrics.get("market_breadth", {})
-    
-    # Calculate structure score
-    score = 0.5  # Neutral base
-    
-    # Structure state contribution
-    if structure_state == "bullish":
-        score += 0.2
-    elif structure_state == "bearish":
-        score -= 0.2
-    
-    # Structure score contribution
-    score += (structure_score - 0.5) * 0.4
-    
-    # Market breadth contribution
-    if breadth_metrics:
-        breadth_score = breadth_metrics.get("score", 0.5)
-        score += (breadth_score - 0.5) * 0.2
-    
-    # Clamp and normalize
-    score = max(0.0, min(1.0, score))
-    
-    # Determine direction
-    if score > 0.6:
+    breadth_score = float(breadth_metrics.get("score", 0.5) or 0.5)
+
+    trend_bias_map = {"bullish": 0.65, "bearish": 0.35}
+    trend_bias = trend_bias_map.get(structure_state, 0.5)
+    trend_ratio = _clamp(trend_window / float(lookback), 0.0, 2.0)
+    breadth_adjustment = (breadth_score - 0.5) * 0.3
+    trend_component = _clamp(trend_bias + (trend_ratio - 1.0) * 0.15 + breadth_adjustment, 0.0, 1.0)
+
+    if sequence_length <= 0:
+        sequence_length = swing_window
+    sequence_ratio = _clamp(sequence_length / float(max(min_sequence, 1)), 0.0, 2.0)
+    structure_component = _clamp(
+        0.5 + (structure_score - 0.5) * (1.0 + (sequence_ratio - 1.0) * 0.5),
+        0.0,
+        1.0,
+    )
+
+    if sweep_distance <= 0:
+        sweep_distance = atr_distance
+    sweep_ratio = _clamp(sweep_distance / float(max(atr_distance, 1e-6)), 0.0, 2.0)
+    liquidity_component = _clamp(
+        liquidity_score + (0.5 - sweep_ratio * 0.25),
+        0.0,
+        1.0,
+    )
+
+    components = {
+        "trend": trend_component,
+        "structure": structure_component,
+        "liquidity": liquidity_component,
+    }
+
+    final_score = sum(components[key] * normalized_component_weights[key] for key in components)
+
+    if final_score >= 0.58:
         direction = "bullish"
         emoji = "🟢"
-    elif score < 0.4:
+    elif final_score <= 0.42:
         direction = "bearish"
         emoji = "🔴"
     else:
         direction = "neutral"
         emoji = "⚪"
-    
+
+    component_confidences = [abs(value - 0.5) * 2 for value in components.values()]
+    avg_component_confidence = _clamp(
+        statistics.fmean(component_confidences) if component_confidences else 0.0,
+        0.0,
+        1.0,
+    )
+
+    metadata = {
+        "direction": direction,
+        "structure_state": structure_state,
+        "structure_score": structure_score,
+        "liquidity_score": liquidity_score,
+        "components": components,
+        "component_weights": normalized_component_weights,
+        "parameters": {
+            "lookback": lookback,
+            "swing_window": swing_window,
+            "trend_window": trend_window,
+            "min_sequence": min_sequence,
+            "atr_distance": atr_distance,
+        },
+        "sequence_length": sequence_length,
+        "sweep_distance_atr": sweep_distance,
+        "breadth_score": breadth_score,
+        "confidence": avg_component_confidence * 100.0,
+    }
+
+    description = (
+        f"Market structure {structure_state or 'neutral'} (composite {final_score:.2f})"
+    )
+    weight = (
+        parameter_set.normalized_category_weights().get("market_structure", 0.15)
+        if parameter_set
+        else 0.15
+    )
+
     return FactorScore(
         factor_name="market_structure",
-        score=score,
-        weight=0.15,
-        description=f"Market structure {structure_state} with score {structure_score:.2f}",
+        score=final_score,
+        weight=weight,
+        description=description,
         emoji=emoji,
-        metadata={
-            "direction": direction,
-            "structure_state": structure_state,
-            "structure_score": structure_score,
-            "breadth_score": breadth_metrics.get("score") if breadth_metrics else None,
-        }
+        metadata=metadata,
     )
 
 
-def _create_composite_factor(context: AnalyzerContext) -> Optional[FactorScore]:
-    """Create composite factor from advanced metrics."""
-    advanced_metrics = context.advanced_metrics or {}
-    
-    # Extract composite metrics
-    composite_indicators = advanced_metrics.get("composite_indicators", {})
-    market_context = advanced_metrics.get("market_context", {})
-    
-    # Calculate composite score
-    score = 0.5  # Neutral base
-    
-    # Composite indicators contribution
-    if composite_indicators:
-        composite_score = composite_indicators.get("overall_score", 0.5)
-        score += (composite_score - 0.5) * 0.5
-    
-    # Market context contribution
-    if market_context:
-        context_score = market_context.get("score", 0.5)
-        score += (context_score - 0.5) * 0.3
-    
-    # Clamp and normalize
-    score = max(0.0, min(1.0, score))
-    
-    # Determine direction
-    if score > 0.6:
+def _create_composite_factor(
+    factors: SignalFactors,
+    parameter_set: Optional[ParameterSet] = None,
+    composite_params: Optional[Dict[str, Any]] = None,
+) -> Optional[FactorScore]:
+    """Create composite factor by aggregating category scores with live weights."""
+
+    composite_params = composite_params or {}
+    buy_threshold = float(composite_params.get("buy_threshold", 0.6))
+    sell_threshold = float(composite_params.get("sell_threshold", 0.4))
+    confidence_floor = float(composite_params.get("confidence_floor", 0.3))
+    confidence_ceiling = float(composite_params.get("confidence_ceiling", 0.9))
+    min_confirmations = int(composite_params.get("min_confirmations", 3))
+
+    weights_map = (
+        parameter_set.normalized_category_weights()
+        if parameter_set
+        else {
+            "technical": 0.25,
+            "sentiment": 0.15,
+            "multitimeframe": 0.10,
+            "volume": 0.20,
+            "market_structure": 0.15,
+        }
+    )
+
+    category_factors = {
+        "technical": factors.technical,
+        "sentiment": factors.sentiment,
+        "multitimeframe": factors.multitimeframe,
+        "volume": factors.volume,
+        "market_structure": factors.structure,
+    }
+
+    available_entries = {
+        name: factor for name, factor in category_factors.items() if factor is not None
+    }
+    if not available_entries:
+        return None
+
+    weight_sum = sum(weights_map.get(name, 0.0) for name in available_entries)
+    if weight_sum <= 0:
+        weight_sum = len(available_entries)
+        normalized_weights = {name: 1.0 / weight_sum for name in available_entries}
+    else:
+        normalized_weights = {
+            name: weights_map.get(name, 0.0) / weight_sum
+            for name in available_entries
+        }
+
+    contributions = {
+        name: factor.score * normalized_weights[name]
+        for name, factor in available_entries.items()
+    }
+    composite_score = sum(contributions.values())
+
+    bullish_confirmations = 0
+    bearish_confirmations = 0
+    neutral_confirmations = 0
+    per_category_direction: Dict[str, str] = {}
+    for name, factor in available_entries.items():
+        direction = factor.metadata.get("direction")
+        if not direction:
+            if factor.score >= 0.55:
+                direction = "bullish"
+            elif factor.score <= 0.45:
+                direction = "bearish"
+            else:
+                direction = "neutral"
+        per_category_direction[name] = direction
+        if direction == "bullish":
+            bullish_confirmations += 1
+        elif direction == "bearish":
+            bearish_confirmations += 1
+        else:
+            neutral_confirmations += 1
+
+    if composite_score >= buy_threshold:
         direction = "bullish"
         emoji = "🟢"
-    elif score < 0.4:
+        confirmations = bullish_confirmations
+    elif composite_score <= sell_threshold:
         direction = "bearish"
         emoji = "🔴"
+        confirmations = bearish_confirmations
     else:
         direction = "neutral"
         emoji = "⚪"
-    
+        confirmations = max(bullish_confirmations, bearish_confirmations)
+
+    if confidence_ceiling <= confidence_floor:
+        confidence_ceiling = confidence_floor + 1e-6
+    normalized_confidence = _clamp(
+        (composite_score - confidence_floor) / (confidence_ceiling - confidence_floor),
+        0.0,
+        1.0,
+    )
+
+    metadata = {
+        "direction": direction,
+        "confirmations": confirmations,
+        "details": {
+            name: {
+                "score": factor.score,
+                "weight": normalized_weights[name],
+                "contribution": contributions[name],
+                "direction": per_category_direction[name],
+            }
+            for name, factor in available_entries.items()
+        },
+        "parameters": {
+            "buy_threshold": buy_threshold,
+            "sell_threshold": sell_threshold,
+            "confidence_floor": confidence_floor,
+            "confidence_ceiling": confidence_ceiling,
+            "min_confirmations": min_confirmations,
+        },
+        "normalized_confidence": normalized_confidence,
+        "required_confirmations_met": confirmations >= min_confirmations,
+    }
+
+    description = f"Composite confirmation {composite_score:.2f} with {confirmations} confirmations"
+    weight = (
+        parameter_set.normalized_category_weights().get("composite", 0.15)
+        if parameter_set
+        else 0.15
+    )
+
     return FactorScore(
         factor_name="composite_analysis",
-        score=score,
-        weight=0.15,
-        description=f"Composite analysis with overall score {score:.2f}",
+        score=composite_score,
+        weight=weight,
+        description=description,
         emoji=emoji,
-        metadata={
-            "direction": direction,
-            "composite_score": composite_indicators.get("overall_score") if composite_indicators else None,
-            "context_score": market_context.get("score") if market_context else None,
-        }
+        metadata=metadata,
     )
 
 
@@ -466,26 +747,45 @@ def generate_trading_signal(
     context: AnalyzerContext,
     config: Optional[SignalConfig] = None,
     indicator_params: Optional[Dict[str, Any]] = None,
+    parameter_set: Optional[ParameterSet] = None,
 ) -> TradingSignalPayload:
     """Generate a comprehensive trading signal combining all analyzer outputs."""
-    
+
     if config is None:
         config = SignalConfig()
-    
-    # Generate individual factor scores
+
+    resolved_indicator_params: Dict[str, Any]
+    if parameter_set:
+        resolved_indicator_params = parameter_set.indicator_params
+    else:
+        resolved_indicator_params = indicator_params or {}
+
+    category_weights = {
+        "technical": config.technical_weight,
+        "sentiment": config.sentiment_weight,
+        "multitimeframe": config.multitimeframe_weight,
+        "volume": config.volume_weight,
+        "market_structure": config.structure_weight,
+        "composite": config.composite_weight,
+    }
+    if parameter_set:
+        normalized_weights = parameter_set.normalized_category_weights()
+        for key, value in normalized_weights.items():
+            if key in category_weights:
+                category_weights[key] = value
+
     factors = SignalFactors()
-    
-    # Technical analysis (25%)
+
     technical_analysis_summary: Optional[Any] = None
     technical_analysis_snapshot: Optional[Dict[str, Any]] = None
     try:
         technical_analysis_summary = analyze_technical_factors(
             context,
-            indicator_params=indicator_params,
+            indicator_params=resolved_indicator_params,
         )
     except Exception:
         technical_analysis_summary = None
-    
+
     if isinstance(technical_analysis_summary, dict) and technical_analysis_summary:
         technical_analysis_snapshot = technical_analysis_summary
         tech_score = float(technical_analysis_summary.get("final_score", 0.5))
@@ -497,8 +797,8 @@ def generate_trading_signal(
         emoji_map = {"bullish": "🟢", "bearish": "🔴", "neutral": "⚪"}
         factors.technical = FactorScore(
             factor_name="technical_analysis",
-            score=min(max(tech_score, 0.0), 1.0),
-            weight=config.technical_weight,
+            score=_clamp(tech_score, 0.0, 1.0),
+            weight=category_weights.get("technical", config.technical_weight),
             description=tech_rationale,
             emoji=emoji_map.get(tech_direction, "⚪"),
             metadata={
@@ -536,8 +836,8 @@ def generate_trading_signal(
             direction = primary.metadata.get("direction", "neutral")
             factors.technical = FactorScore(
                 factor_name="technical_analysis",
-                score=min(max(tech_score, 0.0), 1.0),
-                weight=config.technical_weight,
+                score=_clamp(tech_score, 0.0, 1.0),
+                weight=category_weights.get("technical", config.technical_weight),
                 description=primary.description,
                 emoji=primary.emoji,
                 metadata={
@@ -547,65 +847,81 @@ def generate_trading_signal(
             )
     else:
         factors.technical = None
-    
-    # Sentiment analysis (15%)
+
     try:
         sentiment_payload = analyze_sentiment_factors(context)
         if sentiment_payload.factors:
-            factors.sentiment = sentiment_payload.factors[0]
-            factors.sentiment.weight = config.sentiment_weight
+            base = sentiment_payload.factors[0]
+            factors.sentiment = FactorScore(
+                factor_name=base.factor_name,
+                score=base.score,
+                weight=category_weights.get("sentiment", config.sentiment_weight),
+                description=base.description,
+                emoji=base.emoji,
+                metadata=dict(base.metadata),
+            )
     except Exception:
         factors.sentiment = None
-    
-    # Multi-timeframe analysis (10%)
+
     try:
         mt_payload = analyze_multitimeframe_factors(context)
         if mt_payload.factors:
-            factors.multitimeframe = mt_payload.factors[0]
-            factors.multitimeframe.weight = config.multitimeframe_weight
+            base = mt_payload.factors[0]
+            factors.multitimeframe = FactorScore(
+                factor_name=base.factor_name,
+                score=base.score,
+                weight=category_weights.get("multitimeframe", config.multitimeframe_weight),
+                description=base.description,
+                emoji=base.emoji,
+                metadata=dict(base.metadata),
+            )
     except Exception:
         factors.multitimeframe = None
-    
-    # Volume analysis (20%)
-    factors.volume = _create_volume_factor(context)
-    if factors.volume:
-        factors.volume.weight = config.volume_weight
-    
-    # Market structure (15%)
-    factors.structure = _create_structure_factor(context)
-    if factors.structure:
-        factors.structure.weight = config.structure_weight
-    
-    # Composite analysis (15%)
-    factors.composite = _create_composite_factor(context)
-    if factors.composite:
-        factors.composite.weight = config.composite_weight
-    
-    # Calculate final weighted score
+
+    volume_factor = _create_volume_factor(context, parameter_set)
+    if volume_factor:
+        if not parameter_set:
+            volume_factor.weight = category_weights.get("volume", config.volume_weight)
+        factors.volume = volume_factor
+
+    structure_factor = _create_structure_factor(context, parameter_set)
+    if structure_factor:
+        if not parameter_set:
+            structure_factor.weight = category_weights.get("market_structure", config.structure_weight)
+        factors.structure = structure_factor
+
+    composite_params = parameter_set.get_indicator_group("composite") if parameter_set else None
+    composite_factor = _create_composite_factor(factors, parameter_set, composite_params)
+    if composite_factor:
+        if not parameter_set:
+            composite_factor.weight = category_weights.get("composite", config.composite_weight)
+        factors.composite = composite_factor
+
     available_factors = factors.get_available_factors()
-    if not available_factors:
-        final_score = 0.5  # Neutral if no factors
-    else:
+    if available_factors:
         total_weight = sum(f.weight for f in available_factors)
         if total_weight > 0:
             final_score = sum(f.score * f.weight for f in available_factors) / total_weight
         else:
             final_score = 0.5
-    
-    # Get VIX for adaptivity (try to get from context extras)
+    else:
+        final_score = 0.5
+
     vix_value = None
     if context.extras and "market_context" in context.extras:
         market_context = context.extras["market_context"]
         if isinstance(market_context, dict) and "vix" in market_context:
             vix_value = market_context["vix"]
-    
-    # Get adapted thresholds
+
     buy_threshold, sell_threshold, min_confidence = config.get_adapted_thresholds(vix_value)
-    
-    # Check cancellation triggers
+
     cancellation_triggers = _check_cancellation_triggers(context, factors)
-    
-    # Determine signal type
+    if (
+        factors.composite
+        and not factors.composite.metadata.get("required_confirmations_met", True)
+    ):
+        cancellation_triggers.append("Composite confirmations below requirement")
+
     if cancellation_triggers:
         signal_type = "HOLD"
     elif final_score >= buy_threshold and factors.count_available_factors() >= config.min_factors_confirm:
@@ -614,22 +930,51 @@ def generate_trading_signal(
         signal_type = "SELL"
     else:
         signal_type = "HOLD"
-    
-    # Calculate confidence
+
     confidence_int, confidence_float = _calculate_confidence(
         final_score, factors, buy_threshold, sell_threshold, cancellation_triggers
     )
-    
-    # Apply minimum confidence filter
+
     if confidence_float < min_confidence:
         signal_type = "HOLD"
-    
-    # Generate explanation
+
     explanation = _generate_explanation(
         signal_type, final_score, factors, confidence_int, cancellation_triggers
     )
-    
-    # Create payload
+
+    analysis_debug = {
+        "parameter_hash": parameter_set.params_hash() if parameter_set else None,
+        "category_weights": category_weights,
+        "factor_breakdown": {
+            factor.factor_name: {
+                "score": factor.score,
+                "weight": factor.weight,
+                "direction": factor.metadata.get("direction"),
+                "metadata": dict(factor.metadata),
+            }
+            for factor in available_factors
+        },
+        "final_score": final_score,
+        "buy_threshold": buy_threshold,
+        "sell_threshold": sell_threshold,
+    }
+
+    payload_metadata = {
+        "final_score": final_score,
+        "buy_threshold": buy_threshold,
+        "sell_threshold": sell_threshold,
+        "min_confidence": min_confidence,
+        "vix_value": vix_value,
+        "cancellation_triggers": cancellation_triggers,
+        "available_factors": factors.count_available_factors(),
+        "category_weights": category_weights,
+        "technical_analysis_summary": technical_analysis_snapshot,
+        "indicator_params": resolved_indicator_params,
+        "analysis_debug": analysis_debug,
+        "parameter_debug_enabled": parameter_set.debug_enabled if parameter_set else False,
+        "parameter_hash": parameter_set.params_hash() if parameter_set else None,
+    }
+
     payload = TradingSignalPayload(
         signal_type=signal_type,
         confidence=confidence_float,
@@ -638,25 +983,7 @@ def generate_trading_signal(
         timeframe=context.timeframe,
         factors=available_factors,
         explanation=explanation,
-        metadata={
-            "final_score": final_score,
-            "buy_threshold": buy_threshold,
-            "sell_threshold": sell_threshold,
-            "min_confidence": min_confidence,
-            "vix_value": vix_value,
-            "cancellation_triggers": cancellation_triggers,
-            "available_factors": factors.count_available_factors(),
-            "config_weights": {
-                "technical": config.technical_weight,
-                "sentiment": config.sentiment_weight,
-                "multitimeframe": config.multitimeframe_weight,
-                "volume": config.volume_weight,
-                "structure": config.structure_weight,
-                "composite": config.composite_weight,
-            },
-            "technical_analysis_summary": technical_analysis_snapshot,
-            "indicator_params": indicator_params,
-        }
+        metadata=payload_metadata,
     )
 
     return payload
@@ -682,6 +1009,7 @@ class SignalGenerator:
         context: AnalyzerContext,
         config: Optional[SignalConfig] = None,
         indicator_params: Optional[Dict[str, Any]] = None,
+        parameter_set: Optional[ParameterSet] = None,
     ) -> TradingSignalPayload:
         """Analyze trading context and generate signal.
 
@@ -689,9 +1017,15 @@ class SignalGenerator:
             context: AnalyzerContext with market data
             config: Optional SignalConfig to override instance config
             indicator_params: Optional indicator parameter overrides
+            parameter_set: Optional ParameterSet with analyzer configuration
 
         Returns:
             TradingSignalPayload with generated signal
         """
         signal_config = config or self.config
-        return generate_trading_signal(context, signal_config, indicator_params=indicator_params)
+        return generate_trading_signal(
+            context,
+            signal_config,
+            indicator_params=indicator_params,
+            parameter_set=parameter_set,
+        )

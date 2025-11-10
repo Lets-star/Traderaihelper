@@ -26,6 +26,7 @@ from .trading_system.data_sources.timestamp_utils import (
     normalize_timestamp,
     validate_no_future_timestamps,
 )
+from .trading_system.utils import clamp
 from .time_series import MetricPoint, TimeframeMetricSeries, TimeframeSeries
 
 ZoneType = Literal["BullFVG", "BearFVG", "BullOB", "BearOB"]
@@ -210,10 +211,6 @@ class SimulationSummary:
     orderbook_data: Optional[Dict] = None
 
 
-def _clamp(value: float, lower: float, upper: float) -> float:
-    return max(lower, min(upper, value))
-
-
 class IndicatorSimulator:
     def __init__(
         self,
@@ -375,7 +372,7 @@ class IndicatorSimulator:
             volume_confidence_score = None
             if volume_ratio is not None:
                 threshold_span = max(self.settings.volume_multiplier - 0.9, 0.5)
-                volume_confidence_score = _clamp((volume_ratio - 0.9) / threshold_span, 0.0, 1.0)
+                volume_confidence_score = clamp((volume_ratio - 0.9) / threshold_span, 0.0, 1.0)
 
             sentiment_value = sentiment_series[i] if i < len(sentiment_series) else 50.0
             pattern_score = pattern_scores[i] if i < len(pattern_scores) else 50.0
@@ -673,7 +670,7 @@ class IndicatorSimulator:
                 momentum_strength = 50 + (momentum / closes[i]) * 100
             else:
                 momentum_strength = 50 - (abs(momentum) / closes[i]) * 100
-            momentum_strength = _clamp(momentum_strength, 0.0, 100.0)
+            momentum_strength = clamp(momentum_strength, 0.0, 100.0)
             result.append((strength_component + momentum_strength) / 2)
         return result
 
@@ -924,7 +921,7 @@ class IndicatorSimulator:
 
         if max_score == 0:
             return 0.0
-        return _clamp((score / max_score) * 10, 0.0, 10.0)
+        return clamp((score / max_score) * 10, 0.0, 10.0)
 
     def _structure_filter(self, is_bullish: bool, struct_bull: bool, struct_bear: bool, struct_neutral: bool) -> bool:
         if not self.settings.use_structure_filter:

@@ -11,15 +11,12 @@ from urllib.request import urlopen
 from urllib.error import HTTPError, URLError
 
 from .math_utils import Candle, atr
+from .trading_system.utils import clamp
 
 try:  # Avoid circular imports at runtime
     from .indicator_metrics import SimulationSummary
 except Exception:  # pragma: no cover - type checking only
     SimulationSummary = None  # type: ignore
-
-
-def _clamp(value: float, lower: float, upper: float) -> float:
-    return max(lower, min(upper, value))
 
 
 def _format_timestamp(milliseconds: int) -> str:
@@ -38,7 +35,7 @@ def calculate_volume_analysis(candles: Sequence[Candle]) -> Dict[str, object]:
     low_price = min(c.low for c in candles)
     price_range = max(high_price - low_price, max(1e-6, high_price * 0.0001))
 
-    bin_count = _clamp(len(candles) // 4, 12, 48)
+    bin_count = clamp(len(candles) // 4, 12, 48)
     bin_size = price_range / bin_count
     volumes = [0.0 for _ in range(int(bin_count))]
 
@@ -93,7 +90,7 @@ def calculate_volume_analysis(candles: Sequence[Candle]) -> Dict[str, object]:
         # Buy pressure is stronger when close is near high and body is bullish
         # Sell pressure is stronger when close is near low and body is bearish
         buy_pressure = close_position * (1 + body_strength * direction) / 2
-        buy_pressure = _clamp(buy_pressure, 0.1, 0.9)
+        buy_pressure = clamp(buy_pressure, 0.1, 0.9)
 
         buy_volume = candle.volume * buy_pressure
         sell_volume = candle.volume - buy_volume
@@ -119,7 +116,7 @@ def calculate_volume_analysis(candles: Sequence[Candle]) -> Dict[str, object]:
         
         # More market orders when body is strong, more limit orders with larger wicks
         market_pct = 0.5 + body_strength * 0.3 - wick_ratio * 0.2
-        market_pct = _clamp(market_pct, 0.15, 0.85)
+        market_pct = clamp(market_pct, 0.15, 0.85)
         market_orders = candle.volume * market_pct
         limit_orders = candle.volume - market_orders
         imbalance = market_orders - limit_orders
@@ -170,7 +167,7 @@ def calculate_volume_analysis(candles: Sequence[Candle]) -> Dict[str, object]:
                 )
     smart_money_events = smart_money_events[:10]
 
-    volume_confidence = _clamp((latest_ratio - 0.9) / 0.6, 0.0, 1.0) if latest_ratio else 0.0
+    volume_confidence = clamp((latest_ratio - 0.9) / 0.6, 0.0, 1.0) if latest_ratio else 0.0
 
     return {
         "vpvr": {
@@ -325,8 +322,8 @@ def calculate_fundamental_metrics(candles: Sequence[Candle]) -> Dict[str, object
     latest_return = returns[-1] if returns else 0.0
 
     # Funding rate proxy based on price momentum and volatility
-    funding_rate = _clamp(avg_return * 2.0 + volatility * 0.8, -0.004, 0.004)
-    predicted = _clamp(funding_rate + latest_return * 0.3, -0.004, 0.004)
+    funding_rate = clamp(avg_return * 2.0 + volatility * 0.8, -0.004, 0.004)
+    predicted = clamp(funding_rate + latest_return * 0.3, -0.004, 0.004)
     annualized = funding_rate * 3 * 365
 
     # Open interest proxy using cumulative notional over the last 200 candles
@@ -485,7 +482,7 @@ def fetch_market_correlations(candles: Sequence[Candle]) -> Dict[str, object]:
                 volatility = statistics.pstdev(returns)
                 # Scale to VIX-like values (10-80 range, typically 15-30)
                 vix_proxy = round(volatility * 100 * 15, 2)
-                result["vix_index"] = round(_clamp(vix_proxy, 10, 80), 2)
+                result["vix_index"] = round(clamp(vix_proxy, 10, 80), 2)
     except Exception:
         pass
     
@@ -495,7 +492,7 @@ def fetch_market_correlations(candles: Sequence[Candle]) -> Dict[str, object]:
             # Simplified: positive correlation during risk-on, negative during risk-off
             price_momentum = (candles[-1].close - candles[-10].close) / candles[-10].close if len(candles) >= 10 else 0
             # Crypto typically has moderate positive correlation with S&P500
-            result["sp500_correlation"] = round(_clamp(price_momentum * 5, -1, 1), 3)
+            result["sp500_correlation"] = round(clamp(price_momentum * 5, -1, 1), 3)
     except Exception:
         pass
     
@@ -625,7 +622,7 @@ def calculate_composite_indicators(
         
         if mid_price and mid_price > 0:
             spread_pct = (spread / mid_price) * 100 if spread else 0
-            spread_efficiency = _clamp(1.0 - (spread_pct / 0.1), 0, 1)
+            spread_efficiency = clamp(1.0 - (spread_pct / 0.1), 0, 1)
         
         bid_volume = orderbook_data.get("total_bid_volume", 0)
         ask_volume = orderbook_data.get("total_ask_volume", 0)
@@ -633,13 +630,13 @@ def calculate_composite_indicators(
         
         if total_book_volume > 0:
             balance = min(bid_volume, ask_volume) / (total_book_volume / 2)
-            depth_quality = _clamp(balance, 0, 1)
+            depth_quality = clamp(balance, 0, 1)
         
         # Slippage risk based on orderbook depth
         recent_volume = statistics.fmean([c.volume for c in candles[-10:]])
         if total_book_volume > 0:
             volume_ratio = recent_volume / (total_book_volume * 0.01)  # Compare to 1% of book
-            slippage_risk = _clamp(volume_ratio / 5, 0, 1)
+            slippage_risk = clamp(volume_ratio / 5, 0, 1)
     
     volume_context = volume_analysis.get("context", {})
     volume_confidence = volume_context.get("volume_confidence", 0.5)
@@ -663,14 +660,14 @@ def calculate_composite_indicators(
         returns.append(ret)
     
     volatility = statistics.pstdev(returns) if returns else 0
-    volatility_stability = _clamp(1.0 - (volatility * 50), 0, 1)
+    volatility_stability = clamp(1.0 - (volatility * 50), 0, 1)
     
     # Volume quality (consistency)
     volumes = [c.volume for c in candles[-20:]]
     avg_volume = statistics.fmean(volumes) if volumes else 0
     volume_std = statistics.pstdev(volumes) if len(volumes) > 1 else 0
     cv = (volume_std / avg_volume) if avg_volume > 0 else 1
-    volume_quality = _clamp(1.0 - (cv / 2), 0, 1)
+    volume_quality = clamp(1.0 - (cv / 2), 0, 1)
     
     # Momentum consistency
     positive_moves = sum(1 for i in range(1, len(candles)) if candles[-i].close > candles[-i-1].close)
@@ -722,7 +719,7 @@ def calculate_composite_indicators(
         risk_adjustment += 0.15
         risk_factors.append("favorable_conditions")
     
-    adjusted_confidence = _clamp(base_confidence + risk_adjustment, 0, 1)
+    adjusted_confidence = clamp(base_confidence + risk_adjustment, 0, 1)
     
     # Final signal considers risk adjustment
     if raw_signal == "BUY" and risk_adjustment < -0.2:

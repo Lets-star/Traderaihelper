@@ -12,8 +12,10 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+from .backtester import DEFAULT_WEIGHTS, indicator_defaults_for
 from .interfaces import TradingSignalPayload
 from .signal_schema import validate_signal_json
+from .utils import clamp, safe_div
 from ..timeframes import Timeframe
 
 logger = logging.getLogger(__name__)
@@ -65,6 +67,7 @@ def generate_signals(
         metadata = payload.get("metadata") or {}
         position_plan = payload.get("position_plan") or {}
         timeframe = _infer_timeframe(payload, metadata, params_dict)
+        _ensure_indicator_params(params_dict, timeframe)
 
         threshold = _extract_confirmation_threshold(metadata, params_dict)
         confirmations, category_info = _evaluate_confirmations(factors, signal_type)
@@ -182,8 +185,17 @@ def generate_signals(
         validated = validate_signal_json(result)
         return validated.model_dump()
 
+    except NameError as exc:  # pragma: no cover - diagnostic clarity
+        missing = getattr(exc, "name", None)
+        details = str(exc)
+        if missing:
+            message = f"generate_signals failed due to undefined symbol '{missing}'."
+        else:
+            message = f"generate_signals failed due to undefined symbol: {details}."
+        logger.exception(message)
+        raise ValueError(message) from exc
     except Exception as exc:  # pragma: no cover - defensive
-        logger.error("Signal generation failed: %s", exc)
+        logger.exception("generate_signals encountered an unexpected error")
         raise ValueError(f"Failed to generate explicit JSON signals: {exc}") from exc
 
 
@@ -228,6 +240,33 @@ def _normalize_params(params: Optional[Union[Dict[str, Any], Any]]) -> Dict[str,
         if hasattr(params, key):
             normalized[key] = getattr(params, key)
     return normalized
+
+
+def _merge_indicator_params(defaults: Dict[str, Any], overrides: Dict[str, Any]) -> Dict[str, Any]:
+    merged: Dict[str, Any] = dict(defaults)
+    for key, value in overrides.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge_indicator_params(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _ensure_indicator_params(params: Dict[str, Any], timeframe: str) -> Dict[str, Any]:
+    defaults = indicator_defaults_for(timeframe)
+    indicator_params = params.get("indicator_params")
+    if not isinstance(indicator_params, dict) or not indicator_params:
+        if indicator_params not in (None, {}):
+            logger.warning(
+                "Invalid indicator_params provided (%s); falling back to defaults for timeframe %s.",
+                type(indicator_params).__name__,
+                timeframe,
+            )
+        params["indicator_params"] = defaults
+        return defaults
+    merged = _merge_indicator_params(defaults, indicator_params)
+    params["indicator_params"] = merged
+    return merged
 
 
 def _infer_timeframe(
@@ -673,23 +712,39 @@ def _extract_weights(
                 for f in factors
             }
         else:
-            weights_source = {
-                "technical": 0.25,
-                "volume": 0.20,
-                "sentiment": 0.15,
-                "market_structure": 0.15,
-                "multitimeframe": 0.10,
-                "composite": 0.15,
-            }
+            weights_source = dict(DEFAULT_WEIGHTS)
+
+    numeric_total = sum(
+        float(value) for value in weights_source.values() if isinstance(value, (int, float))
+    )
+
+    if numeric_total <= 0:
+        logger.warning("Category weights sum to zero; falling back to defaults.")
+        weights_source = dict(DEFAULT_WEIGHTS)
+        numeric_total = sum(DEFAULT_WEIGHTS.values())
 
     normalized: Dict[str, float] = {}
-    total = sum(float(value) for value in weights_source.values() if isinstance(value, (int, float)))
-    if total <= 0:
-        total = 1.0
     for key, value in weights_source.items():
         if not isinstance(value, (int, float)):
             continue
-        normalized[key] = float(value) / total
+        normalized[key] = safe_div(float(value), numeric_total, default=0.0)
+
+    total_normalized = sum(normalized.values())
+    if total_normalized <= 0:
+        fallback_total = sum(DEFAULT_WEIGHTS.values())
+        normalized = {
+            key: safe_div(value, fallback_total, default=0.0)
+            for key, value in DEFAULT_WEIGHTS.items()
+        }
+    elif not math.isclose(total_normalized, 1.0, rel_tol=1e-3):
+        normalized = {
+            key: safe_div(value, total_normalized, default=0.0)
+            for key, value in normalized.items()
+        }
+
+    for key in DEFAULT_WEIGHTS:
+        normalized.setdefault(key, 0.0)
+
     return normalized
 
 
@@ -727,17 +782,17 @@ def _convert_confidence(
         base = float(confidence)
     except (TypeError, ValueError):
         base = 0.0
-    base = max(0.0, min(1.0, base))
+    base = clamp(base, 0.0, 1.0)
 
     if actionable and threshold:
         delta = confirmations - threshold
         if delta > 0:
-            base = min(1.0, base + delta * 0.05)
+            base = clamp(base + delta * 0.05, 0.0, 1.0)
     elif not actionable:
-        base = min(base, 0.5)
+        base = clamp(min(base, 0.5), 0.0, 1.0)
 
     scaled = int(round(base * 10))
-    return max(1, min(10, scaled))
+    return int(clamp(float(scaled), 1.0, 10.0))
 
 
 def _safe_float(value: Any, default: Optional[float] = None) -> Optional[float]:

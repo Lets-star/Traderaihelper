@@ -573,6 +573,7 @@ def create_candlestick_chart(summary: SimulationSummary, main_series: TimeframeS
             "atr_trend_3x": ("rgba(0, 255, 0, 0.6)", 1),
             "atr_trend_8x": ("rgba(255, 165, 0, 0.6)", 2),
             "atr_trend_21x": ("rgba(255, 0, 0, 0.6)", 3),
+            "atr_trend_144x": ("rgba(148, 0, 211, 0.6)", 3),
         }
         
         for atr_key, (color, width) in atr_colors.items():

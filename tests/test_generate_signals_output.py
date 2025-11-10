@@ -158,6 +158,39 @@ class TestGenerateSignalsOutput:
         assert "insufficient" in " ".join(explicit["rationale"]).lower()
         assert explicit["metadata"]["category_confirmations"] == 0
 
+    def test_generate_signals_minimal_payload_defaults(self):
+        payload = {
+            "signal_type": "BUY",
+            "confidence": 0.3,
+            "timestamp": 1700010000000,
+            "symbol": "BTCUSDT",
+            "timeframe": "1h",
+            "factors": [
+                {
+                    "factor_name": "technical_analysis",
+                    "score": 0.6,
+                    "weight": 0.25,
+                    "metadata": {"direction": "bullish"},
+                }
+            ],
+        }
+
+        params = {"weights": {"technical": 0.0, "sentiment": 0.0}, "indicator_params": {}}
+
+        explicit = generate_signals(payload, params=params)
+
+        assert set(explicit.keys()) >= {
+            "signal",
+            "confidence",
+            "weights",
+            "metadata",
+            "rationale",
+        }
+        assert explicit["signal"] in {"BUY", "SELL", "HOLD"}
+        assert pytest.approx(1.0, rel=1e-6) == sum(explicit["weights"].values())
+        assert explicit["metadata"]["timeframe"].lower() == "1h"
+        assert isinstance(explicit.get("rationale"), list)
+
     def test_generate_signals_hold_without_position_plan(self):
         payload = {
             "signal_type": "SELL",

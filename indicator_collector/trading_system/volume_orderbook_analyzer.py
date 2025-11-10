@@ -5,10 +5,7 @@ from __future__ import annotations
 import statistics
 from typing import Dict, List, Optional, Sequence, Tuple
 
-
-def _clamp(value: float, lower: float, upper: float) -> float:
-    """Clamp a value between lower and upper bounds."""
-    return max(lower, min(upper, value))
+from .utils import clamp
 
 
 def calculate_order_imbalance(
@@ -45,14 +42,14 @@ def calculate_order_imbalance(
         
         if bid_ask_ratio > 1.3:
             imbalance_direction = "bullish"
-            imbalance_score = _clamp(0.5 + (bid_ask_ratio - 1.0) * 0.2, 0.5, 1.0)
+            imbalance_score = clamp(0.5 + (bid_ask_ratio - 1.0) * 0.2, 0.5, 1.0)
             confidence = min((bid_ask_ratio - 1.0) * 100, 100.0)
         elif bid_ask_ratio < 0.7:
             imbalance_direction = "bearish"
-            imbalance_score = _clamp(0.5 - (1.0 - bid_ask_ratio) * 0.2, 0.0, 0.5)
+            imbalance_score = clamp(0.5 - (1.0 - bid_ask_ratio) * 0.2, 0.0, 0.5)
             confidence = min((1.0 - bid_ask_ratio) * 100, 100.0)
         else:
-            bid_ask_ratio = _clamp(bid_ask_ratio, 0.8, 1.2)
+            bid_ask_ratio = clamp(bid_ask_ratio, 0.8, 1.2)
             imbalance_score = 0.5
             confidence = max(0.0, 100.0 - abs(bid_ask_ratio - 1.0) * 200)
     else:
@@ -162,7 +159,7 @@ def analyze_smart_money_activity(
     
     activity_score = 0.0
     if total_smart_volume > 0:
-        activity_score = _clamp(total_smart_volume / 1_000_000, 0.0, 1.0)
+        activity_score = clamp(total_smart_volume / 1_000_000, 0.0, 1.0)
     
     direction_bias = "neutral"
     if len(buy_events) > len(sell_events) * 1.5:
@@ -257,7 +254,7 @@ def analyze_volume_orderbook(
     ]
     
     final_score = sum(final_factors)
-    final_score = _clamp(final_score, 0.0, 1.0)
+    final_score = clamp(final_score, 0.0, 1.0)
     
     direction = "neutral"
     if imbalance.get("imbalance_direction") == "bullish":

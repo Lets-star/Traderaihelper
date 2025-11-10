@@ -10,10 +10,10 @@ from indicator_collector.trading_system.multitimeframe_analyzer import (
     _analyze_trend_force,
     _generate_multitf_rationale,
     _calculate_multitf_confidence,
-    _clamp,
     _normalize_to_01,
     _get_direction_emoji,
 )
+from indicator_collector.trading_system.utils import clamp, safe_div
 from indicator_collector.math_utils import Candle
 
 
@@ -80,11 +80,18 @@ class TestMultitimeframeAnalyzer(unittest.TestCase):
 
     def test_clamp(self):
         """Test clamping function."""
-        assert _clamp(5.0, 0.0, 10.0) == 5.0
-        assert _clamp(-5.0, 0.0, 10.0) == 0.0
-        assert _clamp(15.0, 0.0, 10.0) == 10.0
-        assert _clamp(0.0, 0.0, 1.0) == 0.0
-        assert _clamp(1.0, 0.0, 1.0) == 1.0
+        assert clamp(5.0, 0.0, 10.0) == 5.0
+        assert clamp(-5.0, 0.0, 10.0) == 0.0
+        assert clamp(15.0, 0.0, 10.0) == 10.0
+        assert clamp(0.0, 0.0, 1.0) == 0.0
+        assert clamp(1.0, 0.0, 1.0) == 1.0
+
+    def test_safe_div(self):
+        """Test safe division helper."""
+        assert safe_div(10, 2) == 5.0
+        assert safe_div(10, 0, default=1.0) == 1.0
+        assert safe_div("20", "4") == 5.0
+        assert safe_div("invalid", 4, default=-1.0) == -1.0
 
     def test_normalize_to_01(self):
         """Test normalization to 0-1 range."""

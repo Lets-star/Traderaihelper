@@ -6,15 +6,11 @@ import statistics
 from typing import Any, Dict, List, Optional, Sequence, TYPE_CHECKING, Union
 
 from indicator_collector import math_utils
+from .utils import clamp
 
 
 if TYPE_CHECKING:  # pragma: no cover - typing helper
     from .interfaces import AnalyzerContext
-
-
-def _clamp(value: float, lower: float, upper: float) -> float:
-    """Clamp a value between lower and upper bounds."""
-    return max(lower, min(upper, value))
 
 
 def _normalize_to_01(value: float, min_val: float = 0.0, max_val: float = 100.0) -> float:
@@ -22,7 +18,7 @@ def _normalize_to_01(value: float, min_val: float = 0.0, max_val: float = 100.0)
     if max_val <= min_val:
         return 0.5
     normalized = (value - min_val) / (max_val - min_val)
-    return _clamp(normalized, 0.0, 1.0)
+    return clamp(normalized, 0.0, 1.0)
 
 
 def _safe_int(value: Any, default: int) -> int:
@@ -461,7 +457,7 @@ def analyze_bollinger_bands(
     # Calculate price position within bands (0 = lower, 1 = upper)
     if band_width > 0:
         price_position = (current_close - current_lower) / band_width
-        price_position = _clamp(price_position, 0.0, 1.0)
+        price_position = clamp(price_position, 0.0, 1.0)
     else:
         price_position = 0.5
     
@@ -473,7 +469,7 @@ def analyze_bollinger_bands(
     
     # Squeeze detection
     squeeze_ratio = band_width / avg_width if avg_width > 0 else 1.0
-    band_squeeze = _clamp(1.0 - squeeze_ratio, 0.0, 1.0)
+    band_squeeze = clamp(1.0 - squeeze_ratio, 0.0, 1.0)
     
     if squeeze_ratio < 0.7:
         bollinger_state = "squeeze"
@@ -739,7 +735,7 @@ def analyze_technical_factors(
         + divergence_score * weights["divergence"]
     )
 
-    final_score = _clamp(weighted_score, 0.0, 1.0)
+    final_score = clamp(weighted_score, 0.0, 1.0)
 
     bullish_votes = 0
     bearish_votes = 0

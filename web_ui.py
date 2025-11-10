@@ -2560,62 +2560,73 @@ def main():
 
             st.markdown("---")
 
-            col1, col2 = st.columns(2)
+            actionable = signal_data.get("signal") in {"BUY", "SELL"}
 
-            with col1:
-                st.markdown("### 📈 Entry & Exit Levels")
+            if actionable:
+                col1, col2 = st.columns(2)
 
-                entries = signal_data.get("entries") or []
-                metadata_summary = signal_data.get("metadata", {})
-                entry_zone = {}
-                if isinstance(metadata_summary, dict):
-                    entry_zone = metadata_summary.get("entry_zone", {}) or {}
+                with col1:
+                    st.markdown("### 📈 Entry & Exit Levels")
 
-                if entries:
-                    st.write("**Entry Levels:**")
-                    for i, entry in enumerate(entries[:3], 1):
-                        st.write(f"  Entry {i}: ${entry:.4f}")
-                elif signal_type == "HOLD":
-                    st.info("No tradable entry levels; signal is on hold pending additional confirmations.")
+                    entries = signal_data.get("entries") or []
+                    metadata_summary = signal_data.get("metadata", {})
+                    entry_zone: Dict[str, Any] = {}
+                    if isinstance(metadata_summary, dict):
+                        entry_zone = metadata_summary.get("entry_zone", {}) or {}
+
+                    if entries:
+                        st.write("**Entry Levels:**")
+                        for i, entry in enumerate(entries[:3], 1):
+                            st.write(f"  Entry {i}: ${entry:.4f}")
+                    else:
+                        st.warning("Entry levels were not provided by the analyzers.")
+
+                    if entry_zone:
+                        lower = entry_zone.get("lower")
+                        upper = entry_zone.get("upper")
+                        if lower is not None and upper is not None:
+                            st.write(f"**Entry Confluence Zone:** ${lower:.4f} - ${upper:.4f}")
+
+                    stop_loss = signal_data.get("stop_loss")
+                    if stop_loss is not None:
+                        st.write(f"**Stop Loss:** ${stop_loss:.4f}")
+
+                    take_profits = signal_data.get("take_profits", {}) or {}
+                    if take_profits:
+                        st.write("**Take Profits:**")
+                        for tp_key, tp_price in take_profits.items():
+                            st.write(f"  {tp_key.upper()}: ${tp_price:.4f}")
+
+                with col2:
+                    st.markdown("### 📊 Position & Risk")
+
+                    position_size = signal_data.get("position_size_pct")
+                    if position_size is not None:
+                        st.write(f"**Position Size:** {position_size:.1f}%")
+
+                    weights = signal_data.get("weights", {})
+                    if weights:
+                        st.write("**Component Weights:**")
+                        for component, weight in weights.items():
+                            st.write(f"  {component.title()}: {weight:.2f}")
+
+                st.markdown("---")
+            else:
+                hold_reasons = signal_data.get("cancellation_reasons") or signal_data.get("rationale") or []
+                st.markdown("### 🤔 Hold Rationale")
+                if hold_reasons:
+                    for idx, reason in enumerate(hold_reasons, 1):
+                        st.write(f"{idx}. {reason}")
                 else:
-                    st.warning("Entry levels were not provided by the analyzers.")
-
-                if entry_zone:
-                    lower = entry_zone.get("lower")
-                    upper = entry_zone.get("upper")
-                    if lower is not None and upper is not None:
-                        st.write(f"**Entry Confluence Zone:** ${lower:.4f} - ${upper:.4f}")
-
-                stop_loss = signal_data.get("stop_loss")
-                if stop_loss is not None:
-                    st.write(f"**Stop Loss:** ${stop_loss:.4f}")
-                elif signal_type == "HOLD":
-                    st.write("**Stop Loss:** N/A (signal on hold)")
-
-                take_profits = signal_data.get("take_profits", {}) or {}
-                if take_profits:
-                    st.write("**Take Profits:**")
-                    for tp_key, tp_price in take_profits.items():
-                        st.write(f"  {tp_key.upper()}: ${tp_price:.4f}")
-                elif signal_type == "HOLD":
-                    st.write("**Take Profits:** N/A (signal on hold)")
-
-            with col2:
-                st.markdown("### 📊 Position & Risk")
-
-                position_size = signal_data.get("position_size_pct")
-                if position_size is not None:
-                    st.write(f"**Position Size:** {position_size:.1f}%")
-                elif signal_type == "HOLD":
-                    st.write("**Position Size:** N/A (signal on hold)")
+                    st.info("Signal is currently on HOLD awaiting additional confirmations.")
 
                 weights = signal_data.get("weights", {})
                 if weights:
-                    st.write("**Component Weights:**")
+                    st.markdown("#### Component Weights")
                     for component, weight in weights.items():
-                        st.write(f"  {component.title()}: {weight:.2f}")
+                        st.write(f"• {component.title()}: {weight:.2f}")
 
-            st.markdown("---")
+                st.markdown("---")
 
             rationale = signal_data.get("rationale", [])
             if rationale:

@@ -211,10 +211,10 @@ def _create_volume_factor(
     cvd = volume_analysis.get("cvd", {})
     cvd_change = float(cvd.get("change") or 0.0)
     if atr_value > 0 and cvd_multiplier > 0:
-        cvd_normalized = _clamp(cvd_change / (atr_value * cvd_multiplier), -2.0, 2.0)
+        cvd_normalized = clamp(cvd_change / (atr_value * cvd_multiplier), -2.0, 2.0)
     else:
         cvd_normalized = 0.0
-    cvd_component = _clamp(0.5 + cvd_normalized * 0.25, 0.0, 1.0)
+    cvd_component = clamp(0.5 + cvd_normalized * 0.25, 0.0, 1.0)
     cvd_direction = "bullish" if cvd_component > 0.52 else "bearish" if cvd_component < 0.48 else "neutral"
 
     delta = volume_analysis.get("delta", {})
@@ -222,10 +222,10 @@ def _create_volume_factor(
     delta_average = float(delta.get("average") or 0.0)
     denom = abs(delta_average) * delta_threshold if delta_threshold > 0 else abs(delta_average)
     if denom > 0:
-        delta_normalized = _clamp(delta_latest / denom, -2.0, 2.0)
+        delta_normalized = clamp(delta_latest / denom, -2.0, 2.0)
     else:
         delta_normalized = 0.0
-    delta_component = _clamp(0.5 + delta_normalized * 0.25, 0.0, 1.0)
+    delta_component = clamp(0.5 + delta_normalized * 0.25, 0.0, 1.0)
     delta_direction = "bullish" if delta_component > 0.52 else "bearish" if delta_component < 0.48 else "neutral"
 
     vpvr = volume_analysis.get("vpvr", {})
@@ -245,7 +245,7 @@ def _create_volume_factor(
         vpvr_ratio = poc_share / vpvr_threshold
     else:
         vpvr_ratio = 0.0
-    vpvr_component = _clamp(0.5 + (_clamp(vpvr_ratio, 0.0, 2.0) - 1.0) * 0.25, 0.0, 1.0)
+    vpvr_component = clamp(0.5 + (clamp(vpvr_ratio, 0.0, 2.0) - 1.0) * 0.25, 0.0, 1.0)
     vpvr_direction = "bullish" if vpvr_component > 0.55 else "bearish" if vpvr_component < 0.45 else "neutral"
 
     smart_money_events = volume_analysis.get("smart_money") or []
@@ -266,7 +266,7 @@ def _create_volume_factor(
         smart_money_bias = (qualified_buys - qualified_sells) / total_qualified
     else:
         smart_money_bias = 0.0
-    smart_money_component = _clamp(0.5 + smart_money_bias * 0.5, 0.0, 1.0)
+    smart_money_component = clamp(0.5 + smart_money_bias * 0.5, 0.0, 1.0)
     smart_money_direction = "bullish" if smart_money_component > 0.55 else "bearish" if smart_money_component < 0.45 else "neutral"
 
     components = {
@@ -283,9 +283,9 @@ def _create_volume_factor(
     }
 
     weighted_score = sum(components[key] * normalized_component_weights[key] for key in components)
-    ratio_adjustment = _clamp((volume_ratio - 1.0) * 0.1, -0.1, 0.1)
+    ratio_adjustment = clamp((volume_ratio - 1.0) * 0.1, -0.1, 0.1)
     confidence_adjustment = (volume_confidence - 0.5) * 0.2
-    final_score = _clamp(weighted_score + ratio_adjustment + confidence_adjustment, 0.0, 1.0)
+    final_score = clamp(weighted_score + ratio_adjustment + confidence_adjustment, 0.0, 1.0)
 
     if final_score >= 0.58:
         direction = "bullish"
@@ -298,7 +298,7 @@ def _create_volume_factor(
         emoji = "⚪"
 
     component_confidences = [abs(value - 0.5) * 2 for value in components.values()]
-    avg_component_confidence = _clamp(
+    avg_component_confidence = clamp(
         statistics.fmean(component_confidences) if component_confidences else 0.0,
         0.0,
         1.0,
@@ -389,14 +389,14 @@ def _create_structure_factor(
 
     trend_bias_map = {"bullish": 0.65, "bearish": 0.35}
     trend_bias = trend_bias_map.get(structure_state, 0.5)
-    trend_ratio = _clamp(trend_window / float(lookback), 0.0, 2.0)
+    trend_ratio = clamp(trend_window / float(lookback), 0.0, 2.0)
     breadth_adjustment = (breadth_score - 0.5) * 0.3
-    trend_component = _clamp(trend_bias + (trend_ratio - 1.0) * 0.15 + breadth_adjustment, 0.0, 1.0)
+    trend_component = clamp(trend_bias + (trend_ratio - 1.0) * 0.15 + breadth_adjustment, 0.0, 1.0)
 
     if sequence_length <= 0:
         sequence_length = swing_window
-    sequence_ratio = _clamp(sequence_length / float(max(min_sequence, 1)), 0.0, 2.0)
-    structure_component = _clamp(
+    sequence_ratio = clamp(sequence_length / float(max(min_sequence, 1)), 0.0, 2.0)
+    structure_component = clamp(
         0.5 + (structure_score - 0.5) * (1.0 + (sequence_ratio - 1.0) * 0.5),
         0.0,
         1.0,
@@ -404,8 +404,8 @@ def _create_structure_factor(
 
     if sweep_distance <= 0:
         sweep_distance = atr_distance
-    sweep_ratio = _clamp(sweep_distance / float(max(atr_distance, 1e-6)), 0.0, 2.0)
-    liquidity_component = _clamp(
+    sweep_ratio = clamp(sweep_distance / float(max(atr_distance, 1e-6)), 0.0, 2.0)
+    liquidity_component = clamp(
         liquidity_score + (0.5 - sweep_ratio * 0.25),
         0.0,
         1.0,
@@ -430,7 +430,7 @@ def _create_structure_factor(
         emoji = "⚪"
 
     component_confidences = [abs(value - 0.5) * 2 for value in components.values()]
-    avg_component_confidence = _clamp(
+    avg_component_confidence = clamp(
         statistics.fmean(component_confidences) if component_confidences else 0.0,
         0.0,
         1.0,
@@ -567,7 +567,7 @@ def _create_composite_factor(
 
     if confidence_ceiling <= confidence_floor:
         confidence_ceiling = confidence_floor + 1e-6
-    normalized_confidence = _clamp(
+    normalized_confidence = clamp(
         (composite_score - confidence_floor) / (confidence_ceiling - confidence_floor),
         0.0,
         1.0,
@@ -798,7 +798,7 @@ def generate_trading_signal(
         emoji_map = {"bullish": "🟢", "bearish": "🔴", "neutral": "⚪"}
         factors.technical = FactorScore(
             factor_name="technical_analysis",
-            score=_clamp(tech_score, 0.0, 1.0),
+            score=clamp(tech_score, 0.0, 1.0),
             weight=category_weights.get("technical", config.technical_weight),
             description=tech_rationale,
             emoji=emoji_map.get(tech_direction, "⚪"),
@@ -837,7 +837,7 @@ def generate_trading_signal(
             direction = primary.metadata.get("direction", "neutral")
             factors.technical = FactorScore(
                 factor_name="technical_analysis",
-                score=_clamp(tech_score, 0.0, 1.0),
+                score=clamp(tech_score, 0.0, 1.0),
                 weight=category_weights.get("technical", config.technical_weight),
                 description=primary.description,
                 emoji=primary.emoji,

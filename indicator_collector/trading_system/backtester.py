@@ -7,6 +7,7 @@ and adaptive weight adjustment.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
@@ -33,9 +34,11 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_WEIGHTS: Dict[str, float] = {
     "technical": 0.25,
-    "volume": 0.25,
-    "sentiment": 0.25,
-    "market_structure": 0.25,
+    "volume": 0.20,
+    "sentiment": 0.15,
+    "market_structure": 0.15,
+    "multitimeframe": 0.10,
+    "composite": 0.15,
 }
 
 _BASE_INDICATOR_DEFAULTS: Dict[str, Any] = {
@@ -44,8 +47,44 @@ _BASE_INDICATOR_DEFAULTS: Dict[str, Any] = {
     "atr": {"period": 14, "mult": 1.0},
     "atr_channels": {"mult_1x": 1.0, "mult_2x": 2.0, "mult_3x": 3.0},
     "bollinger": {"period": 20, "stddev": 2.0},
-    "volume": {"ma_period": 20},
-    "structure": {"lookback": 24},
+    "volume": {
+        "ma_period": 20,
+        "cvd_atr_multiplier": 0.75,
+        "delta_imbalance_threshold": 1.2,
+        "vpvr_poc_share": 0.04,
+        "smart_money_multiplier": 1.5,
+        "component_weights": {
+            "cvd": 0.3,
+            "delta": 0.25,
+            "vpvr": 0.2,
+            "smart_money": 0.25,
+        },
+    },
+    "structure": {
+        "lookback": 24,
+        "swing_window": 5,
+        "trend_window": 12,
+        "min_sequence": 5,
+        "atr_distance": 1.0,
+        "component_weights": {
+            "trend": 0.4,
+            "structure": 0.4,
+            "liquidity": 0.2,
+        },
+    },
+    "multitimeframe": {
+        "trend_lookback": 14,
+        "alignment_weight": 0.4,
+        "agreement_weight": 0.3,
+        "force_weight": 0.3,
+    },
+    "composite": {
+        "buy_threshold": 0.6,
+        "sell_threshold": 0.4,
+        "confidence_floor": 0.3,
+        "confidence_ceiling": 0.9,
+        "min_confirmations": 3,
+    },
 }
 
 _TIMEFRAME_INDICATOR_OVERRIDES: Dict[str, Dict[str, Any]] = {
@@ -184,25 +223,33 @@ class BacktestConfig:
 
 @dataclass
 class ParameterSet:
-    """Parameter bundle used for backtesting and optimization.
+    """Parameter bundle used for backtesting, optimization, and live analysis.
 
     Attributes:
-        weights: Mapping of factor names to weighting coefficients.
+        weights: Raw weighting coefficients configured for the trading factors.
         indicator_params: Indicator configuration keyed by indicator name.
+        category_weights: Optional category weights overriding ``weights`` for aggregation.
         timeframe: Primary timeframe the parameters are tuned for.
         stop_loss_pct: Percentage stop loss applied to each position.
         take_profit_pct: Percentage take profit applied to each position.
         max_position_size_pct: Maximum position size as a fraction of equity.
         confirmation_threshold: Minimum aggregate factor score required to act on a signal.
+        debug_enabled: Whether analyzer diagnostics should be attached to outputs.
+        extras: Arbitrary metadata attached to the parameter bundle.
     """
 
     weights: Dict[str, float] = field(default_factory=lambda: deepcopy(DEFAULT_WEIGHTS))
     indicator_params: Dict[str, Any] = field(default_factory=dict)
+    category_weights: Dict[str, float] = field(default_factory=dict)
     timeframe: Union[str, Timeframe] = Timeframe.H1.value
     stop_loss_pct: float = 2.0
     take_profit_pct: float = 4.0
     max_position_size_pct: float = 0.05
     confirmation_threshold: float = 0.6
+    debug_enabled: bool = False
+    extras: Dict[str, Any] = field(default_factory=dict)
+
+    _normalized_category_weights: Dict[str, float] = field(init=False, repr=False, default_factory=dict)
 
     def __post_init__(self) -> None:
         """Normalize and complete parameter configuration after initialization."""
@@ -215,23 +262,23 @@ class ParameterSet:
             )
             self.timeframe = Timeframe.H1.value
 
-        if not self.weights:
-            logger.warning("ParameterSet weights missing; using default weights.")
-            self.weights = deepcopy(DEFAULT_WEIGHTS)
-        else:
-            self.weights = dict(self.weights)
+        fallback_weights = dict(DEFAULT_WEIGHTS)
+        fallback_weights.setdefault("composite", 0.0)
 
-        total_weight = sum(self.weights.values())
-        if total_weight <= 0:
-            logger.warning("ParameterSet weights sum to zero; using default weights.")
-            self.weights = deepcopy(DEFAULT_WEIGHTS)
+        self.weights = self._sanitize_weights(self.weights, fallback_weights)
+        category_source = self.category_weights or self.weights
+        self.category_weights = self._sanitize_weights(category_source, fallback_weights)
+        self._normalized_category_weights = self._normalize_weight_map(self.category_weights)
+
+        if not isinstance(self.extras, dict):
+            self.extras = {}
 
         defaults = indicator_defaults_for(self.timeframe)
-        user_params = self.indicator_params or {}
-        if not isinstance(user_params, dict):
+        user_params = self.indicator_params if isinstance(self.indicator_params, dict) else {}
+        if self.indicator_params and not isinstance(self.indicator_params, dict):
             logger.warning(
                 "ParameterSet indicator_params must be a dict; received %s. Resetting to defaults.",
-                type(user_params).__name__,
+                type(self.indicator_params).__name__,
             )
             user_params = {}
 
@@ -243,7 +290,7 @@ class ParameterSet:
                     self.timeframe,
                     ", ".join(sorted(missing_keys)),
                 )
-        unsupported_keys = [key for key in user_params if key not in _SUPPORTED_INDICATORS]
+        unsupported_keys = [key for key in user_params if key not in defaults]
         if unsupported_keys:
             logger.warning(
                 "ParameterSet received unsupported indicator params: %s",
@@ -259,17 +306,72 @@ class ParameterSet:
 
         self.indicator_params = merged_params
 
+    @staticmethod
+    def _sanitize_weights(weights: Dict[str, Any], fallback: Dict[str, float]) -> Dict[str, float]:
+        """Sanitize a weight mapping ensuring non-negative values and fallback defaults."""
+        sanitized: Dict[str, float] = {}
+        if isinstance(weights, dict):
+            for key, value in weights.items():
+                try:
+                    sanitized[key] = max(0.0, float(value))
+                except (TypeError, ValueError):
+                    continue
+        if not sanitized:
+            sanitized = deepcopy(fallback)
+        else:
+            for key, value in fallback.items():
+                sanitized.setdefault(key, float(value))
+            if sum(sanitized.values()) <= 0:
+                sanitized = deepcopy(fallback)
+        return sanitized
+
+    @staticmethod
+    def _normalize_weight_map(weights: Dict[str, float]) -> Dict[str, float]:
+        total = sum(weights.values())
+        if total <= 0:
+            return {key: 0.0 for key in weights}
+        return {key: value / total for key, value in weights.items()}
+
+    def normalized_category_weights(self) -> Dict[str, float]:
+        """Return normalized category weights (summing to 1)."""
+        return dict(self._normalized_category_weights)
+
+    def get_indicator_group(self, name: str, default: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Return a defensive copy of an indicator parameter group."""
+        group = self.indicator_params.get(name, {})
+        if not isinstance(group, dict):
+            return deepcopy(default or {})
+        return deepcopy(group)
+
     def to_dict(self) -> JsonDict:
         """Convert to dictionary."""
         return {
             "weights": dict(self.weights),
             "indicator_params": deepcopy(self.indicator_params),
+            "category_weights": dict(self.category_weights),
             "timeframe": self.timeframe,
             "stop_loss_pct": self.stop_loss_pct,
             "take_profit_pct": self.take_profit_pct,
             "max_position_size_pct": self.max_position_size_pct,
             "confirmation_threshold": self.confirmation_threshold,
+            "debug_enabled": self.debug_enabled,
+            "extras": deepcopy(self.extras),
         }
+
+    def to_signature_payload(self) -> Dict[str, Any]:
+        """Create a stable payload for cache/dirty detection."""
+        return {
+            "timeframe": self.timeframe,
+            "category_weights": self.normalized_category_weights(),
+            "indicator_params": self.indicator_params,
+            "debug_enabled": self.debug_enabled,
+            "extras": self.extras,
+        }
+
+    def params_hash(self) -> str:
+        """Stable hash representing the parameter configuration."""
+        payload = json.dumps(self.to_signature_payload(), sort_keys=True, default=str)
+        return hashlib.sha1(payload.encode("utf-8")).hexdigest()
 
     @classmethod
     def from_dict(cls, data: JsonDict) -> "ParameterSet":
@@ -280,14 +382,23 @@ class ParameterSet:
         indicator_params = data.get("indicator_params", {})
         if not isinstance(indicator_params, dict):
             indicator_params = dict(indicator_params)
+        category_weights = data.get("category_weights", {})
+        if not isinstance(category_weights, dict):
+            category_weights = dict(category_weights)
+        extras = data.get("extras", {})
+        if not isinstance(extras, dict):
+            extras = {}
         return cls(
             weights=weights,
             indicator_params=deepcopy(indicator_params),
+            category_weights=category_weights,
             timeframe=data.get("timeframe", Timeframe.HOUR_1.value),
             stop_loss_pct=float(data.get("stop_loss_pct", 2.0)),
             take_profit_pct=float(data.get("take_profit_pct", 4.0)),
             max_position_size_pct=float(data.get("max_position_size_pct", 0.05)),
             confirmation_threshold=float(data.get("confirmation_threshold", 0.6)),
+            debug_enabled=bool(data.get("debug_enabled", False)),
+            extras=extras,
         )
 
 

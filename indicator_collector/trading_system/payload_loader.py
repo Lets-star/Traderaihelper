@@ -20,6 +20,7 @@ from .interfaces import (
     parse_collector_payload,
     deserialize_signal_payload,
 )
+from .backtester import ParameterSet
 from .signal_generator import SignalConfig, SignalGenerator, generate_trading_signal
 from .position_manager import create_position_plan
 from .statistics_optimizer import StatisticsOptimizer
@@ -41,6 +42,7 @@ class PayloadProcessor:
         validate_real_data: bool = True,
         signal_config: Optional[SignalConfig] = None,
         indicator_params: Optional[Dict[str, Any]] = None,
+        parameter_set: Optional[ParameterSet] = None,
     ) -> TradingSignalPayload:
         """
         Automatically load, validate, and process a complete JSON payload.
@@ -51,6 +53,7 @@ class PayloadProcessor:
             validate_real_data: Whether to validate real data constraints
             signal_config: Optional signal configuration overrides (weights, thresholds)
             indicator_params: Optional indicator parameter overrides keyed by indicator
+            parameter_set: Optional ParameterSet propagated to analyzers
             
         Returns:
             Processed TradingSignalPayload with complete analysis

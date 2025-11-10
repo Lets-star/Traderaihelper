@@ -26,6 +26,13 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
+    - name: Check web_ui.py formatting
+      run: |
+        pip install black isort
+        black --check web_ui.py
+        isort --check web_ui.py
+        python -m tabnanny web_ui.py
+
     - name: Run tests with coverage
       run: |
         pytest tests/ -v --cov=indicator_collector --cov-report=term-missing --cov-report=xml

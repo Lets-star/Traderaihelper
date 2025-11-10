@@ -7,11 +7,7 @@ from typing import Dict, List, Optional, Sequence
 
 from ..math_utils import Candle
 from .interfaces import FactorScore, JsonDict
-
-
-def _clamp(value: float, lower: float, upper: float) -> float:
-    """Clamp a value between lower and upper bounds."""
-    return max(lower, min(upper, value))
+from .utils import clamp
 
 
 def _normalize_to_01(value: float, min_val: float = 0.0, max_val: float = 100.0) -> float:
@@ -19,7 +15,7 @@ def _normalize_to_01(value: float, min_val: float = 0.0, max_val: float = 100.0)
     if max_val <= min_val:
         return 0.5
     normalized = (value - min_val) / (max_val - min_val)
-    return _clamp(normalized, 0.0, 1.0)
+    return clamp(normalized, 0.0, 1.0)
 
 
 def _get_direction_emoji(direction: str) -> str:
@@ -72,7 +68,7 @@ def _calculate_trend_strength_from_candles(
     
     # Calculate momentum
     momentum_direction = (up_moves - down_moves) / lookback if lookback > 0 else 0.0
-    momentum_direction = _clamp(momentum_direction, -1.0, 1.0)
+    momentum_direction = clamp(momentum_direction, -1.0, 1.0)
     
     # Calculate volatility component (higher volatility = stronger trend)
     avg_move = total_range / lookback if lookback > 0 else 0.0
@@ -84,7 +80,7 @@ def _calculate_trend_strength_from_candles(
     trend_strength = (momentum_direction + 1.0) / 2.0  # Convert -1..1 to 0..1
     trend_strength = trend_strength * 0.6 + volatility_score * 0.4
     
-    return _clamp(trend_strength, 0.0, 1.0)
+    return clamp(trend_strength, 0.0, 1.0)
 
 
 def _analyze_timeframe_alignment(
@@ -192,13 +188,13 @@ def _analyze_trend_agreement(
     # Normalize variance to 0-1 score (lower variance = higher score)
     max_possible_variance = 0.25  # Max variance when some are 0.0 and others are 1.0
     variance_alignment = 1.0 - (variance / max_possible_variance) if max_possible_variance > 0 else 1.0
-    variance_alignment = _clamp(variance_alignment, 0.0, 1.0)
+    variance_alignment = clamp(variance_alignment, 0.0, 1.0)
     
     # Blend with mean strength to get direction-aware agreement
     # agreement_score: 50% mean strength bias, 50% variance alignment
     # This ensures the direction (mean_strength) has significant influence
     agreement_score = mean_strength * 0.5 + variance_alignment * 0.5
-    agreement_score = _clamp(agreement_score, 0.0, 1.0)
+    agreement_score = clamp(agreement_score, 0.0, 1.0)
     
     # Determine agreement type based on variance
     if std_dev < 0.1:
@@ -513,7 +509,7 @@ def analyze_multitimeframe_factors(
         agreement_score * agreement_weight +
         trend_force_score * trend_force_weight
     )
-    final_score = _clamp(final_score, 0.0, 1.0)
+    final_score = clamp(final_score, 0.0, 1.0)
     
     # Determine overall direction
     if final_score >= 0.65:

@@ -8,10 +8,7 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from .math_utils import Candle
-
-
-def _clamp(value: float, lower: float, upper: float) -> float:
-    return max(lower, min(upper, value))
+from .trading_system.utils import clamp
 
 
 def calculate_vwap_levels(candles: Sequence[Candle]) -> Dict[str, object]:
@@ -186,12 +183,12 @@ def calculate_liquidation_heatmap(
             popularity_factor = 1.3
         
         volatility_ratio = (atr_estimate / current_price) if current_price else 0
-        volatility_multiplier = 1 + _clamp(volatility_ratio * 5, 0, 2.5)
+        volatility_multiplier = 1 + clamp(volatility_ratio * 5, 0, 2.5)
         
         prior_candles = candles[-80:-20] if len(candles) >= 80 else candles[:len(candles)//2]
         prior_avg_volume = (sum(c.volume for c in prior_candles) / len(prior_candles)) if prior_candles else avg_volume
         volume_ratio = avg_volume / prior_avg_volume if prior_avg_volume else 1
-        volume_multiplier = _clamp(volume_ratio, 0.6, 2.4)
+        volume_multiplier = clamp(volume_ratio, 0.6, 2.4)
         
         long_liq_volume = avg_volume * leverage_factor * popularity_factor * volume_multiplier * volatility_multiplier * long_bias * 0.8
         short_liq_volume = avg_volume * leverage_factor * popularity_factor * volume_multiplier * volatility_multiplier * short_bias * 0.8
@@ -328,11 +325,11 @@ def analyze_stablecoin_flows(candles: Sequence[Candle]) -> Dict[str, object]:
         # Strong buying (close near high) suggests inflow
         # Strong selling (close near low) suggests outflow
         if body > 0:
-            buy_pressure = _clamp(close_position * (1 + body_strength), 0.5, 0.95)
+            buy_pressure = clamp(close_position * (1 + body_strength), 0.5, 0.95)
             inflow_estimate += volume * buy_pressure
             outflow_estimate += volume * (1 - buy_pressure)
         elif body < 0:
-            sell_pressure = _clamp((1 - close_position) * (1 + body_strength), 0.5, 0.95)
+            sell_pressure = clamp((1 - close_position) * (1 + body_strength), 0.5, 0.95)
             outflow_estimate += volume * sell_pressure
             inflow_estimate += volume * (1 - sell_pressure)
         else:
@@ -392,16 +389,16 @@ def analyze_eth_network_activity(candles: Sequence[Candle]) -> Dict[str, object]
     
     # Gas price proxy: higher volatility and volume suggest higher network usage
     base_gas = 20.0
-    volatility_component = _clamp(volatility_ratio * 500, 0, 150)
-    volume_component = _clamp((volume_ratio - 1) * 50, -10, 100)
-    momentum_component = _clamp((volume_momentum - 1) * 30, -5, 50)
+    volatility_component = clamp(volatility_ratio * 500, 0, 150)
+    volume_component = clamp((volume_ratio - 1) * 50, -10, 100)
+    momentum_component = clamp((volume_momentum - 1) * 30, -5, 50)
     
     gas_price = base_gas + volatility_component + volume_component + momentum_component
-    gas_price = _clamp(gas_price, 5, 500)
+    gas_price = clamp(gas_price, 5, 500)
     
     # Network utilization based on volume activity
-    network_utilization = 50 + _clamp((volume_ratio - 1) * 40, -30, 50)
-    network_utilization = _clamp(network_utilization, 20, 100)
+    network_utilization = 50 + clamp((volume_ratio - 1) * 40, -30, 50)
+    network_utilization = clamp(network_utilization, 20, 100)
     
     # Transaction count estimate based on volume activity
     base_tx_count = 1_000_000
@@ -419,7 +416,7 @@ def analyze_eth_network_activity(candles: Sequence[Candle]) -> Dict[str, object]
     
     # Block time is relatively stable but can vary slightly with congestion
     base_block_time = 12.0
-    congestion_factor = _clamp((gas_price - 50) / 100, -0.3, 1.0)
+    congestion_factor = clamp((gas_price - 50) / 100, -0.3, 1.0)
     avg_block_time = base_block_time + congestion_factor
     
     return {

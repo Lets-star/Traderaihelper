@@ -19,6 +19,7 @@ from .backtester import ParameterSet
 from .technical_analysis import analyze_technical_factors
 from .sentiment_analyzer import analyze_sentiment_factors
 from .multitimeframe_analyzer import analyze_multitimeframe_factors
+from .utils import clamp
 
 
 @dataclass

@@ -16,15 +16,27 @@ def _expected_composite_score(payload: Dict[str, Any]) -> float:
         "sentiment": factor_scores.get("sentiment"),
         "multitimeframe": factor_scores.get("multitimeframe_alignment"),
     }
-    usable_categories = {cat: score for cat, score in category_map.items() if score is not None}
-    total_weight = sum(weights.get(cat, 0.0) for cat in usable_categories)
-    if total_weight <= 0:
-        return 0.5
+    categories = ["technical", "market_structure", "volume", "sentiment", "multitimeframe"]
+    filtered_weights = {category: weights.get(category, 0.0) for category in categories}
+    weight_total = sum(filtered_weights.values())
+    if weight_total <= 0:
+        normalized_weights = {category: 1.0 / len(categories) for category in categories}
+    else:
+        normalized_weights = {
+            category: filtered_weights[category] / weight_total
+            for category in categories
+        }
+
     composite_score = 0.0
-    for category, score in usable_categories.items():
-        normalized_weight = weights.get(category, 0.0) / total_weight
-        composite_score += float(score) * normalized_weight
-    return composite_score
+    for category in categories:
+        weight = normalized_weights.get(category, 0.0)
+        if weight <= 0:
+            continue
+        score = category_map.get(category)
+        if score is None:
+            score = 0.5
+        composite_score += weight * float(score)
+    return min(max(composite_score, 0.0), 1.0)
 
 
 class TestGenerateSignalsOutput:
@@ -183,8 +195,11 @@ class TestGenerateSignalsOutput:
         assert "composite score" in rationale_text
         metadata = explicit["metadata"]
         assert pytest.approx(metadata["composite_score"], rel=1e-6) == _expected_composite_score(payload)
-        missing_categories = set(metadata.get("missing_categories", []))
-        assert missing_categories == {"market_structure", "multitimeframe"}
+        neutralized_categories = set(metadata.get("neutralized_categories", []))
+        assert neutralized_categories == {"market_structure", "multitimeframe"}
+        assert not metadata.get("missing_categories")
+        rationale_text = " ".join(explicit.get("rationale", []))
+        assert "Multitimeframe data unavailable (neutral contribution)." in rationale_text
 
     def test_generate_signals_minimal_payload_defaults(self):
         payload = {
@@ -251,6 +266,13 @@ class TestGenerateSignalsOutput:
             "explanation": {
                 "primary_reason": "Bearish momentum but no execution plan",
             },
+            "latest": {
+                "close": 1875.0,
+                "open": 1880.0,
+                "high": 1895.0,
+                "low": 1865.0,
+                "atr": 22.0,
+            },
             "metadata": {
                 "config_weights": {
                     "technical": 0.30,
@@ -261,19 +283,138 @@ class TestGenerateSignalsOutput:
                     "composite": 0.10,
                 },
                 "timeframe_used": "4h",
+                "account_balance": 15000.0,
             },
         }
 
         explicit = generate_signals(payload)
 
-        assert explicit["signal"] == "HOLD"
-        assert explicit["entries"] == []
-        assert explicit["stop_loss"] is None
-        assert explicit["take_profits"] == {}
-        assert explicit["position_size_pct"] is None
-        # Ensure rationale mentions missing plan
+        assert explicit["signal"] == "SELL"
+        assert explicit["entries"]
+        assert explicit["stop_loss"] is not None
+        assert explicit["take_profits"]
+        assert explicit["position_size_pct"] is not None
+        plan_metadata = (explicit.get("position_plan") or {}).get("metadata", {})
+        assert plan_metadata
+        assert plan_metadata.get("planning_warnings")
+
+    def test_missing_sentiment_and_mtf_neutral_contribution(self):
+        payload = {
+            "signal_type": "BUY",
+            "confidence": 0.82,
+            "timestamp": 1700001000000,
+            "symbol": "BTCUSDT",
+            "timeframe": "1h",
+            "factors": [
+                {
+                    "factor_name": "technical_analysis",
+                    "score": 0.78,
+                    "weight": 0.25,
+                    "metadata": {"direction": "bullish"},
+                },
+                {
+                    "factor_name": "volume_analysis",
+                    "score": 0.74,
+                    "weight": 0.20,
+                    "metadata": {"direction": "bullish"},
+                },
+                {
+                    "factor_name": "market_structure",
+                    "score": 0.72,
+                    "weight": 0.15,
+                    "metadata": {"direction": "bullish"},
+                },
+            ],
+            "position_plan": {
+                "entry_price": 26_000.0,
+                "stop_loss": 25_600.0,
+                "take_profit_levels": [26_300.0, 26_700.0, 27_200.0],
+                "position_size_usd": 1_200.0,
+                "direction": "long",
+                "leverage": 5.0,
+                "metadata": {
+                    "atr": 140.0,
+                    "holding_horizon_bars": 16,
+                    "sizing_factors": {"risk_amount_usd": 240.0},
+                    "tp_sl_multipliers": {"tp1": 1.0, "tp2": 1.8, "tp3": 3.0},
+                },
+            },
+            "metadata": {
+                "config_weights": {
+                    "technical": 0.25,
+                    "sentiment": 0.15,
+                    "multitimeframe": 0.10,
+                    "volume": 0.20,
+                    "market_structure": 0.15,
+                    "composite": 0.15,
+                },
+            },
+        }
+
+        explicit = generate_signals(payload)
+
+        assert explicit["signal"] == "BUY"
+        metadata = explicit["metadata"]
+        neutralized = set(metadata.get("neutralized_categories", []))
+        assert neutralized == {"sentiment", "multitimeframe"}
         rationale_text = " ".join(explicit.get("rationale", []))
-        assert "plan" in rationale_text.lower()
+        assert "Sentiment data unavailable (neutral contribution)." in rationale_text
+        assert "Multitimeframe data unavailable (neutral contribution)." in rationale_text
+
+    def test_zero_weighted_category_skipped(self):
+        payload = {
+            "signal_type": "BUY",
+            "confidence": 0.7,
+            "timestamp": 1700002000000,
+            "symbol": "BTCUSDT",
+            "timeframe": "1h",
+            "factors": [
+                {
+                    "factor_name": "technical_analysis",
+                    "score": 0.72,
+                    "weight": 0.25,
+                    "metadata": {"direction": "bullish"},
+                },
+                {
+                    "factor_name": "volume_analysis",
+                    "score": 0.70,
+                    "weight": 0.25,
+                    "metadata": {"direction": "bullish"},
+                },
+            ],
+            "position_plan": {
+                "entry_price": 25_500.0,
+                "stop_loss": 25_100.0,
+                "take_profit_levels": [25_800.0, 26_100.0, 26_600.0],
+                "position_size_usd": 1_000.0,
+                "direction": "long",
+                "leverage": 4.0,
+                "metadata": {
+                    "atr": 120.0,
+                    "holding_horizon_bars": 18,
+                    "sizing_factors": {"risk_amount_usd": 200.0},
+                    "tp_sl_multipliers": {"tp1": 1.0, "tp2": 1.8, "tp3": 3.0},
+                },
+            },
+            "metadata": {
+                "config_weights": {
+                    "technical": 0.35,
+                    "sentiment": 0.0,
+                    "multitimeframe": 0.15,
+                    "volume": 0.25,
+                    "market_structure": 0.15,
+                    "composite": 0.10,
+                },
+            },
+        }
+
+        explicit = generate_signals(payload)
+
+        metadata = explicit["metadata"]
+        assert "sentiment" not in set(metadata.get("neutralized_categories", []))
+        assert "sentiment" in set(metadata.get("skipped_categories", []))
+        rationale_combined = " ".join(explicit.get("rationale", []))
+        assert "Sentiment data unavailable" not in rationale_combined
 
     def test_generate_signals_respects_overridden_thresholds(self):
         payload = {

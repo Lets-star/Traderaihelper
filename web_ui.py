@@ -3089,11 +3089,18 @@ def main():
 
             st.markdown("---")
 
-            if signal_data.get("cancellation_reasons"):
-                cancellation_reasons = signal_data.get("cancellation_reasons", [])
-                st.warning("### ⛔ Signal Rejection Reasons")
+            cancellation_reasons = signal_data.get("cancellation_reasons", []) or []
+            plan_warnings = (signal_data.get("metadata", {}) or {}).get("plan_warnings", []) or []
+            if signal_data.get("signal") == "HOLD" and cancellation_reasons:
+                st.warning("### ⛔ Blocking Reasons")
                 for reason in cancellation_reasons:
                     st.write(f"• {reason}")
+            else:
+                advisory_notes = list(dict.fromkeys(plan_warnings + cancellation_reasons))
+                if advisory_notes:
+                    st.info("### ℹ️ Signal Notes")
+                    for note in advisory_notes:
+                        st.write(f"• {note}")
 
             st.markdown("---")
 

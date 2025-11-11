@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Literal, Optional, Tuple
-from ..trade_signals import (
-    calculate_position_metrics,
-    calculate_tp_sl_levels,
-)
+import math
+from typing import Any, Dict, Iterable, List, Literal, Optional, Tuple
+from ..trade_signals import calculate_tp_sl_levels
 from .interfaces import (
     AnalyzerContext,
     PositionPlan,
@@ -197,9 +195,264 @@ class PositionManagerResult:
     sizing_result: Optional[PositionSizingResult]
     can_trade: bool
     cancellation_reasons: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
     holding_horizon_bars: Optional[int] = None
     diversification_guard: Optional[DiversificationGuard] = None
     metadata: JsonDict = field(default_factory=dict)
+
+
+def _safe_float(value: Any) -> Optional[float]:
+    """Convert arbitrary values to floats safely."""
+    if value is None:
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):  # pragma: no cover - defensive
+        return None
+    if math.isnan(numeric) or not math.isfinite(numeric):  # pragma: no cover - defensive
+        return None
+    return numeric
+
+
+def _first_valid_float(values: Iterable[Any]) -> Optional[float]:
+    """Return the first positive float from an iterable of candidates."""
+    for value in values:
+        numeric = _safe_float(value)
+        if numeric is not None and numeric > 0:
+            return numeric
+    return None
+
+
+def _resolve_entry_price(context: AnalyzerContext) -> Tuple[Optional[float], Optional[str]]:
+    """Determine an entry price using available context information."""
+    candidates: List[Any] = [getattr(context, "current_price", None)]
+
+    ohlcv = context.ohlcv or {}
+    for key in ("close", "open", "high", "low"):
+        candidates.append(ohlcv.get(key))
+
+    metadata = context.metadata or {}
+    for key in (
+        "entry_price",
+        "last_close",
+        "last_price",
+        "recent_close",
+        "price",
+        "close",
+        "current_price",
+    ):
+        candidates.append(metadata.get(key))
+
+    extras = context.extras or {}
+    price_context = extras.get("price_context")
+    if isinstance(price_context, dict):
+        for key in ("last_close", "close", "price", "reference"):
+            candidates.append(price_context.get(key))
+    for key in ("last_close", "close", "price", "reference_price"):
+        candidates.append(extras.get(key))
+
+    for factor in context.historical_signals or []:
+        if isinstance(factor, dict):
+            candidates.append(factor.get("price"))
+
+    entry_price = _first_valid_float(candidates)
+    if entry_price is None:
+        return None, "Entry price unavailable from context."
+    return entry_price, None
+
+
+def _resolve_atr_value(context: AnalyzerContext, entry_price: float) -> Tuple[Optional[float], Optional[str]]:
+    """Resolve ATR value, falling back to reasonable approximations when needed."""
+    indicators = context.indicators or {}
+    candidates: List[Any] = [indicators.get("atr")]
+
+    atr_channels = indicators.get("atr_channels")
+    if isinstance(atr_channels, dict):
+        candidates.extend(atr_channels.values())
+
+    metadata = context.metadata or {}
+    for key in ("atr", "atr_value", "average_true_range"):
+        candidates.append(metadata.get(key))
+
+    volatility = metadata.get("market_volatility")
+    if isinstance(volatility, dict):
+        candidates.extend(volatility.values())
+
+    extras = context.extras or {}
+    indicator_summary = extras.get("indicator_summary")
+    if isinstance(indicator_summary, dict):
+        candidates.extend(indicator_summary.values())
+
+    atr_value = _first_valid_float(candidates)
+    if atr_value is not None:
+        return atr_value, None
+
+    ohlcv = context.ohlcv or {}
+    session_high = _safe_float(ohlcv.get("high"))
+    session_low = _safe_float(ohlcv.get("low"))
+    if session_high is not None and session_low is not None and session_high > session_low:
+        fallback = max(session_high - session_low, (entry_price or session_high) * 0.01)
+        return fallback, "ATR unavailable; approximated from intrabar range."
+
+    if entry_price and entry_price > 0:
+        fallback = entry_price * 0.015
+    else:  # pragma: no cover - defensive
+        fallback = 1.0
+    return fallback, "ATR unavailable; approximated from price-based volatility."
+
+
+def _extract_structure_level(context: AnalyzerContext, favor: Literal["support", "resistance"]) -> Optional[float]:
+    """Attempt to extract structure-based levels for stop placement."""
+    candidates: List[Any] = []
+    market_structure = context.market_structure or {}
+
+    key_groups = {
+        "support": ("recent_support", "nearest_support", "support", "swing_low", "structure_low"),
+        "resistance": ("recent_resistance", "nearest_resistance", "resistance", "swing_high", "structure_high"),
+    }
+    for key in key_groups[favor]:
+        candidates.append(market_structure.get(key))
+
+    zone_key = "support_zone" if favor == "support" else "resistance_zone"
+    zone = market_structure.get(zone_key)
+    if isinstance(zone, dict):
+        for key in ("lower", "bottom", "mid", "top", "upper"):
+            candidates.append(zone.get(key))
+
+    metadata = context.metadata or {}
+    last_levels = metadata.get("last_structure_levels")
+    if isinstance(last_levels, dict):
+        target_key = "low" if favor == "support" else "high"
+        candidates.append(last_levels.get(target_key))
+
+    extras = context.extras or {}
+    structure_levels = extras.get("structure_levels")
+    if isinstance(structure_levels, dict):
+        target_key = "support" if favor == "support" else "resistance"
+        candidates.append(structure_levels.get(target_key))
+
+    for zone in context.zones or []:
+        zone_type = str(zone.get("type", "")).lower()
+        if favor == "support" and any(term in zone_type for term in ("bull", "demand", "support")):
+            for key in ("bottom", "lower", "top", "upper"):
+                candidates.append(zone.get(key))
+        elif favor == "resistance" and any(term in zone_type for term in ("bear", "supply", "resistance")):
+            for key in ("top", "upper", "bottom", "lower"):
+                candidates.append(zone.get(key))
+
+    numeric_levels = [value for value in (_safe_float(item) for item in candidates) if value is not None]
+    if not numeric_levels:
+        return None
+    return min(numeric_levels) if favor == "support" else max(numeric_levels)
+
+
+def _compute_stop_loss(
+    entry_price: float,
+    atr_value: float,
+    signal_direction: Literal["long", "short"],
+    config: PositionManagerConfig,
+    context: AnalyzerContext,
+) -> Tuple[Optional[float], Optional[str]]:
+    """Compute a stop loss using structure when available, otherwise ATR buffers."""
+    buffer = atr_value * config.sl_multiplier if atr_value and atr_value > 0 else None
+    if buffer is None or buffer <= 0:
+        buffer = max(entry_price * 0.008, 0.5)
+
+    warning: Optional[str] = None
+    if signal_direction == "long":
+        stop_loss = entry_price - buffer
+        structure_level = _extract_structure_level(context, "support")
+        if structure_level is not None and structure_level < entry_price:
+            stop_loss = min(stop_loss, structure_level - buffer * 0.25)
+            warning = "Stop loss aligned with nearby structure support." if warning is None else warning
+        if stop_loss <= 0:
+            stop_loss = max(entry_price * 0.95, 0.0001)
+            warning = "Stop loss adjusted to remain positive." if warning is None else warning
+        return stop_loss, warning
+
+    stop_loss = entry_price + buffer
+    structure_level = _extract_structure_level(context, "resistance")
+    if structure_level is not None and structure_level > entry_price:
+        stop_loss = max(stop_loss, structure_level + buffer * 0.25)
+        warning = "Stop loss aligned with nearby structure resistance." if warning is None else warning
+    return stop_loss, warning
+
+
+def _compute_tp_levels_from_risk(
+    entry_price: float,
+    stop_loss: float,
+    signal_direction: Literal["long", "short"],
+    config: PositionManagerConfig,
+) -> Dict[str, float]:
+    """Compute TP levels using configured R-multipliers."""
+    risk_distance = abs(entry_price - stop_loss)
+    if risk_distance <= 0:
+        return {}
+
+    multipliers = [config.tp1_multiplier, config.tp2_multiplier, config.tp3_multiplier]
+    levels: Dict[str, float] = {}
+    for idx, mult in enumerate(multipliers, start=1):
+        key = f"tp{idx}"
+        adjustment = risk_distance * max(mult, 0.1)
+        if signal_direction == "long":
+            levels[key] = entry_price + adjustment
+        else:
+            levels[key] = entry_price - adjustment
+    return levels
+
+
+def _build_entry_zone(
+    entry_price: float,
+    atr_value: Optional[float],
+    signal_direction: Literal["long", "short"],
+    context: AnalyzerContext,
+) -> Optional[Dict[str, float]]:
+    """Construct an entry zone using available market structure information."""
+    def _format_zone(lower: Any, upper: Any) -> Optional[Dict[str, float]]:
+        lower_val = _safe_float(lower)
+        upper_val = _safe_float(upper)
+        if lower_val is None or upper_val is None:
+            return None
+        lower_numeric, upper_numeric = sorted((lower_val, upper_val))
+        if lower_numeric >= upper_numeric:
+            return None
+        return {"lower": round(lower_numeric, 4), "upper": round(upper_numeric, 4)}
+
+    market_structure = context.market_structure or {}
+    primary_zone = market_structure.get("confluence_zone")
+    if isinstance(primary_zone, dict):
+        formatted = _format_zone(primary_zone.get("lower") or primary_zone.get("bottom"), primary_zone.get("upper") or primary_zone.get("top"))
+        if formatted:
+            return formatted
+
+    for zone in (market_structure.get("zones") or []) + (context.zones or []):
+        if not isinstance(zone, dict):
+            continue
+        zone_type = str(zone.get("type", "")).lower()
+        if signal_direction == "long" and any(term in zone_type for term in ("bull", "demand", "support")):
+            formatted = _format_zone(zone.get("bottom"), zone.get("top"))
+            if formatted:
+                return formatted
+        elif signal_direction == "short" and any(term in zone_type for term in ("bear", "supply", "resistance")):
+            formatted = _format_zone(zone.get("bottom"), zone.get("top"))
+            if formatted:
+                return formatted
+
+    if atr_value is None or atr_value <= 0:
+        atr_value = entry_price * 0.01
+
+    buffer = atr_value * 0.25
+    if signal_direction == "long":
+        lower = entry_price - buffer
+        upper = entry_price + buffer * 0.4
+    else:
+        lower = entry_price - buffer * 0.4
+        upper = entry_price + buffer
+
+    lower, upper = sorted((lower, upper))
+    if lower >= upper:  # pragma: no cover - defensive
+        return None
+    return {"lower": round(lower, 4), "upper": round(upper, 4)}
 
 
 def calculate_risk_based_position_size(
@@ -263,43 +516,49 @@ def calculate_risk_based_position_size(
 def assess_market_conditions(
     context: AnalyzerContext,
     config: PositionManagerConfig,
-) -> Tuple[bool, List[str]]:
-    """
-    Assess market conditions for position viability.
-    
-    Args:
-        context: Market analysis context
-        config: Position manager configuration
-    
-    Returns:
-        Tuple of (can_trade, cancellation_reasons)
-    """
-    cancellation_reasons = []
-    
-    # Check volatility
-    atr = context.indicators.get("atr", 0)
-    current_price = context.current_price
-    if atr and current_price > 0:
-        volatility_ratio = atr / current_price
-        if volatility_ratio > config.high_volatility_threshold:
-            cancellation_reasons.append(f"High volatility: {volatility_ratio:.3f} > {config.high_volatility_threshold}")
-    
-    # Check liquidity (from volume analysis)
+) -> Tuple[bool, List[str], List[str]]:
+    """Assess market conditions, returning fatal blockers and non-blocking warnings."""
+    fatal_reasons: List[str] = []
+    warnings: List[str] = []
+
+    current_price = _safe_float(getattr(context, "current_price", None))
+    if current_price is None or current_price <= 0:
+        fatal_reasons.append("Current price unavailable for position planning.")
+    else:
+        atr_value = _safe_float((context.indicators or {}).get("atr"))
+        if atr_value is not None and atr_value > 0:
+            volatility_ratio = atr_value / current_price
+            if volatility_ratio > config.high_volatility_threshold * 2:
+                warnings.append(
+                    f"Extreme volatility detected (ATR ratio {volatility_ratio:.3f})."
+                )
+            elif volatility_ratio > config.high_volatility_threshold:
+                warnings.append(
+                    f"High volatility environment (ATR ratio {volatility_ratio:.3f})."
+                )
+        else:
+            warnings.append("ATR missing; will estimate from price data.")
+
     volume_analysis = context.volume_analysis or {}
-    volume_confidence = volume_analysis.get("volume_confidence", 0)
-    if volume_confidence < config.low_liquidity_threshold:
-        cancellation_reasons.append(f"Low liquidity: {volume_confidence:.3f} < {config.low_liquidity_threshold}")
-    
-    # Check risk score (from advanced metrics)
+    volume_confidence = _safe_float(volume_analysis.get("volume_confidence"))
+    if volume_confidence is not None:
+        if volume_confidence < config.low_liquidity_threshold:
+            warnings.append(
+                f"Liquidity caution: confidence {volume_confidence:.3f} below threshold {config.low_liquidity_threshold:.3f}."
+            )
+    else:
+        warnings.append("Volume confidence unavailable; liquidity assessment limited.")
+
     advanced_metrics = context.advanced_metrics or {}
-    market_context = advanced_metrics.get("market_context", {})
+    market_context = advanced_metrics.get("market_context")
     if isinstance(market_context, dict):
-        risk_score = market_context.get("risk_score", 0)
-        if risk_score > config.high_risk_score_threshold:
-            cancellation_reasons.append(f"High risk score: {risk_score:.3f} > {config.high_risk_score_threshold}")
-    
-    can_trade = len(cancellation_reasons) == 0
-    return can_trade, cancellation_reasons
+        risk_score = _safe_float(market_context.get("risk_score"))
+        if risk_score is not None and risk_score > config.high_risk_score_threshold:
+            warnings.append(
+                f"Elevated market risk score ({risk_score:.3f}) exceeds threshold {config.high_risk_score_threshold:.3f}."
+            )
+
+    return len(fatal_reasons) == 0, fatal_reasons, warnings
 
 
 def estimate_holding_horizon(
@@ -360,107 +619,186 @@ def create_position_plan(
     account_balance: float = 10000.0,
     diversification_guard: Optional[DiversificationGuard] = None,
 ) -> PositionManagerResult:
-    """
-    Create a comprehensive position plan with risk management and diversification checks.
-    
-    Args:
-        context: Market analysis context
-        signal_direction: Direction of the trading signal
-        config: Position manager configuration
-        account_balance: Total account balance for risk calculations
-        diversification_guard: Current position tracking
-    
-    Returns:
-        Complete position manager result with plan or cancellation reasons
-    """
+    """Create a comprehensive position plan with risk management and diversification checks."""
     config.validate()
-    
-    cancellation_reasons = []
-    
-    # Check diversification limits
+
+    cancellation_reasons: List[str] = []
+    warnings: List[str] = []
+
     if diversification_guard:
-        can_add, reason = diversification_guard.can_add_position(
-            signal_direction, context.symbol, config
-        )
+        can_add, reason = diversification_guard.can_add_position(signal_direction, context.symbol, config)
         if not can_add:
             cancellation_reasons.append(reason or "Diversification limit reached")
-    
-    # Assess market conditions
-    can_trade, market_reasons = assess_market_conditions(context, config)
+            return PositionManagerResult(
+                position_plan=None,
+                sizing_result=None,
+                can_trade=False,
+                cancellation_reasons=cancellation_reasons,
+                warnings=warnings,
+                diversification_guard=diversification_guard,
+            )
+
+    can_trade, fatal_reasons, market_warnings = assess_market_conditions(context, config)
+    warnings.extend(market_warnings)
     if not can_trade:
-        cancellation_reasons.extend(market_reasons)
-    
-    if cancellation_reasons:
+        cancellation_reasons.extend(fatal_reasons)
+        metadata = {"warnings": warnings} if warnings else {}
         return PositionManagerResult(
             position_plan=None,
             sizing_result=None,
             can_trade=False,
             cancellation_reasons=cancellation_reasons,
+            warnings=warnings,
             diversification_guard=diversification_guard,
+            metadata=metadata,
         )
-    
-    # Get current price and ATR
-    entry_price = context.current_price
-    atr = context.indicators.get("atr", 0)
-    
-    if not atr or atr == 0:
-        cancellation_reasons.append("No valid ATR available for TP/SL calculation")
+
+    entry_price, entry_warning = _resolve_entry_price(context)
+    if entry_warning:
+        warnings.append(entry_warning)
+    if entry_price is None or entry_price <= 0:
+        cancellation_reasons.append("Unable to determine entry price.")
+        metadata = {"warnings": warnings} if warnings else {}
         return PositionManagerResult(
             position_plan=None,
             sizing_result=None,
             can_trade=False,
             cancellation_reasons=cancellation_reasons,
+            warnings=warnings,
             diversification_guard=diversification_guard,
+            metadata=metadata,
         )
-    
-    # Calculate TP/SL levels
-    is_long = signal_direction == "long"
-    tp_sl_levels = calculate_tp_sl_levels(
-        entry_price=entry_price,
-        is_long=is_long,
-        atr_value=atr,
-        tp1_multiplier=config.tp1_multiplier,
-        tp2_multiplier=config.tp2_multiplier,
-        tp3_multiplier=config.tp3_multiplier,
-        sl_multiplier=config.sl_multiplier,
-    )
-    
-    # Calculate position size based on risk
+
+    atr_value, atr_warning = _resolve_atr_value(context, entry_price)
+    if atr_warning:
+        warnings.append(atr_warning)
+    if atr_value is None or atr_value <= 0:
+        cancellation_reasons.append("Unable to estimate volatility for stop placement.")
+        metadata = {"warnings": warnings} if warnings else {}
+        return PositionManagerResult(
+            position_plan=None,
+            sizing_result=None,
+            can_trade=False,
+            cancellation_reasons=cancellation_reasons,
+            warnings=warnings,
+            diversification_guard=diversification_guard,
+            metadata=metadata,
+        )
+
+    stop_loss, stop_warning = _compute_stop_loss(entry_price, atr_value, signal_direction, config, context)
+    if stop_warning:
+        warnings.append(stop_warning)
+    if stop_loss is None or stop_loss <= 0:
+        cancellation_reasons.append("Unable to compute stop loss.")
+        metadata = {"warnings": warnings} if warnings else {}
+        return PositionManagerResult(
+            position_plan=None,
+            sizing_result=None,
+            can_trade=False,
+            cancellation_reasons=cancellation_reasons,
+            warnings=warnings,
+            diversification_guard=diversification_guard,
+            metadata=metadata,
+        )
+
+    if math.isclose(stop_loss, entry_price, rel_tol=1e-6):
+        fallback_distance = max(entry_price * 0.01, atr_value * max(config.sl_multiplier, 0.5))
+        if signal_direction == "long":
+            stop_loss = max(0.0001, entry_price - fallback_distance)
+        else:
+            stop_loss = entry_price + fallback_distance
+        warnings.append("Stop loss adjusted to ensure non-zero risk distance.")
+
+    risk_distance = abs(entry_price - stop_loss)
+    if risk_distance <= entry_price * 1e-5:
+        fallback_distance = max(entry_price * 0.01, atr_value * max(config.sl_multiplier, 0.5))
+        if signal_direction == "long":
+            stop_loss = max(0.0001, entry_price - fallback_distance)
+        else:
+            stop_loss = entry_price + fallback_distance
+        warnings.append("Risk distance recalibrated due to insufficient separation.")
+        risk_distance = abs(entry_price - stop_loss)
+
+    tp_levels = _compute_tp_levels_from_risk(entry_price, stop_loss, signal_direction, config)
+    if not tp_levels:
+        fallback_levels = calculate_tp_sl_levels(
+            entry_price=entry_price,
+            is_long=(signal_direction == "long"),
+            atr_value=atr_value,
+            tp1_multiplier=config.tp1_multiplier,
+            tp2_multiplier=config.tp2_multiplier,
+            tp3_multiplier=config.tp3_multiplier,
+            sl_multiplier=config.sl_multiplier,
+        )
+        tp_levels = {
+            "tp1": fallback_levels["tp1"],
+            "tp2": fallback_levels["tp2"],
+            "tp3": fallback_levels["tp3"],
+        }
+        if signal_direction == "short":
+            stop_loss = fallback_levels["sl"]
+        warnings.append("Take profit levels generated from ATR defaults.")
+    else:
+        if signal_direction == "long":
+            ordered = sorted(tp_levels.values())
+        else:
+            ordered = sorted(tp_levels.values(), reverse=True)
+        tp_levels = {f"tp{idx}": float(value) for idx, value in enumerate(ordered, start=1)}
+
+    balance_value = _safe_float(account_balance)
+    if balance_value is None or balance_value <= 0:
+        balance_value = 10000.0
+        warnings.append("Account balance unavailable; defaulted to $10,000.")
+    balance_value = max(balance_value, config.max_position_size_usd)
+
+    risk_pct = config.max_risk_per_trade_pct
     sizing_result = calculate_risk_based_position_size(
         entry_price=entry_price,
-        stop_loss=tp_sl_levels["sl"],
-        account_balance=account_balance,
-        risk_per_trade_pct=config.max_risk_per_trade_pct,
+        stop_loss=stop_loss,
+        account_balance=balance_value,
+        risk_per_trade_pct=risk_pct,
         leverage=config.default_leverage,
         commission_rate=config.commission_rate,
     )
-    
-    # Apply maximum position size limit
+
+    if sizing_result.position_size_usd <= 0:
+        fallback_size = min(balance_value * risk_pct * config.default_leverage, config.max_position_size_usd)
+        if fallback_size <= 0:
+            fallback_size = config.max_position_size_usd
+        sizing_result.position_size_usd = fallback_size
+        sizing_result.sizing_factors["position_size_fallback"] = True
+        sizing_result.quantity = (fallback_size * config.default_leverage) / entry_price
+        sizing_result.commission_cost = (fallback_size * config.default_leverage) * config.commission_rate
+        warnings.append("Position size fallback applied due to zero risk distance.")
+
     final_position_size = min(sizing_result.position_size_usd, config.max_position_size_usd)
-    if final_position_size != sizing_result.position_size_usd:
+    if final_position_size < sizing_result.position_size_usd:
         sizing_result.sizing_factors["size_limited"] = True
         sizing_result.sizing_factors["original_size"] = sizing_result.position_size_usd
         sizing_result.position_size_usd = final_position_size
-        
-        # Recalculate other metrics with reduced size
-        notional_value = final_position_size * config.default_leverage
-        sizing_result.quantity = notional_value / entry_price
-        sizing_result.commission_cost = notional_value * config.commission_rate
-    
-    # Estimate holding horizon
+        sizing_result.quantity = (final_position_size * config.default_leverage) / entry_price
+        sizing_result.commission_cost = (final_position_size * config.default_leverage) * config.commission_rate
+        warnings.append("Position size limited by configuration.")
+
     holding_horizon = estimate_holding_horizon(context, config, signal_direction)
-    
-    # Create position plan
+    entry_zone = _build_entry_zone(entry_price, atr_value, signal_direction, context)
+
+    take_profit_list = [
+        float(tp_levels.get("tp1", entry_price)),
+        float(tp_levels.get("tp2", entry_price)),
+        float(tp_levels.get("tp3", entry_price)),
+    ]
+
     position_plan = PositionPlan(
         entry_price=entry_price,
-        stop_loss=tp_sl_levels["sl"],
-        take_profit_levels=[tp_sl_levels["tp1"], tp_sl_levels["tp2"], tp_sl_levels["tp3"]],
-        position_size_usd=final_position_size,
+        stop_loss=stop_loss,
+        take_profit_levels=take_profit_list,
+        position_size_usd=sizing_result.position_size_usd,
         leverage=config.default_leverage,
         direction=signal_direction,
         notes=f"Holding horizon: {holding_horizon} bars",
         metadata={
-            "atr": atr,
+            "atr": atr_value,
             "tp_sl_multipliers": {
                 "tp1": config.tp1_multiplier,
                 "tp2": config.tp2_multiplier,
@@ -471,22 +809,34 @@ def create_position_plan(
             "sizing_factors": sizing_result.sizing_factors,
         },
     )
-    
-    # Add position to diversification guard
+
+    if entry_zone:
+        position_plan.metadata["entry_zone"] = entry_zone
+    if warnings:
+        position_plan.metadata["planning_warnings"] = warnings
+
     if diversification_guard:
         diversification_guard.add_position(signal_direction, context.symbol)
-    
+
+    result_metadata: JsonDict = {
+        "signal_direction": signal_direction,
+        "account_balance": balance_value,
+        "final_position_size": sizing_result.position_size_usd,
+    }
+    if entry_zone:
+        result_metadata["entry_zone"] = entry_zone
+    if warnings:
+        result_metadata["warnings"] = warnings
+
     return PositionManagerResult(
         position_plan=position_plan,
         sizing_result=sizing_result,
         can_trade=True,
+        cancellation_reasons=[],
+        warnings=warnings,
         holding_horizon_bars=holding_horizon,
         diversification_guard=diversification_guard,
-        metadata={
-            "signal_direction": signal_direction,
-            "account_balance": account_balance,
-            "final_position_size": final_position_size,
-        },
+        metadata=result_metadata,
     )
 
 

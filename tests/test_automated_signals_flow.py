@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from typing import Dict
 
 import pandas as pd
 
@@ -51,8 +52,9 @@ def test_run_automated_signal_flow_with_stubbed_binance_source() -> None:
     now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
     start = now - timedelta(minutes=90)
     frame = _build_candles(start, interval_seconds=60, count=90)
+    frames = {"1m": frame, "5m": frame, "15m": frame, "1h": frame}
 
-    stub_source = _StubBinanceSource(frame)
+    stub_source = _StubBinanceSource(frames)
 
     result = run_automated_signal_flow(
         symbol="BTCUSDT",
@@ -64,6 +66,10 @@ def test_run_automated_signal_flow_with_stubbed_binance_source() -> None:
     )
 
     assert len(result.candles) == 90
+    multi_timeframe = result.processed_payload.get("multi_timeframe", {})
+    mt_metadata = multi_timeframe.get("metadata", {})
+    assert mt_metadata.get("base_timeframe") == "1m"
+    assert "params_hash" in mt_metadata
 
     metadata = result.processed_payload["metadata"]
     assert metadata["source"] == "binance"
@@ -75,3 +81,7 @@ def test_run_automated_signal_flow_with_stubbed_binance_source() -> None:
 
     metadata_values = [value for value in metadata.values() if isinstance(value, str)]
     assert not any("synthetic" in value.lower() for value in metadata_values)
+
+    assert stub_source.calls  # Verify data source was invoked
+    for _, timeframe, _, _ in stub_source.calls:
+        assert timeframe in frames

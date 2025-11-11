@@ -4,10 +4,11 @@ from typing import Any, Dict
 import pytest
 
 from indicator_collector.trading_system.generate_signals import generate_signals
+from indicator_collector.trading_system.backtester import DEFAULT_WEIGHTS
 
 
 def _expected_composite_score(payload: Dict[str, Any]) -> float:
-    weights = payload.get("metadata", {}).get("config_weights", {})
+    weights = payload.get("metadata", {}).get("config_weights", {}) or {}
     factor_scores = {factor.get("factor_name"): factor.get("score") for factor in payload.get("factors", [])}
     category_map = {
         "technical": factor_scores.get("technical_analysis"),
@@ -17,7 +18,13 @@ def _expected_composite_score(payload: Dict[str, Any]) -> float:
         "multitimeframe": factor_scores.get("multitimeframe_alignment"),
     }
     usable_categories = {cat: score for cat, score in category_map.items() if score is not None}
+    if not usable_categories:
+        return 0.5
     total_weight = sum(weights.get(cat, 0.0) for cat in usable_categories)
+    if total_weight <= 0:
+        fallback_weights = DEFAULT_WEIGHTS
+        total_weight = sum(fallback_weights.get(cat, 0.0) for cat in usable_categories)
+        weights = fallback_weights
     if total_weight <= 0:
         return 0.5
     composite_score = 0.0

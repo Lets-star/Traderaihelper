@@ -657,42 +657,16 @@ def _calculate_confidence(
     cancellation_triggers: List[str]
 ) -> Tuple[int, float]:
     """Calculate confidence level (1-10) and normalized confidence."""
-    # Base confidence from score distance from neutral
-    if final_score > 0.5:
-        # Bullish: distance from 0.5 to 1.0
-        base_confidence = (final_score - 0.5) * 20  # 0-10 scale
-    else:
-        # Bearish: distance from 0.5 to 0.0
-        base_confidence = (0.5 - final_score) * 20  # 0-10 scale
-    
-    # Adjust for factor count
-    factor_count = factors.count_available_factors()
-    if factor_count >= 5:
-        factor_adjustment = 1.2
-    elif factor_count >= 3:
-        factor_adjustment = 1.0
-    else:
-        factor_adjustment = 0.7
-    
-    # Adjust for threshold distance
-    if final_score > buy_threshold:
-        threshold_bonus = 1.5
-    elif final_score < sell_threshold:
-        threshold_bonus = 1.5
-    else:
-        threshold_bonus = 0.8
-    
-    # Penalty for cancellation triggers
-    trigger_penalty = max(0.3, 1.0 - len(cancellation_triggers) * 0.2)
-    
-    # Calculate final confidence
-    confidence = base_confidence * factor_adjustment * threshold_bonus * trigger_penalty
-    confidence = max(1.0, min(10.0, confidence))
-    
-    # Normalized confidence for payload
-    normalized_confidence = confidence / 10.0
-    
-    return int(confidence), normalized_confidence
+    _ = (factors, buy_threshold, sell_threshold)
+    distance = abs(final_score - 0.5) * 2.0
+    distance = clamp(distance, 0.0, 1.0)
+    confidence_value = round(1 + 9 * distance)
+
+    if cancellation_triggers:
+        confidence_value = max(1, confidence_value - len(cancellation_triggers))
+
+    normalized_confidence = confidence_value / 10.0
+    return confidence_value, normalized_confidence
 
 
 def _generate_explanation(
@@ -708,11 +682,11 @@ def _generate_explanation(
     if cancellation_triggers:
         primary_reason = f"HOLD due to cancellation triggers: {', '.join(cancellation_triggers)}"
     elif signal_type == "BUY":
-        primary_reason = f"Bullish signal with score {final_score:.2f} and confidence {confidence}/10"
+        primary_reason = f"Bullish composite score {final_score:.2f} with confidence {confidence}/10"
     elif signal_type == "SELL":
-        primary_reason = f"Bearish signal with score {final_score:.2f} and confidence {confidence}/10"
+        primary_reason = f"Bearish composite score {final_score:.2f} with confidence {confidence}/10"
     else:
-        primary_reason = f"Neutral signal with score {final_score:.2f} - insufficient confirmation"
+        primary_reason = f"Composite score {final_score:.2f} within neutral zone"
     
     # Supporting factors
     supporting_factors = []
@@ -730,7 +704,7 @@ def _generate_explanation(
         risk_factors.append("Mixed signals across factors")
     
     # Market context
-    market_context = f"Signal generated based on {factors.count_available_factors()} factors"
+    market_context = "Signal based on composite score"
     
     return SignalExplanation(
         primary_reason=primary_reason,
@@ -924,15 +898,38 @@ def generate_trading_signal(
             composite_factor.weight = category_weights.get("composite", config.composite_weight)
         factors.composite = composite_factor
 
-    available_factors = factors.get_available_factors()
-    if available_factors:
-        total_weight = sum(f.weight for f in available_factors)
-        if total_weight > 0:
-            final_score = sum(f.score * f.weight for f in available_factors) / total_weight
-        else:
-            final_score = 0.5
+    composite_categories = {
+        "technical": factors.technical,
+        "market_structure": factors.structure,
+        "volume": factors.volume,
+        "sentiment": factors.sentiment,
+        "multitimeframe": factors.multitimeframe,
+    }
+
+    composite_weights_raw = {key: category_weights.get(key, 0.0) for key in composite_categories}
+    composite_weight_total = sum(composite_weights_raw.values())
+    if composite_weight_total <= 0:
+        composite_weights = {key: 1.0 / len(composite_categories) for key in composite_categories}
     else:
-        final_score = 0.5
+        composite_weights = {
+            key: composite_weights_raw[key] / composite_weight_total for key in composite_categories
+        }
+
+    composite_components: Dict[str, Dict[str, Any]] = {}
+    composite_score = 0.0
+    for key, factor in composite_categories.items():
+        score = factor.score if factor else None
+        weight = composite_weights[key]
+        contribution = weight * score if score is not None else 0.0
+        composite_components[key] = {
+            "score": score,
+            "weight": weight,
+            "contribution": contribution,
+        }
+        composite_score += contribution
+
+    final_score = clamp(composite_score, 0.0, 1.0)
+    available_factors = factors.get_available_factors()
 
     vix_value = None
     if context.extras and "market_context" in context.extras:
@@ -943,17 +940,11 @@ def generate_trading_signal(
     buy_threshold, sell_threshold, min_confidence = config.get_adapted_thresholds(vix_value)
 
     cancellation_triggers = _check_cancellation_triggers(context, factors)
-    if (
-        factors.composite
-        and not factors.composite.metadata.get("required_confirmations_met", True)
-    ):
-        cancellation_triggers.append("Composite confirmations below requirement")
-
     if cancellation_triggers:
         signal_type = "HOLD"
-    elif final_score >= buy_threshold and factors.count_available_factors() >= config.min_factors_confirm:
+    elif final_score >= buy_threshold:
         signal_type = "BUY"
-    elif final_score <= sell_threshold and factors.count_available_factors() >= config.min_factors_confirm:
+    elif final_score <= sell_threshold:
         signal_type = "SELL"
     else:
         signal_type = "HOLD"
@@ -984,10 +975,13 @@ def generate_trading_signal(
         "final_score": final_score,
         "buy_threshold": buy_threshold,
         "sell_threshold": sell_threshold,
+        "composite_components": composite_components,
+        "composite_weights": composite_weights,
     }
 
     payload_metadata = {
         "final_score": final_score,
+        "composite_score": final_score,
         "buy_threshold": buy_threshold,
         "sell_threshold": sell_threshold,
         "min_confidence": min_confidence,
@@ -1000,6 +994,8 @@ def generate_trading_signal(
         "analysis_debug": analysis_debug,
         "parameter_debug_enabled": parameter_set.debug_enabled if parameter_set else False,
         "parameter_hash": parameter_set.params_hash() if parameter_set else None,
+        "composite_components": composite_components,
+        "composite_weights": composite_weights,
     }
 
     payload = TradingSignalPayload(

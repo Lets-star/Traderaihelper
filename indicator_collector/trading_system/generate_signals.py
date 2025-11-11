@@ -21,6 +21,13 @@ from ..timeframes import Timeframe
 logger = logging.getLogger(__name__)
 
 _ACTIONABLE_SIGNALS = {"BUY", "SELL"}
+_COMPOSITE_CATEGORIES = (
+    "technical",
+    "market_structure",
+    "volume",
+    "sentiment",
+    "multitimeframe",
+)
 _FACTOR_CATEGORY_MAP = {
     "technical_analysis": "technical",
     "sentiment": "sentiment",
@@ -29,7 +36,7 @@ _FACTOR_CATEGORY_MAP = {
     "market_structure": "market_structure",
     "composite_analysis": "composite",
 }
-_DEFAULT_CONFIRMATIONS = 3
+
 _DEFAULT_RISK_PER_TRADE = 0.02
 _DEBUG_ENABLED = os.getenv("GENERATE_SIGNALS_DEBUG", "0").lower() in {"1", "true", "yes", "on"}
 
@@ -60,8 +67,7 @@ def generate_signals(
         payload = _normalize_payload(normalized_payload)
         params_dict = _normalize_params(params)
 
-        signal_type = str(payload.get("signal_type", "HOLD")).upper()
-        raw_confidence = payload.get("confidence", 0.0)
+        original_signal_type = str(payload.get("signal_type", "HOLD")).upper()
         factors = _normalize_factors(payload.get("factors"))
         explanation = payload.get("explanation") or {}
         metadata = payload.get("metadata") or {}
@@ -69,49 +75,40 @@ def generate_signals(
         timeframe = _infer_timeframe(payload, metadata, params_dict)
         _ensure_indicator_params(params_dict, timeframe)
 
-        threshold = _extract_confirmation_threshold(metadata, params_dict)
-        confirmations, category_info = _evaluate_confirmations(factors, signal_type)
-        aggregate_score = category_info.get("aggregate_score")
+        weights = _extract_weights(payload, metadata, params_dict)
+        composite_context = _compute_composite_context(factors, weights)
+        composite_score = composite_context["score"]
 
-        actionable = signal_type in _ACTIONABLE_SIGNALS
+        buy_threshold, sell_threshold = _resolve_composite_thresholds(metadata, params_dict)
+        computed_signal = _signal_from_composite(composite_score, buy_threshold, sell_threshold)
+
+        actionable = computed_signal in _ACTIONABLE_SIGNALS
         hold_reasons: List[str] = []
 
-        if actionable and confirmations < threshold:
-            actionable = False
-            plural = "s" if threshold != 1 else ""
+        if computed_signal == "HOLD":
             hold_reasons.append(
-                f"Only {confirmations} confirmation{'s' if confirmations != 1 else ''}; "
-                f"need at least {threshold} independent category{plural}."
+                f"Composite score {composite_score:.2f} between thresholds "
+                f"(buy ≥ {buy_threshold:.2f}, sell ≤ {sell_threshold:.2f})."
             )
 
-        confirmation_threshold = params_dict.get("confirmation_threshold")
-        if actionable and confirmation_threshold and aggregate_score is not None:
-            if aggregate_score < confirmation_threshold:
+        plan_details = PlanDetails(valid=False, reason="Composite signal not actionable")
+        if actionable:
+            plan_details = _build_plan_details(
+                position_plan,
+                computed_signal,
+                params_dict,
+                metadata,
+            )
+            if not plan_details.valid:
                 actionable = False
-                hold_reasons.append(
-                    f"Aggregate confirmation score {aggregate_score:.2f} below required"
-                    f" {confirmation_threshold:.2f}."
-                )
+                if plan_details.reason:
+                    hold_reasons.append(plan_details.reason)
+                else:
+                    hold_reasons.append("Position plan missing required risk parameters.")
 
-        plan_details = _build_plan_details(
-            position_plan,
-            signal_type,
-            params_dict,
-            metadata,
-        ) if actionable else PlanDetails(valid=False, reason="Signal not actionable")
+        signal_type = computed_signal if actionable else "HOLD"
 
-        if actionable and not plan_details.valid:
-            actionable = False
-            if plan_details.reason:
-                hold_reasons.append(plan_details.reason)
-            else:
-                hold_reasons.append("Position plan missing required risk parameters.")
-
-        if not actionable:
-            signal_type = "HOLD"
-
-        weights = _extract_weights(payload, metadata, params_dict)
-        confidence = _convert_confidence(raw_confidence, actionable, confirmations, threshold)
+        confidence = _convert_confidence(composite_score, actionable)
 
         if not actionable:
             entries = []
@@ -132,7 +129,7 @@ def generate_signals(
             explanation,
             actionable,
             hold_reasons,
-            category_info,
+            composite_context,
         )
 
         cancel_conditions = _build_cancel_conditions(
@@ -146,9 +143,13 @@ def generate_signals(
         metadata_block = _build_metadata_block(
             payload,
             timeframe,
-            category_info,
+            composite_context,
             plan_details,
             actionable,
+            buy_threshold,
+            sell_threshold,
+            composite_score,
+            original_signal_type,
         )
 
         result: Dict[str, Any] = {
@@ -174,11 +175,14 @@ def generate_signals(
         if _DEBUG_ENABLED:
             result["debug"] = {
                 "actionable": actionable,
-                "confirmations": confirmations,
-                "required_confirmations": threshold,
-                "aggregate_confirmation_score": aggregate_score,
-                "confirmed_categories": category_info.get("confirmed", []),
-                "opposing_categories": category_info.get("opposed", []),
+                "composite_score": composite_score,
+                "computed_signal": computed_signal,
+                "buy_threshold": buy_threshold,
+                "sell_threshold": sell_threshold,
+                "composite_contributions": composite_context.get("contributions"),
+                "composite_weights": composite_context.get("weights"),
+                "missing_categories": composite_context.get("missing_categories"),
+                "original_signal_type": original_signal_type,
                 "reasons": hold_reasons,
             }
 
@@ -312,85 +316,7 @@ def _normalize_factors(factors_input: Optional[List[Any]]) -> List[Dict[str, Any
     return factors
 
 
-def _extract_confirmation_threshold(
-    metadata: Dict[str, Any],
-    params: Dict[str, Any],
-) -> int:
-    threshold = params.get("min_confirmation_categories")
-    if threshold is None:
-        threshold = metadata.get("min_confirmation_categories")
-    if threshold is None:
-        threshold = _DEFAULT_CONFIRMATIONS
-    try:
-        threshold_int = int(threshold)
-        return max(1, threshold_int)
-    except (TypeError, ValueError):
-        return _DEFAULT_CONFIRMATIONS
 
-
-def _evaluate_confirmations(
-    factors: List[Dict[str, Any]],
-    signal_type: str,
-) -> Tuple[int, Dict[str, Any]]:
-    categories: Dict[str, Dict[str, Any]] = {}
-    target_direction = "bullish" if signal_type == "BUY" else "bearish"
-    aggregate = 0.0
-    weight_sum = 0.0
-
-    for factor in factors:
-        name = factor.get("factor_name") or "unknown"
-        category = _FACTOR_CATEGORY_MAP.get(name, name)
-        score = factor.get("score")
-        weight = factor.get("weight") or 0.0
-        metadata = factor.get("metadata") or {}
-        direction = metadata.get("direction")
-        if not direction and score is not None:
-            direction = _derive_direction(score)
-        categories[category] = {
-            "factor": factor,
-            "score": score,
-            "weight": weight,
-            "direction": direction or "neutral",
-        }
-
-    confirmed: List[str] = []
-    opposed: List[str] = []
-    neutral: List[str] = []
-
-    for category, data in categories.items():
-        direction = data["direction"]
-        score = data["score"]
-        weight = data["weight"]
-        if signal_type in _ACTIONABLE_SIGNALS and direction == target_direction:
-            confirmed.append(category)
-            if score is not None and weight:
-                aggregate += float(score) * float(weight)
-                weight_sum += float(weight)
-        elif signal_type in _ACTIONABLE_SIGNALS and direction in {"bullish", "bearish"} and direction != target_direction:
-            opposed.append(category)
-        else:
-            neutral.append(category)
-
-    aggregate_score = aggregate / weight_sum if weight_sum else None
-
-    return len(confirmed), {
-        "categories": categories,
-        "confirmed": confirmed,
-        "opposed": opposed,
-        "neutral": neutral,
-        "aggregate_score": aggregate_score,
-        "weight_sum": weight_sum,
-    }
-
-
-def _derive_direction(score: float) -> str:
-    if score is None:
-        return "neutral"
-    if score >= 0.55:
-        return "bullish"
-    if score <= 0.45:
-        return "bearish"
-    return "neutral"
 
 
 def _build_plan_details(
@@ -614,19 +540,43 @@ def _build_rationale(
     explanation: Dict[str, Any],
     actionable: bool,
     hold_reasons: List[str],
-    category_info: Dict[str, Any],
+    composite_context: Dict[str, Any],
 ) -> List[str]:
     points: List[str] = []
 
-    if actionable:
-        confirmed = category_info.get("confirmed", [])
-        if confirmed:
-            confirmed_str = ", ".join(sorted(c.title() for c in confirmed))
-            points.append(f"Confluence across {len(confirmed)} categories: {confirmed_str}.")
+    composite_score = composite_context.get("score")
+    contributions = composite_context.get("contributions", {})
+    category_scores = composite_context.get("category_scores", {})
+
+    if actionable and composite_score is not None:
+        positive = [
+            (category, contributions.get(category, 0.0))
+            for category in _COMPOSITE_CATEGORIES
+            if contributions.get(category, 0.0) > 0
+        ]
+        positive.sort(key=lambda item: item[1], reverse=True)
+        if positive:
+            driver_parts = [
+                f"{_format_category_name(category)} {category_scores.get(category, 0.0):.2f}"
+                for category, _ in positive[:3]
+            ]
+            points.append(
+                f"Composite score {composite_score:.2f} driven by {', '.join(driver_parts)}."
+            )
+        else:
+            points.append(f"Composite score {composite_score:.2f} met actionable threshold.")
     else:
         for reason in hold_reasons:
             if reason:
                 points.append(reason)
+
+    missing_categories = composite_context.get("missing_categories", [])
+    if missing_categories:
+        points.append(
+            "Missing category data: "
+            + ", ".join(_format_category_name(cat) for cat in missing_categories)
+            + " (weighted 0)."
+        )
 
     primary_reason = explanation.get("primary_reason")
     if primary_reason:
@@ -652,7 +602,7 @@ def _build_rationale(
         seen.add(item)
 
     if not ordered:
-        ordered.append("No tradable signal; insufficient confirmations from analyzers.")
+        ordered.append("Composite analysis did not produce actionable insight.")
 
     return ordered[:6]
 
@@ -748,51 +698,203 @@ def _extract_weights(
     return normalized
 
 
+def _resolve_composite_thresholds(
+    metadata: Dict[str, Any],
+    params: Dict[str, Any],
+) -> Tuple[float, float]:
+    def _lookup(source: Optional[Dict[str, Any]], key: str) -> Optional[float]:
+        if not isinstance(source, dict):
+            return None
+        return _safe_float(source.get(key))
+
+    buy = _lookup(params, "buy_threshold")
+    if buy is None:
+        buy = _lookup(metadata, "buy_threshold")
+    composite_section = metadata.get("composite")
+    if buy is None:
+        buy = _lookup(composite_section, "buy_threshold")
+    analysis_debug = metadata.get("analysis_debug")
+    if buy is None:
+        buy = _lookup(analysis_debug, "buy_threshold")
+
+    sell = _lookup(params, "sell_threshold")
+    if sell is None:
+        sell = _lookup(metadata, "sell_threshold")
+    if sell is None:
+        sell = _lookup(composite_section, "sell_threshold")
+    if sell is None:
+        sell = _lookup(analysis_debug, "sell_threshold")
+
+    buy = float(clamp(buy if buy is not None else 0.6, 0.0, 1.0))
+    sell = float(clamp(sell if sell is not None else 0.4, 0.0, 1.0))
+    return buy, sell
+
+
+def _signal_from_composite(
+    composite_score: float,
+    buy_threshold: float,
+    sell_threshold: float,
+) -> str:
+    if composite_score >= buy_threshold:
+        return "BUY"
+    if composite_score <= sell_threshold:
+        return "SELL"
+    return "HOLD"
+
+
+def _extract_category_scores(factors: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    category_values: Dict[str, List[float]] = {}
+    category_directions: Dict[str, str] = {}
+
+    for factor in factors:
+        name = factor.get("factor_name")
+        category = _FACTOR_CATEGORY_MAP.get(name, name)
+        if not category:
+            continue
+
+        score = factor.get("score")
+        if score is not None:
+            try:
+                category_values.setdefault(category, []).append(float(score))
+            except (TypeError, ValueError):
+                continue
+
+        metadata = factor.get("metadata") or {}
+        direction = metadata.get("direction")
+        if direction and category not in category_directions:
+            category_directions[category] = direction
+
+    category_data: Dict[str, Dict[str, Any]] = {}
+    for category, values in category_values.items():
+        if values:
+            category_data[category] = {
+                "score": sum(values) / len(values),
+                "direction": category_directions.get(category),
+            }
+
+    for category, direction in category_directions.items():
+        category_data.setdefault(category, {"score": None, "direction": direction})
+
+    return category_data
+
+
+def _compute_composite_context(
+    factors: List[Dict[str, Any]],
+    weights: Dict[str, float],
+) -> Dict[str, Any]:
+    category_data = _extract_category_scores(factors)
+    filtered_weights = {category: weights.get(category, 0.0) for category in _COMPOSITE_CATEGORIES}
+    weight_total = sum(filtered_weights.values())
+    if weight_total <= 0:
+        normalized_weights = {category: 1.0 / len(_COMPOSITE_CATEGORIES) for category in _COMPOSITE_CATEGORIES}
+    else:
+        normalized_weights = {
+            category: safe_div(filtered_weights[category], weight_total, default=0.0)
+            for category in _COMPOSITE_CATEGORIES
+        }
+
+    contributions: Dict[str, float] = {}
+    missing_categories: List[str] = []
+    category_scores: Dict[str, Optional[float]] = {}
+
+    for category in _COMPOSITE_CATEGORIES:
+        data = category_data.get(category, {})
+        score = data.get("score")
+        category_scores[category] = score
+        if score is None:
+            contributions[category] = 0.0
+            missing_categories.append(category)
+        else:
+            contributions[category] = normalized_weights.get(category, 0.0) * float(score)
+
+    composite_score = clamp(sum(contributions.values()), 0.0, 1.0)
+    top_contributors = sorted(
+        (
+            (category, contribution)
+            for category, contribution in contributions.items()
+            if contribution > 0
+        ),
+        key=lambda item: item[1],
+        reverse=True,
+    )
+
+    directions = {
+        category: data.get("direction")
+        for category, data in category_data.items()
+        if data.get("direction")
+    }
+
+    return {
+        "score": composite_score,
+        "weights": normalized_weights,
+        "category_scores": category_scores,
+        "contributions": contributions,
+        "missing_categories": missing_categories,
+        "top_contributors": top_contributors,
+        "directions": directions,
+    }
+
+
+def _format_category_name(category: str) -> str:
+    return category.replace("_", " ").title()
+
+
 def _build_metadata_block(
     payload: Dict[str, Any],
     timeframe: str,
-    category_info: Dict[str, Any],
+    composite_context: Dict[str, Any],
     plan_details: PlanDetails,
     actionable: bool,
+    buy_threshold: float,
+    sell_threshold: float,
+    composite_score: float,
+    original_signal_type: str,
 ) -> Dict[str, Any]:
-    metadata = {
+    metadata: Dict[str, Any] = {
         "symbol": payload.get("symbol"),
         "timestamp": payload.get("timestamp"),
         "timeframe": timeframe,
-        "category_confirmations": len(category_info.get("confirmed", [])),
-        "confirmed_categories": category_info.get("confirmed"),
-        "opposing_categories": category_info.get("opposed"),
-        "aggregate_confirmation_score": category_info.get("aggregate_score"),
         "actionable": actionable,
+        "composite_score": composite_score,
+        "composite_weights": composite_context.get("weights"),
+        "category_scores": composite_context.get("category_scores"),
+        "category_contributions": composite_context.get("contributions"),
+        "missing_categories": composite_context.get("missing_categories"),
+        "buy_threshold": buy_threshold,
+        "sell_threshold": sell_threshold,
+        "original_signal_type": original_signal_type,
     }
+
+    top_contributors = composite_context.get("top_contributors") or []
+    if top_contributors:
+        metadata["top_contributors"] = [
+            {"category": category, "contribution": contribution}
+            for category, contribution in top_contributors[:3]
+        ]
+
+    directions = composite_context.get("directions")
+    if directions:
+        metadata["category_directions"] = directions
+
     if plan_details.holding_horizon_bars is not None:
         metadata["holding_horizon_bars"] = plan_details.holding_horizon_bars
     if plan_details.entry_zone:
         metadata["entry_zone"] = plan_details.entry_zone
-    return {key: value for key, value in metadata.items() if value is not None}
+
+    return {key: value for key, value in metadata.items() if value not in (None, {}, [])}
 
 
 def _convert_confidence(
-    confidence: Any,
+    composite_score: float,
     actionable: bool,
-    confirmations: int,
-    threshold: int,
 ) -> int:
-    try:
-        base = float(confidence)
-    except (TypeError, ValueError):
-        base = 0.0
-    base = clamp(base, 0.0, 1.0)
+    distance = clamp(abs(composite_score - 0.5) * 2.0, 0.0, 1.0)
+    confidence_value = round(1 + 9 * distance)
 
-    if actionable and threshold:
-        delta = confirmations - threshold
-        if delta > 0:
-            base = clamp(base + delta * 0.05, 0.0, 1.0)
-    elif not actionable:
-        base = clamp(min(base, 0.5), 0.0, 1.0)
+    if not actionable:
+        confidence_value = max(1, min(confidence_value, 5))
 
-    scaled = int(round(base * 10))
-    return int(clamp(float(scaled), 1.0, 10.0))
+    return int(clamp(float(confidence_value), 1.0, 10.0))
 
 
 def _safe_float(value: Any, default: Optional[float] = None) -> Optional[float]:

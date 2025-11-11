@@ -380,6 +380,8 @@ def analyze_multitimeframe_factors(
     context: Optional[Any] = None
     base_candles: Sequence[Candle] = []
 
+    mt_metadata: Dict[str, Any] = {}
+
     if isinstance(main_candles, Sequence):
         base_candles = main_candles
     elif hasattr(main_candles, "multi_timeframe") and hasattr(main_candles, "extras"):
@@ -388,6 +390,8 @@ def analyze_multitimeframe_factors(
 
         if multi_timeframe_candles is None:
             mt_payload = context.multi_timeframe if isinstance(context.multi_timeframe, dict) else {}
+            if isinstance(mt_payload, dict):
+                mt_metadata = dict(mt_payload.get("metadata") or {})
             mt_candles = mt_payload.get("candles")
             if isinstance(mt_candles, dict):
                 multi_timeframe_candles = {
@@ -396,6 +400,8 @@ def analyze_multitimeframe_factors(
 
         if multi_timeframe_strengths is None:
             mt_payload = context.multi_timeframe if isinstance(context.multi_timeframe, dict) else {}
+            if not mt_metadata and isinstance(mt_payload, dict):
+                mt_metadata = dict(mt_payload.get("metadata") or {})
             mt_strengths = mt_payload.get("trend_strength")
             if isinstance(mt_strengths, dict):
                 multi_timeframe_strengths = mt_strengths
@@ -430,14 +436,41 @@ def analyze_multitimeframe_factors(
     except (TypeError, ValueError):
         trend_lookback = 14
 
+    requested_timeframes = list(mt_metadata.get("requested_timeframes", []))
+    missing_timeframes = list(mt_metadata.get("missing_timeframes", []))
+
     if not multi_timeframe_candles:
+        if not missing_timeframes and requested_timeframes:
+            missing_timeframes = list(requested_timeframes)
+        note = mt_metadata.get("note")
+        if not note:
+            if missing_timeframes:
+                note = (
+                    "Multi-timeframe data unavailable for "
+                    + ", ".join(missing_timeframes)
+                    + "; treated as neutral."
+                )
+            elif requested_timeframes:
+                note = (
+                    "Multi-timeframe data unavailable; requested timeframes "
+                    + ", ".join(requested_timeframes)
+                    + " not provided."
+                )
+            else:
+                note = "Multi-timeframe data unavailable; treated as neutral."
+
+        missing_flags = {
+            tf: {"available": False, "reason": "missing"}
+            for tf in missing_timeframes
+        }
+
         return {
             "final_score": 0.5,
             "direction": "neutral",
             "confidence": 0,
-            "rationale": "No multi-timeframe data available",
+            "rationale": note,
             "emoji": "⚪",
-            "per_timeframe_flags": {},
+            "per_timeframe_flags": missing_flags,
             "components": {
                 "alignment": {
                     "alignment_score": 0.5,
@@ -459,9 +492,14 @@ def analyze_multitimeframe_factors(
             },
             "metadata": {
                 "timeframe_count": 0,
+                "timeframes": [],
+                "requested_timeframes": requested_timeframes,
+                "missing_timeframes": missing_timeframes,
                 "parameters": {
                     "trend_lookback": trend_lookback,
                 },
+                "notes": note,
+                "source_metadata": dict(mt_metadata),
             },
         }
 
@@ -499,18 +537,41 @@ def analyze_multitimeframe_factors(
             "direction": direction,
             "emoji": _get_direction_emoji(direction),
             "candle_count": len(candles),
+            "available": True,
         }
+
+    if not requested_timeframes:
+        requested_timeframes = list(multi_timeframe_candles.keys())
+    dynamic_missing = [tf for tf in requested_timeframes if tf not in timeframe_strengths]
+    if dynamic_missing:
+        missing_timeframes = sorted(set(missing_timeframes) | set(dynamic_missing))
+    for tf in missing_timeframes:
+        per_timeframe_flags.setdefault(tf, {"available": False, "reason": "missing"})
 
     num_timeframes = len(timeframe_strengths)
 
     if num_timeframes == 0:
+        if not missing_timeframes and requested_timeframes:
+            missing_timeframes = list(requested_timeframes)
+        note_text = mt_metadata.get("note")
+        if not note_text:
+            if missing_timeframes:
+                note_text = (
+                    "Insufficient multi-timeframe data; missing: "
+                    + ", ".join(missing_timeframes)
+                    + "."
+                )
+            else:
+                note_text = "Insufficient multi-timeframe data; treated as neutral."
+        for tf in missing_timeframes:
+            per_timeframe_flags.setdefault(tf, {"available": False, "reason": "missing"})
         return {
             "final_score": 0.5,
             "direction": "neutral",
             "confidence": 0,
-            "rationale": "Insufficient multi-timeframe data",
+            "rationale": note_text,
             "emoji": "⚪",
-            "per_timeframe_flags": {},
+            "per_timeframe_flags": per_timeframe_flags,
             "components": {
                 "alignment": {
                     "alignment_score": 0.5,
@@ -532,11 +593,29 @@ def analyze_multitimeframe_factors(
             },
             "metadata": {
                 "timeframe_count": 0,
+                "timeframes": list(timeframe_strengths.keys()),
+                "requested_timeframes": requested_timeframes,
+                "missing_timeframes": missing_timeframes,
                 "parameters": {
                     "trend_lookback": trend_lookback,
                 },
+                "notes": note_text,
+                "source_metadata": dict(mt_metadata),
             },
         }
+
+    note_text = mt_metadata.get("note")
+    if missing_timeframes:
+        missing_note = (
+            "Missing multi-timeframe data for "
+            + ", ".join(missing_timeframes)
+            + "; treated as neutral."
+        )
+        if note_text:
+            if ", ".join(missing_timeframes) not in note_text:
+                note_text = f"{note_text} {missing_note}"
+        else:
+            note_text = missing_note
 
     alignment = _analyze_timeframe_alignment(timeframe_directions)
     agreement = _analyze_trend_agreement(timeframe_strengths)
@@ -577,6 +656,34 @@ def analyze_multitimeframe_factors(
 
     confidence = _calculate_multitf_confidence(alignment, agreement, num_timeframes)
     rationale = _generate_multitf_rationale(alignment, agreement, trend_force, direction)
+    if missing_timeframes:
+        missing_msg = (
+            "Missing data for " + ", ".join(missing_timeframes) + " treated as neutral."
+        )
+        if missing_msg not in rationale:
+            rationale = f"{rationale}; {missing_msg}"
+
+    metadata_block: Dict[str, Any] = {
+        "timeframe_count": num_timeframes,
+        "timeframes": list(timeframe_strengths.keys()),
+        "parameters": {
+            "trend_lookback": trend_lookback,
+            "alignment_weight": alignment_weight,
+            "agreement_weight": agreement_weight,
+            "trend_force_weight": trend_force_weight,
+        },
+        "base_candle_count": len(base_candles),
+        "provided_strengths": bool(multi_timeframe_strengths),
+        "requested_timeframes": requested_timeframes,
+        "missing_timeframes": missing_timeframes,
+        "fetched_timeframes": list(timeframe_strengths.keys()),
+        "notes": note_text,
+        "source_metadata": dict(mt_metadata),
+    }
+    if metadata_block.get("notes") is None:
+        metadata_block.pop("notes", None)
+    if not metadata_block.get("source_metadata"):
+        metadata_block.pop("source_metadata", None)
 
     return {
         "final_score": round(final_score, 3),
@@ -617,18 +724,7 @@ def analyze_multitimeframe_factors(
             "agreement": round(agreement_score, 3),
             "trend_force": round(trend_force_score, 3),
         },
-        "metadata": {
-            "timeframe_count": num_timeframes,
-            "timeframes": list(timeframe_strengths.keys()),
-            "parameters": {
-                "trend_lookback": trend_lookback,
-                "alignment_weight": alignment_weight,
-                "agreement_weight": agreement_weight,
-                "trend_force_weight": trend_force_weight,
-            },
-            "base_candle_count": len(base_candles),
-            "provided_strengths": bool(multi_timeframe_strengths),
-        },
+        "metadata": metadata_block,
     }
 
 

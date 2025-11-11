@@ -353,21 +353,65 @@ class RealDataValidator:
     
     def _validate_multitimeframe_data(self, mtf_data: Dict[str, Any]) -> None:
         """Validate multi-timeframe data consistency."""
-        # Check that we have consistent data across timeframes
+        validated_candles = False
+        candles_section = mtf_data.get("candles")
+        if isinstance(candles_section, dict) and candles_section:
+            validated_candles = True
+            for tf, entries in candles_section.items():
+                if not isinstance(entries, list) or not entries:
+                    self.validation_errors.append(
+                        f"Multi-timeframe candles missing or empty for timeframe: {tf}"
+                    )
+                    continue
+                previous_ts: Optional[int] = None
+                for candle in entries:
+                    if not isinstance(candle, dict):
+                        self.validation_errors.append(
+                            f"Invalid candle structure for timeframe {tf}: {candle!r}"
+                        )
+                        break
+                    ts = candle.get("ts")
+                    if not isinstance(ts, (int, float)) or not self._is_valid_timestamp(ts):
+                        self.validation_errors.append(
+                            f"Invalid timestamp in multi-timeframe candles for {tf}: {ts}"
+                        )
+                        break
+                    if previous_ts is not None and ts <= previous_ts:
+                        self.validation_errors.append(
+                            f"Non-monotonic timestamps in multi-timeframe candles for {tf}"
+                        )
+                        break
+                    previous_ts = int(ts)
+                    for price_field in ("open", "high", "low", "close"):
+                        value = candle.get(price_field)
+                        if value is not None and (not isinstance(value, (int, float)) or value < 0):
+                            self.validation_errors.append(
+                                f"Invalid {price_field} in multi-timeframe candles for {tf}: {value}"
+                            )
+                            break
+                volume_value = entries[-1].get("volume") if entries else None
+                if volume_value is not None and (not isinstance(volume_value, (int, float)) or volume_value < 0):
+                    self.validation_errors.append(
+                        f"Invalid volume in multi-timeframe candles for {tf}: {volume_value}"
+                    )
+        
         trend_strength = mtf_data.get("trend_strength", {})
         direction = mtf_data.get("direction", {})
         
-        for tf in trend_strength.keys():
-            if tf not in direction:
-                self.validation_errors.append(
-                    f"Missing direction data for timeframe: {tf}"
-                )
-            
-            strength = trend_strength[tf]
-            if not isinstance(strength, (int, float)) or not (0 <= strength <= 100):
-                self.validation_errors.append(
-                    f"Invalid trend strength for {tf}: {strength}"
-                )
+        if trend_strength or direction:
+            for tf in trend_strength.keys():
+                if tf not in direction:
+                    self.validation_errors.append(
+                        f"Missing direction data for timeframe: {tf}"
+                    )
+                
+                strength = trend_strength[tf]
+                if not isinstance(strength, (int, float)) or not (0 <= strength <= 100):
+                    self.validation_errors.append(
+                        f"Invalid trend strength for {tf}: {strength}"
+                    )
+        elif not validated_candles:
+            self.validation_errors.append("Multi-timeframe data missing candles and trend strength information")
     
     def _validate_mtf_time_continuity(self, mtf_data: Dict[str, Any], current_time: float) -> None:
         """Validate time continuity in multi-timeframe data."""

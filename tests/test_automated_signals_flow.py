@@ -10,11 +10,17 @@ from indicator_collector.trading_system.automated_signals import run_automated_s
 class _StubBinanceSource:
     """Stub data source returning deterministic candles for testing."""
 
-    def __init__(self, frame: pd.DataFrame) -> None:
-        self._frame = frame
+    def __init__(self, frames: Dict[str, pd.DataFrame]) -> None:
+        self._frames = frames
+        self.calls: list[tuple[str, str, datetime, datetime]] = []
 
     def load_candles(self, symbol: str, timeframe, start: datetime, end: datetime) -> pd.DataFrame:  # noqa: ANN001
-        return self._frame.copy()
+        key = timeframe.value if hasattr(timeframe, "value") else str(timeframe)
+        self.calls.append((symbol, key, start, end))
+        frame = self._frames.get(key)
+        if frame is None:
+            raise ValueError(f"No frame registered for timeframe {key}")
+        return frame.copy()
 
 
 def _build_candles(start: datetime, interval_seconds: int, count: int) -> pd.DataFrame:

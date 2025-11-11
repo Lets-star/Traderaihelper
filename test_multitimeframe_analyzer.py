@@ -292,7 +292,10 @@ class TestMultitimeframeAnalyzer(unittest.TestCase):
         assert result["final_score"] == 0.5
         assert result["direction"] == "neutral"
         assert result["confidence"] == 0
-        assert result["rationale"] == "No multi-timeframe data available"
+        assert "multi-timeframe" in result["rationale"].lower()
+        metadata = result["metadata"]
+        assert metadata["timeframe_count"] == 0
+        assert metadata.get("missing_timeframes", []) == []
 
     def test_analyze_multitimeframe_factors_all_aligned_bullish(self):
         """Test multi-timeframe analysis with all timeframes aligned bullish."""
@@ -399,6 +402,7 @@ class TestMultitimeframeAnalyzer(unittest.TestCase):
         assert "5m" in flags
         assert "15m" in flags
         assert "1h" in flags
+        assert flags["5m"].get("available") is True
         
         # Check structure of flags
         for tf_name, flag_data in flags.items():

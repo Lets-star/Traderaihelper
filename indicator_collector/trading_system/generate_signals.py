@@ -890,10 +890,6 @@ def _convert_confidence(
 ) -> int:
     distance = clamp(abs(composite_score - 0.5) * 2.0, 0.0, 1.0)
     confidence_value = round(1 + 9 * distance)
-
-    if not actionable:
-        confidence_value = max(1, min(confidence_value, 5))
-
     return int(clamp(float(confidence_value), 1.0, 10.0))
 
 

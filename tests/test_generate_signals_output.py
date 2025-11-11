@@ -1,8 +1,30 @@
 import math
+from typing import Any, Dict
 
 import pytest
 
 from indicator_collector.trading_system.generate_signals import generate_signals
+
+
+def _expected_composite_score(payload: Dict[str, Any]) -> float:
+    weights = payload.get("metadata", {}).get("config_weights", {})
+    factor_scores = {factor.get("factor_name"): factor.get("score") for factor in payload.get("factors", [])}
+    category_map = {
+        "technical": factor_scores.get("technical_analysis"),
+        "market_structure": factor_scores.get("market_structure"),
+        "volume": factor_scores.get("volume_analysis"),
+        "sentiment": factor_scores.get("sentiment"),
+        "multitimeframe": factor_scores.get("multitimeframe_alignment"),
+    }
+    usable_categories = {cat: score for cat, score in category_map.items() if score is not None}
+    total_weight = sum(weights.get(cat, 0.0) for cat in usable_categories)
+    if total_weight <= 0:
+        return 0.5
+    composite_score = 0.0
+    for category, score in usable_categories.items():
+        normalized_weight = weights.get(category, 0.0) / total_weight
+        composite_score += float(score) * normalized_weight
+    return composite_score
 
 
 class TestGenerateSignalsOutput:
@@ -91,8 +113,10 @@ class TestGenerateSignalsOutput:
         assert explicit["holding_period"] == "medium"
         assert explicit["holding_horizon_bars"] == 18
         assert math.isclose(sum(explicit["weights"].values()), 1.0, rel_tol=1e-6)
-        assert explicit["metadata"]["category_confirmations"] >= 3
-        assert "Bullish breakout" in " ".join(explicit["rationale"])
+        metadata = explicit["metadata"]
+        assert pytest.approx(metadata["composite_score"], rel=1e-6) == _expected_composite_score(payload)
+        assert metadata.get("missing_categories") == []
+        assert "Composite score" in " ".join(explicit["rationale"])
 
     def test_generate_signals_hold_due_to_confirmations(self):
         payload = {
@@ -155,8 +179,12 @@ class TestGenerateSignalsOutput:
         assert explicit["stop_loss"] is None
         assert explicit["take_profits"] == {}
         assert explicit["position_size_pct"] is None
-        assert "insufficient" in " ".join(explicit["rationale"]).lower()
-        assert explicit["metadata"]["category_confirmations"] == 0
+        rationale_text = " ".join(explicit["rationale"]).lower()
+        assert "composite score" in rationale_text
+        metadata = explicit["metadata"]
+        assert pytest.approx(metadata["composite_score"], rel=1e-6) == _expected_composite_score(payload)
+        missing_categories = set(metadata.get("missing_categories", []))
+        assert missing_categories == {"market_structure", "multitimeframe"}
 
     def test_generate_signals_minimal_payload_defaults(self):
         payload = {
@@ -188,8 +216,10 @@ class TestGenerateSignalsOutput:
         }
         assert explicit["signal"] in {"BUY", "SELL", "HOLD"}
         assert pytest.approx(1.0, rel=1e-6) == sum(explicit["weights"].values())
-        assert explicit["metadata"]["timeframe"].lower() == "1h"
+        metadata = explicit["metadata"]
+        assert metadata["timeframe"].lower() == "1h"
         assert isinstance(explicit.get("rationale"), list)
+        assert pytest.approx(metadata.get("composite_score", 0.0), rel=1e-6) == 0.6
 
     def test_generate_signals_hold_without_position_plan(self):
         payload = {
@@ -244,3 +274,64 @@ class TestGenerateSignalsOutput:
         # Ensure rationale mentions missing plan
         rationale_text = " ".join(explicit.get("rationale", []))
         assert "plan" in rationale_text.lower()
+
+    def test_generate_signals_respects_overridden_thresholds(self):
+        payload = {
+            "signal_type": "BUY",
+            "timestamp": 1700000000000,
+            "symbol": "BTCUSDT",
+            "timeframe": "1h",
+            "factors": [
+                {
+                    "factor_name": "technical_analysis",
+                    "score": 0.74,
+                    "weight": 0.25,
+                    "metadata": {"direction": "bullish"},
+                },
+                {
+                    "factor_name": "sentiment",
+                    "score": 0.68,
+                    "weight": 0.15,
+                    "metadata": {"direction": "bullish"},
+                },
+                {
+                    "factor_name": "multitimeframe_alignment",
+                    "score": 0.65,
+                    "weight": 0.10,
+                    "metadata": {"direction": "bullish"},
+                },
+                {
+                    "factor_name": "volume_analysis",
+                    "score": 0.62,
+                    "weight": 0.20,
+                    "metadata": {"direction": "bullish"},
+                },
+                {
+                    "factor_name": "market_structure",
+                    "score": 0.70,
+                    "weight": 0.15,
+                    "metadata": {"direction": "bullish"},
+                },
+            ],
+            "metadata": {
+                "config_weights": {
+                    "technical": 0.25,
+                    "sentiment": 0.15,
+                    "multitimeframe": 0.10,
+                    "volume": 0.20,
+                    "market_structure": 0.15,
+                    "composite": 0.15,
+                },
+                "composite": {
+                    "buy_threshold": 0.7,
+                    "sell_threshold": 0.35,
+                },
+            },
+        }
+
+        explicit = generate_signals(payload)
+
+        assert explicit["signal"] == "HOLD"
+        metadata = explicit["metadata"]
+        assert pytest.approx(metadata["buy_threshold"], rel=1e-6) == 0.7
+        assert pytest.approx(metadata["composite_score"], rel=1e-6) == _expected_composite_score(payload)

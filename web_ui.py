@@ -2843,7 +2843,7 @@ def main():
                         for idx, reason in enumerate(hold_reasons, 1):
                             st.write(f"{idx}. {reason}")
                     else:
-                        st.info("Signal is currently on HOLD awaiting additional confirmations.")
+                        st.info("Signal is currently on HOLD while the composite score remains neutral.")
 
             with detail_right:
                 if actionable:
@@ -2866,6 +2866,59 @@ def main():
                             st.write(f"• {component.title()}: {weight:.2f}")
                     else:
                         st.write("No component weights available.")
+
+            composite_meta = signal_data.get("metadata", {}) or {}
+            composite_score = composite_meta.get("composite_score")
+            if composite_score is not None:
+                st.markdown("### 🧩 Composite Breakdown")
+                st.metric("Composite Score", f"{composite_score:.2f}")
+                st.caption(
+                    f"Buy ≥ {composite_meta.get('buy_threshold', 0.6):.2f} · Sell ≤ {composite_meta.get('sell_threshold', 0.4):.2f}"
+                )
+
+                top_contributors = composite_meta.get("top_contributors") or []
+                if top_contributors:
+                    readable = [
+                        f"{item.get('category', '').replace('_', ' ').title()}: {item.get('contribution', 0.0):.3f}"
+                        for item in top_contributors
+                    ]
+                    st.markdown("**Top Drivers:** " + ", ".join(readable))
+
+                weights = composite_meta.get("composite_weights") or {}
+                scores = composite_meta.get("category_scores") or {}
+                contributions = composite_meta.get("category_contributions") or {}
+                st.markdown("**Category Detail**")
+                for category in ["technical", "market_structure", "volume", "sentiment", "multitimeframe"]:
+                    weight = weights.get(category)
+                    score = scores.get(category)
+                    contribution = contributions.get(category)
+                    parts = []
+                    if weight is not None:
+                        parts.append(f"weight {weight:.2f}")
+                    if score is not None:
+                        parts.append(f"score {score:.2f}")
+                    if contribution is not None:
+                        parts.append(f"contribution {contribution:.3f}")
+                    if parts:
+                        st.write(f"• {category.replace('_', ' ').title()}: " + ", ".join(parts))
+
+                missing_categories = composite_meta.get("missing_categories") or []
+                if missing_categories:
+                    st.warning(
+                        "Composite weights falling back for missing categories: "
+                        + ", ".join(cat.replace("_", " ").title() for cat in missing_categories)
+                    )
+
+            mt_meta = (processed_signal.get("multi_timeframe") or {}).get("metadata", {}) if processed_signal else {}
+            mt_note = mt_meta.get("note") or mt_meta.get("notes")
+            if mt_note:
+                st.info(f"Multi-timeframe analysis: {mt_note}")
+            mt_missing = mt_meta.get("missing_timeframes") or []
+            if mt_missing:
+                st.caption(
+                    "Missing timeframe data: "
+                    + ", ".join(tf.upper() for tf in mt_missing)
+                )
 
             st.markdown("---")
 

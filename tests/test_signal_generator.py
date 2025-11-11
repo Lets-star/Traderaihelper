@@ -1,6 +1,7 @@
 """Tests for the trading signal generator."""
 
 import unittest
+from typing import Dict
 from unittest.mock import Mock, patch
 
 from indicator_collector.trading_system.signal_generator import (
@@ -19,6 +20,7 @@ from indicator_collector.trading_system.interfaces import (
     FactorScore,
     TradingSignalPayload,
 )
+from indicator_collector.trading_system.backtester import ParameterSet
 
 
 class TestSignalConfig(unittest.TestCase):
@@ -189,6 +191,149 @@ class TestFactorCreation(unittest.TestCase):
         self.assertLessEqual(factor.score, 1.0)
         self.assertEqual(factor.weight, 0.15)
         self.assertEqual(factor.metadata["direction"], "bullish")
+
+
+class TestParameterReactivity(unittest.TestCase):
+    """Ensure analyzer parameters influence factor outputs."""
+
+    def _base_weights(self) -> Dict[str, float]:
+        return {
+            "technical": 0.25,
+            "volume": 0.25,
+            "sentiment": 0.20,
+            "market_structure": 0.20,
+            "multitimeframe": 0.10,
+            "composite": 0.0,
+        }
+
+    def test_volume_factor_respects_cvd_multiplier(self):
+        context = AnalyzerContext(
+            symbol="BTC/USDT",
+            timeframe="1h",
+            timestamp=1710000000,
+            current_price=50000.0,
+            ohlcv={"open": 49000, "high": 51000, "low": 48000, "close": 50000, "volume": 1000},
+            indicators={"atr": 15.0},
+            volume_analysis={
+                "context": {"volume_ratio": 1.2, "volume_confidence": 0.65, "atr": 15.0},
+                "cvd": {"change": 45.0},
+                "delta": {"latest": 180.0, "average": 90.0},
+                "vpvr": {
+                    "total_volume": 1000.0,
+                    "poc": 50050.0,
+                    "levels": [
+                        {"price": 50000.0, "volume": 120.0},
+                        {"price": 50050.0, "volume": 180.0},
+                    ],
+                },
+                "smart_money": [],
+            },
+        )
+
+        low_multiplier = ParameterSet(
+            weights=self._base_weights(),
+            indicator_params={"volume": {"cvd_atr_multiplier": 0.5}},
+            timeframe="1h",
+        )
+        high_multiplier = ParameterSet(
+            weights=self._base_weights(),
+            indicator_params={"volume": {"cvd_atr_multiplier": 2.0}},
+            timeframe="1h",
+        )
+
+        bullish_factor = _create_volume_factor(context, low_multiplier)
+        muted_factor = _create_volume_factor(context, high_multiplier)
+
+        self.assertGreater(bullish_factor.score, muted_factor.score)
+
+    def test_structure_factor_respects_swing_window(self):
+        context = AnalyzerContext(
+            symbol="BTC/USDT",
+            timeframe="1h",
+            timestamp=1710001000,
+            current_price=48000.0,
+            ohlcv={"open": 47000, "high": 49000, "low": 46500, "close": 48000, "volume": 1500},
+            indicators={},
+            market_structure={
+                "structure_state": "bullish",
+                "structure_score": 0.58,
+                "liquidity_score": 0.55,
+                "sequence_length": 0,
+                "liquidity_sweep_atr": 1.2,
+            },
+            advanced_metrics={"market_breadth": {"score": 0.62}},
+        )
+
+        tight_structure = ParameterSet(
+            weights=self._base_weights(),
+            indicator_params={"structure": {"swing_window": 3, "min_sequence": 3}},
+            timeframe="1h",
+        )
+        wide_structure = ParameterSet(
+            weights=self._base_weights(),
+            indicator_params={"structure": {"swing_window": 12, "min_sequence": 3}},
+            timeframe="1h",
+        )
+
+        tight_factor = _create_structure_factor(context, tight_structure)
+        wide_factor = _create_structure_factor(context, wide_structure)
+
+        self.assertGreater(wide_factor.score, tight_factor.score)
+
+    def test_composite_factor_respects_category_weights(self):
+        factors = SignalFactors(
+            technical=FactorScore(
+                factor_name="technical_analysis",
+                score=0.55,
+                weight=0.25,
+                metadata={"direction": "bullish"},
+            ),
+            volume=FactorScore(
+                factor_name="volume_analysis",
+                score=0.78,
+                weight=0.25,
+                metadata={"direction": "bullish"},
+            ),
+            structure=FactorScore(
+                factor_name="market_structure",
+                score=0.42,
+                weight=0.25,
+                metadata={"direction": "bearish"},
+            ),
+        )
+
+        volume_heavy = ParameterSet(
+            weights={
+                "technical": 0.15,
+                "volume": 0.55,
+                "sentiment": 0.10,
+                "market_structure": 0.15,
+                "multitimeframe": 0.05,
+                "composite": 0.0,
+            },
+            indicator_params={},
+            timeframe="1h",
+        )
+        technical_heavy = ParameterSet(
+            weights={
+                "technical": 0.55,
+                "volume": 0.20,
+                "sentiment": 0.10,
+                "market_structure": 0.10,
+                "multitimeframe": 0.05,
+                "composite": 0.0,
+            },
+            indicator_params={},
+            timeframe="1h",
+        )
+
+        composite_params_volume = volume_heavy.get_indicator_group("composite")
+        composite_params_tech = technical_heavy.get_indicator_group("composite")
+
+        volume_composite = _create_composite_factor(factors, volume_heavy, composite_params_volume)
+        tech_composite = _create_composite_factor(factors, technical_heavy, composite_params_tech)
+
+        self.assertGreater(volume_composite.score, tech_composite.score)
 
 
 class TestCancellationTriggers(unittest.TestCase):

@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import statistics
-from typing import Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Union, TYPE_CHECKING
 
 from ..math_utils import Candle
 from .interfaces import FactorScore, JsonDict
 from .utils import clamp
+
+if TYPE_CHECKING:  # pragma: no cover - typing helper
+    from .interfaces import AnalyzerContext
 
 
 def _normalize_to_01(value: float, min_val: float = 0.0, max_val: float = 100.0) -> float:
@@ -366,29 +369,67 @@ def _calculate_multitf_confidence(
     return int(confidence)
 
 
+
 def analyze_multitimeframe_factors(
-    main_candles: Sequence[Candle],
-    multi_timeframe_candles: Dict[str, Sequence[Candle]],
+    main_candles: Union[Sequence[Candle], "AnalyzerContext"],
+    multi_timeframe_candles: Optional[Dict[str, Sequence[Candle]]] = None,
     multi_timeframe_strengths: Optional[Dict[str, float]] = None,
+    analysis_params: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, object]:
-    """
-    Analyze multi-timeframe alignment, agreement, and trend force.
-    
-    Args:
-        main_candles: Candle data for the main timeframe
-        multi_timeframe_candles: Dict mapping timeframe names to their candle sequences
-        multi_timeframe_strengths: Dict mapping timeframe names to pre-calculated trend strengths
-        
-    Returns:
-        Dict with comprehensive multi-timeframe analysis including:
-        - final_score: Normalized score (0.0-1.0)
-        - direction: "bullish", "bearish", or "neutral"
-        - confidence: 0-100 confidence metric
-        - rationale: Human-readable explanation
-        - per_timeframe_flags: Per-timeframe analysis details
-        - components: Breakdown of alignment, agreement, trend force
-        - metadata: Timestamp and analysis metadata
-    """
+    """Analyze multi-timeframe alignment, agreement, and trend force."""
+    context: Optional[Any] = None
+    base_candles: Sequence[Candle] = []
+
+    if isinstance(main_candles, Sequence):
+        base_candles = main_candles
+    elif hasattr(main_candles, "multi_timeframe") and hasattr(main_candles, "extras"):
+        context = main_candles
+        extras = context.extras if isinstance(context.extras, dict) else {}
+
+        if multi_timeframe_candles is None:
+            mt_payload = context.multi_timeframe if isinstance(context.multi_timeframe, dict) else {}
+            mt_candles = mt_payload.get("candles")
+            if isinstance(mt_candles, dict):
+                multi_timeframe_candles = {
+                    tf: seq for tf, seq in mt_candles.items() if isinstance(seq, (list, tuple))
+                }
+
+        if multi_timeframe_strengths is None:
+            mt_payload = context.multi_timeframe if isinstance(context.multi_timeframe, dict) else {}
+            mt_strengths = mt_payload.get("trend_strength")
+            if isinstance(mt_strengths, dict):
+                multi_timeframe_strengths = mt_strengths
+
+        if analysis_params is None:
+            indicator_overrides = extras.get("indicator_params")
+            if isinstance(indicator_overrides, dict):
+                mt_params = indicator_overrides.get("multitimeframe")
+                if isinstance(mt_params, dict):
+                    analysis_params = dict(mt_params)
+
+        candle_source = extras.get("candles")
+        if isinstance(candle_source, list):
+            base_candles = candle_source
+    else:
+        base_candles = []
+
+    if multi_timeframe_candles is None:
+        multi_timeframe_candles = {}
+
+    params = dict(analysis_params or {})
+
+    def _safe_weight(value: Any, default: float) -> float:
+        try:
+            weight = float(value)
+        except (TypeError, ValueError):
+            return default
+        return max(0.0, weight)
+
+    try:
+        trend_lookback = max(1, int(params.get("trend_lookback", 14)))
+    except (TypeError, ValueError):
+        trend_lookback = 14
+
     if not multi_timeframe_candles:
         return {
             "final_score": 0.5,
@@ -418,46 +459,50 @@ def analyze_multitimeframe_factors(
             },
             "metadata": {
                 "timeframe_count": 0,
+                "parameters": {
+                    "trend_lookback": trend_lookback,
+                },
             },
         }
-    
-    # Calculate trend strengths and directions for each timeframe
+
     timeframe_strengths: Dict[str, float] = {}
     timeframe_directions: Dict[str, str] = {}
     per_timeframe_flags: Dict[str, object] = {}
-    
+
     for tf_name, candles in multi_timeframe_candles.items():
         if not candles or len(candles) < 3:
             continue
-        
-        # Use provided strength or calculate from candles
+
+        strength: Optional[float] = None
         if multi_timeframe_strengths and tf_name in multi_timeframe_strengths:
-            strength = multi_timeframe_strengths[tf_name]
-        else:
-            strength = _calculate_trend_strength_from_candles(list(candles), lookback=14)
-        
+            strength_value = multi_timeframe_strengths[tf_name]
+            try:
+                strength = float(strength_value)
+            except (TypeError, ValueError):
+                strength = None
+
+        if strength is None:
+            strength = _calculate_trend_strength_from_candles(list(candles), lookback=trend_lookback)
+
         timeframe_strengths[tf_name] = strength
-        
-        # Determine direction from strength
+
         if strength >= 0.65:
             direction = "bullish"
         elif strength <= 0.35:
             direction = "bearish"
         else:
             direction = "neutral"
-        
+
         timeframe_directions[tf_name] = direction
-        
-        # Per-timeframe flags
         per_timeframe_flags[tf_name] = {
             "strength": round(strength, 3),
             "direction": direction,
             "emoji": _get_direction_emoji(direction),
             "candle_count": len(candles),
         }
-    
+
     num_timeframes = len(timeframe_strengths)
-    
+
     if num_timeframes == 0:
         return {
             "final_score": 0.5,
@@ -487,44 +532,52 @@ def analyze_multitimeframe_factors(
             },
             "metadata": {
                 "timeframe_count": 0,
+                "parameters": {
+                    "trend_lookback": trend_lookback,
+                },
             },
         }
-    
-    # Analyze components
+
     alignment = _analyze_timeframe_alignment(timeframe_directions)
     agreement = _analyze_trend_agreement(timeframe_strengths)
     trend_force = _analyze_trend_force(timeframe_strengths, timeframe_directions)
-    
-    # Calculate weighted final score
-    alignment_weight = 0.4
-    agreement_weight = 0.35
-    trend_force_weight = 0.25
-    
+
+    alignment_weight = _safe_weight(params.get("alignment_weight"), 0.4)
+    agreement_weight = _safe_weight(params.get("agreement_weight"), 0.35)
+    trend_force_weight = _safe_weight(
+        params.get("force_weight", params.get("trend_force_weight")),
+        0.25,
+    )
+
+    total_weight = alignment_weight + agreement_weight + trend_force_weight
+    if total_weight > 0:
+        alignment_weight /= total_weight
+        agreement_weight /= total_weight
+        trend_force_weight /= total_weight
+    else:
+        alignment_weight, agreement_weight, trend_force_weight = 0.4, 0.35, 0.25
+
     alignment_score = alignment.get("alignment_score", 0.5)
     agreement_score = agreement.get("agreement_score", 0.5)
     trend_force_score = trend_force.get("trend_force_score", 0.5)
-    
+
     final_score = (
-        alignment_score * alignment_weight +
-        agreement_score * agreement_weight +
-        trend_force_score * trend_force_weight
+        alignment_score * alignment_weight
+        + agreement_score * agreement_weight
+        + trend_force_score * trend_force_weight
     )
     final_score = clamp(final_score, 0.0, 1.0)
-    
-    # Determine overall direction
+
     if final_score >= 0.65:
         direction = "bullish"
     elif final_score <= 0.35:
         direction = "bearish"
     else:
         direction = "neutral"
-    
-    # Calculate confidence
+
     confidence = _calculate_multitf_confidence(alignment, agreement, num_timeframes)
-    
-    # Generate rationale
     rationale = _generate_multitf_rationale(alignment, agreement, trend_force, direction)
-    
+
     return {
         "final_score": round(final_score, 3),
         "direction": direction,
@@ -567,6 +620,14 @@ def analyze_multitimeframe_factors(
         "metadata": {
             "timeframe_count": num_timeframes,
             "timeframes": list(timeframe_strengths.keys()),
+            "parameters": {
+                "trend_lookback": trend_lookback,
+                "alignment_weight": alignment_weight,
+                "agreement_weight": agreement_weight,
+                "trend_force_weight": trend_force_weight,
+            },
+            "base_candle_count": len(base_candles),
+            "provided_strengths": bool(multi_timeframe_strengths),
         },
     }
 

@@ -18,8 +18,9 @@ from .interfaces import (
 from .backtester import ParameterSet
 from .technical_analysis import analyze_technical_factors
 from .sentiment_analyzer import analyze_sentiment_factors
-from .multitimeframe_analyzer import analyze_multitimeframe_factors
+from .multitimeframe_analyzer import analyze_multitimeframe_factors, create_multitimeframe_factor_score
 from .utils import clamp
+from ..timeframes import Timeframe
 
 
 @dataclass
@@ -755,13 +756,8 @@ def generate_trading_signal(
     if config is None:
         config = SignalConfig()
 
-    resolved_indicator_params: Dict[str, Any]
-    if parameter_set:
-        resolved_indicator_params = parameter_set.indicator_params
-    else:
-        resolved_indicator_params = indicator_params or {}
-
-    category_weights = {
+    indicator_overrides = dict(indicator_params or {})
+    base_category_weights = {
         "technical": config.technical_weight,
         "sentiment": config.sentiment_weight,
         "multitimeframe": config.multitimeframe_weight,
@@ -769,11 +765,29 @@ def generate_trading_signal(
         "market_structure": config.structure_weight,
         "composite": config.composite_weight,
     }
-    if parameter_set:
-        normalized_weights = parameter_set.normalized_category_weights()
-        for key, value in normalized_weights.items():
-            if key in category_weights:
-                category_weights[key] = value
+
+    timeframe_hint = getattr(context, "timeframe", None)
+    if not timeframe_hint and indicator_overrides:
+        timeframe_hint = indicator_overrides.get("timeframe")
+    try:
+        normalized_timeframe = (
+            Timeframe.from_value(timeframe_hint).value if timeframe_hint else Timeframe.H1.value
+        )
+    except Exception:
+        normalized_timeframe = Timeframe.H1.value
+
+    active_parameter_set = parameter_set
+    if active_parameter_set is None:
+        active_parameter_set = ParameterSet(
+            weights=dict(base_category_weights),
+            indicator_params=indicator_overrides,
+            category_weights=dict(base_category_weights),
+            timeframe=normalized_timeframe,
+        )
+
+    resolved_indicator_params = active_parameter_set.indicator_params
+    category_weights = active_parameter_set.normalized_category_weights()
+    parameter_set = active_parameter_set
 
     factors = SignalFactors()
 
@@ -865,16 +879,28 @@ def generate_trading_signal(
         factors.sentiment = None
 
     try:
-        mt_payload = analyze_multitimeframe_factors(context)
-        if mt_payload.factors:
-            base = mt_payload.factors[0]
+        mt_params = parameter_set.get_indicator_group("multitimeframe") if parameter_set else None
+        mt_analysis = analyze_multitimeframe_factors(
+            context,
+            analysis_params=mt_params,
+        )
+        mt_factor_scores: List[FactorScore] = []
+        if hasattr(mt_analysis, "factors"):
+            mt_factor_scores = list(getattr(mt_analysis, "factors"))  # type: ignore[attr-defined]
+        elif isinstance(mt_analysis, dict):
+            mt_factor_scores = [create_multitimeframe_factor_score(mt_analysis)]
+        if mt_factor_scores:
+            base = mt_factor_scores[0]
+            metadata = dict(base.metadata)
+            if isinstance(mt_analysis, dict):
+                metadata.setdefault("analysis_summary", mt_analysis)
             factors.multitimeframe = FactorScore(
                 factor_name=base.factor_name,
                 score=base.score,
                 weight=category_weights.get("multitimeframe", config.multitimeframe_weight),
                 description=base.description,
                 emoji=base.emoji,
-                metadata=dict(base.metadata),
+                metadata=metadata,
             )
     except Exception:
         factors.multitimeframe = None

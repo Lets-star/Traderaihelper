@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import sys
 from typing import Any, Dict, Optional
@@ -68,6 +69,15 @@ def ui_key(prefix: str, label: str) -> str:
     """
     label_slug = label.lower().replace(" ", "_").replace("%", "pct")
     return f"{prefix}_{label_slug}"
+
+
+def stable_hash(payload: Any) -> str:
+    """Create a stable SHA1 hash for caching and change detection."""
+    try:
+        serialized = json.dumps(payload, sort_keys=True, default=str)
+    except TypeError:
+        serialized = json.dumps(str(payload), sort_keys=True)
+    return hashlib.sha1(serialized.encode("utf-8")).hexdigest()
 
 
 def num_int(
@@ -229,11 +239,15 @@ def cached_run_automated_signals(
     timeframe: str,
     start_iso: str,
     end_iso: str,
+    params_hash: str,
+    weights_hash: str,
+    data_version: str,
     signal_config_json: str,
     indicator_params_json: str,
     signal_params_json: str,
 ) -> Dict[str, Any]:
     """Cache Binance signal generation results for performance."""
+    _ = data_version  # ensure cache invalidation when upstream data changes
     start_dt = dt.datetime.fromisoformat(start_iso)
     end_dt = dt.datetime.fromisoformat(end_iso)
 
@@ -282,6 +296,8 @@ def cached_run_automated_signals(
         "candles": result.candles,
         "processed_payload": result.processed_payload,
         "explicit_signal": result.explicit_signal,
+        "params_hash": params_hash,
+        "weights_hash": weights_hash,
     }
 
 
@@ -2607,6 +2623,12 @@ def main():
         st.subheader("🤖 Automated Signals")
         state = st.session_state.setdefault(AUTOMATED_SIGNALS_STATE_KEY, {})
 
+        cache_identity = f"{config_store.symbol}|{config_store.timeframe}"
+        previous_identity = state.get("cache_identity")
+        if previous_identity and previous_identity != cache_identity:
+            cached_run_automated_signals.clear()
+        state["cache_identity"] = cache_identity
+
         st.caption(
             f"Symbol: **{config_store.symbol.upper()}** · Timeframe: **{config_store.timeframe.upper()}**"
         )
@@ -2680,11 +2702,16 @@ def main():
                 with st.spinner(
                     f"Fetching Binance candles for {config_store.symbol.upper()} on {config_store.timeframe.upper()}..."
                 ):
+                    params_hash = stable_hash(indicator_params)
+                    weights_hash = stable_hash(signal_config_payload.get("weights", {}))
                     result_dict = cached_run_automated_signals(
                         config_store.symbol,
                         config_store.timeframe,
                         config_store.start_iso(),
                         config_store.end_iso(),
+                        params_hash,
+                        weights_hash,
+                        CACHE_VERSION,
                         json.dumps(signal_config_payload, sort_keys=True),
                         json.dumps(indicator_params, sort_keys=True),
                         json.dumps(signal_params, sort_keys=True),
@@ -2704,6 +2731,8 @@ def main():
                         "indicator_params": indicator_params,
                         "signal_params": signal_params,
                         "signal_config": signal_config_payload,
+                        "params_hash": params_hash,
+                        "weights_hash": weights_hash,
                     }
                 )
             except DataValidationError as exc:
@@ -2773,10 +2802,10 @@ def main():
 
             actionable = signal_data.get("signal") in {"BUY", "SELL"}
 
-            if actionable:
-                col1, col2 = st.columns(2)
+            detail_left, detail_right = st.columns(2)
 
-                with col1:
+            with detail_left:
+                if actionable:
                     st.markdown("### 📈 Entry & Exit Levels")
 
                     entries = signal_data.get("entries") or []
@@ -2807,8 +2836,17 @@ def main():
                         st.write("**Take Profits:**")
                         for tp_key, tp_price in take_profits.items():
                             st.write(f"  {tp_key.upper()}: ${tp_price:.4f}")
+                else:
+                    st.markdown("### 🤔 Hold Rationale")
+                    hold_reasons = signal_data.get("cancellation_reasons") or signal_data.get("rationale") or []
+                    if hold_reasons:
+                        for idx, reason in enumerate(hold_reasons, 1):
+                            st.write(f"{idx}. {reason}")
+                    else:
+                        st.info("Signal is currently on HOLD awaiting additional confirmations.")
 
-                with col2:
+            with detail_right:
+                if actionable:
                     st.markdown("### 📊 Position & Risk")
 
                     position_size = signal_data.get("position_size_pct")
@@ -2820,24 +2858,16 @@ def main():
                         st.write("**Component Weights:**")
                         for component, weight in weights.items():
                             st.write(f"  {component.title()}: {weight:.2f}")
-
-                st.markdown("---")
-            else:
-                hold_reasons = signal_data.get("cancellation_reasons") or signal_data.get("rationale") or []
-                st.markdown("### 🤔 Hold Rationale")
-                if hold_reasons:
-                    for idx, reason in enumerate(hold_reasons, 1):
-                        st.write(f"{idx}. {reason}")
                 else:
-                    st.info("Signal is currently on HOLD awaiting additional confirmations.")
+                    st.markdown("### 📊 Component Weights")
+                    weights = signal_data.get("weights", {})
+                    if weights:
+                        for component, weight in weights.items():
+                            st.write(f"• {component.title()}: {weight:.2f}")
+                    else:
+                        st.write("No component weights available.")
 
-                weights = signal_data.get("weights", {})
-                if weights:
-                    st.markdown("#### Component Weights")
-                    for component, weight in weights.items():
-                        st.write(f"• {component.title()}: {weight:.2f}")
-
-                st.markdown("---")
+            st.markdown("---")
 
             rationale = signal_data.get("rationale", [])
             if rationale:
@@ -2864,6 +2894,26 @@ def main():
                     st.write("**Debug Details:**")
                     st.json(debug_payload, expanded=False)
 
+            analyzer_indicator_params = signal_data.get("metadata", {}).get("indicator_params") or processed_signal.get("metadata", {}).get("indicator_params")
+            with st.expander("🛠 Analyzer Inputs", expanded=False):
+                st.write("**Category Weights**")
+                weight_display = signal_data.get("weights") or state.get("weights")
+                if weight_display:
+                    st.json(weight_display)
+                else:
+                    st.write("No weight data available.")
+
+                if analyzer_indicator_params:
+                    st.write("**Indicator Parameters**")
+                    st.json(analyzer_indicator_params)
+
+                if result:
+                    st.write("**Parameter Hash:**", result.get("params_hash"))
+                    st.write("**Weights Hash:**", result.get("weights_hash"))
+                else:
+                    st.write("**Parameter Hash:**", state.get("params_hash"))
+                    st.write("**Weights Hash:**", state.get("weights_hash"))
+
             # Factor Analysis
             factors = signal_data.get("factors", [])
             if factors:
@@ -2884,7 +2934,15 @@ def main():
 
                 if factors_data:
                     factors_df = pd.DataFrame(factors_data)
-                    st.dataframe(factors_df, use_container_width=True, hide_index=True)
+                    st.dataframe(
+                        factors_df,
+                        use_container_width=True,
+                        hide_index=True,
+                        key=ui_key(
+                            "automated_signals",
+                            f"factors_{config_store.symbol}_{config_store.timeframe}"
+                        ),
+                    )
 
             st.markdown("---")
 
@@ -3137,7 +3195,14 @@ def main():
                         height=400,
                         template="plotly_dark",
                     )
-                    st.plotly_chart(equity_fig, use_container_width=True)
+                    st.plotly_chart(
+                        equity_fig,
+                        use_container_width=True,
+                        key=ui_key(
+                            "automated_signals",
+                            f"equity_curve_{config_store.symbol}_{config_store.timeframe}"
+                        ),
+                    )
 
                 if trade_count:
                     trades_df = pd.DataFrame(
@@ -3156,7 +3221,14 @@ def main():
                         ]
                     )
                     st.markdown("### Trades Summary")
-                    st.dataframe(trades_df, use_container_width=True)
+                    st.dataframe(
+                        trades_df,
+                        use_container_width=True,
+                        key=ui_key(
+                            "automated_signals",
+                            f"backtest_trades_{config_store.symbol}_{config_store.timeframe}"
+                        ),
+                    )
                 else:
                     st.info("No trades met the criteria within the selected horizon.")
 

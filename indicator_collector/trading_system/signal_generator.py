@@ -18,7 +18,7 @@ from .interfaces import (
 from .backtester import ParameterSet
 from .technical_analysis import analyze_technical_factors
 from .sentiment_analyzer import analyze_sentiment_factors
-from .multitimeframe_analyzer import analyze_multitimeframe_factors
+from .multitimeframe_analyzer import analyze_multitimeframe_factors, create_multitimeframe_factor_score
 from .utils import clamp
 from ..timeframes import Timeframe
 
@@ -879,16 +879,28 @@ def generate_trading_signal(
         factors.sentiment = None
 
     try:
-        mt_payload = analyze_multitimeframe_factors(context)
-        if mt_payload.factors:
-            base = mt_payload.factors[0]
+        mt_params = parameter_set.get_indicator_group("multitimeframe") if parameter_set else None
+        mt_analysis = analyze_multitimeframe_factors(
+            context,
+            analysis_params=mt_params,
+        )
+        mt_factor_scores: List[FactorScore] = []
+        if hasattr(mt_analysis, "factors"):
+            mt_factor_scores = list(getattr(mt_analysis, "factors"))  # type: ignore[attr-defined]
+        elif isinstance(mt_analysis, dict):
+            mt_factor_scores = [create_multitimeframe_factor_score(mt_analysis)]
+        if mt_factor_scores:
+            base = mt_factor_scores[0]
+            metadata = dict(base.metadata)
+            if isinstance(mt_analysis, dict):
+                metadata.setdefault("analysis_summary", mt_analysis)
             factors.multitimeframe = FactorScore(
                 factor_name=base.factor_name,
                 score=base.score,
                 weight=category_weights.get("multitimeframe", config.multitimeframe_weight),
                 description=base.description,
                 emoji=base.emoji,
-                metadata=dict(base.metadata),
+                metadata=metadata,
             )
     except Exception:
         factors.multitimeframe = None

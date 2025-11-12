@@ -10,7 +10,7 @@ import logging
 import math
 import os
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 from .backtester import DEFAULT_WEIGHTS, indicator_defaults_for
 from .interfaces import TradingSignalPayload
@@ -55,6 +55,7 @@ class PlanDetails:
     reason: Optional[str] = None
     sanitized_plan: Optional[Dict[str, Any]] = None
     entry_zone: Optional[Dict[str, float]] = None
+    warnings: List[str] = field(default_factory=list)
 
 
 def generate_signals(
@@ -94,6 +95,7 @@ def generate_signals(
         plan_details = PlanDetails(valid=False, reason="Composite signal not actionable")
         if actionable:
             plan_details = _build_plan_details(
+                payload,
                 position_plan,
                 computed_signal,
                 params_dict,
@@ -182,7 +184,10 @@ def generate_signals(
                 "composite_contributions": composite_context.get("contributions"),
                 "composite_weights": composite_context.get("weights"),
                 "missing_categories": composite_context.get("missing_categories"),
+                "neutralized_categories": composite_context.get("neutralized_categories"),
+                "skipped_categories": composite_context.get("skipped_categories"),
                 "original_signal_type": original_signal_type,
+                "plan_warnings": plan_details.warnings,
                 "reasons": hold_reasons,
             }
 
@@ -317,26 +322,60 @@ def _normalize_factors(factors_input: Optional[List[Any]]) -> List[Dict[str, Any
 
 
 
+def _first_positive(values: Iterable[Any]) -> Optional[float]:
+    for value in values:
+        numeric = _safe_float(value)
+        if numeric is not None and numeric > 0:
+            return numeric
+    return None
+
 
 
 def _build_plan_details(
+    payload: Dict[str, Any],
     position_plan: Dict[str, Any],
     signal_type: str,
     params: Dict[str, Any],
     metadata: Dict[str, Any],
 ) -> PlanDetails:
-    if not isinstance(position_plan, dict) or not position_plan:
-        return PlanDetails(valid=False, reason="Position plan unavailable")
+    plan_warnings: List[str] = []
 
-    try:
-        entry_price = _safe_float(position_plan.get("entry_price"))
-        stop_loss = _safe_float(position_plan.get("stop_loss"))
-    except (TypeError, ValueError):
-        return PlanDetails(valid=False, reason="Invalid entry or stop loss values")
+    plan_source: Dict[str, Any] = dict(position_plan) if isinstance(position_plan, dict) else {}
+    if not plan_source:
+        synthesized_plan, synth_warnings = _synthesize_plan_from_metadata(payload, signal_type, params, metadata)
+        if not synthesized_plan:
+            return PlanDetails(valid=False, reason="Position plan unavailable")
+        plan_source = synthesized_plan
+        plan_warnings.extend(synth_warnings)
+    else:
+        existing_metadata = plan_source.get("metadata")
+        if isinstance(existing_metadata, dict):
+            plan_warnings.extend(existing_metadata.get("planning_warnings", []))
+
+    working_plan = dict(plan_source)
+    plan_metadata = working_plan.get("metadata") or {}
+    entry_price = _safe_float(working_plan.get("entry_price"))
+    stop_loss = _safe_float(working_plan.get("stop_loss"))
+
+    if (
+        entry_price is None
+        or stop_loss is None
+        or entry_price <= 0
+        or stop_loss <= 0
+        or math.isclose(entry_price, stop_loss)
+    ):
+        synthesized_plan, synth_warnings = _synthesize_plan_from_metadata(payload, signal_type, params, metadata)
+        if synthesized_plan:
+            working_plan = dict(synthesized_plan)
+            plan_metadata = working_plan.get("metadata") or {}
+            entry_price = _safe_float(working_plan.get("entry_price"))
+            stop_loss = _safe_float(working_plan.get("stop_loss"))
+            plan_warnings.extend(synth_warnings)
+        else:
+            return PlanDetails(valid=False, reason="Entry or stop loss missing")
 
     if entry_price is None or stop_loss is None or entry_price <= 0 or stop_loss <= 0:
         return PlanDetails(valid=False, reason="Entry or stop loss missing")
-
     if math.isclose(entry_price, stop_loss):
         return PlanDetails(valid=False, reason="Entry and stop loss are identical")
 
@@ -344,15 +383,28 @@ def _build_plan_details(
     if risk_distance <= 0:
         return PlanDetails(valid=False, reason="Risk distance between entry and stop is zero")
 
-    raw_tp_levels = position_plan.get("take_profit_levels") or []
-    plan_metadata = position_plan.get("metadata") or {}
+    raw_tp_levels = working_plan.get("take_profit_levels") or []
     tp_multipliers = plan_metadata.get("tp_sl_multipliers") or {}
 
     tp_levels = _sanitize_tp_levels(entry_price, stop_loss, raw_tp_levels, signal_type)
     if len(tp_levels) < 3:
         tp_levels = _compute_tp_levels(entry_price, stop_loss, signal_type, tp_multipliers)
+        if len(tp_levels) < 3:
+            if signal_type == "BUY":
+                tp_levels = {
+                    "tp1": float(entry_price + risk_distance),
+                    "tp2": float(entry_price + risk_distance * 1.8),
+                    "tp3": float(entry_price + risk_distance * 3.0),
+                }
+            else:
+                tp_levels = {
+                    "tp1": float(entry_price - risk_distance),
+                    "tp2": float(entry_price - risk_distance * 1.8),
+                    "tp3": float(entry_price - risk_distance * 3.0),
+                }
+            plan_warnings.append("Fallback take profit levels derived from risk multiples.")
 
-    position_size_usd = _safe_float(position_plan.get("position_size_usd"))
+    position_size_usd = _safe_float(working_plan.get("position_size_usd"))
     sizing_factors = plan_metadata.get("sizing_factors", {})
     risk_amount_usd = _safe_float(sizing_factors.get("risk_amount_usd"))
 
@@ -367,14 +419,36 @@ def _build_plan_details(
     account_balance = _safe_float(
         params.get("account_balance")
         or metadata.get("account_balance")
+        or plan_metadata.get("account_balance_estimate")
         or (risk_amount_usd / risk_pct if risk_amount_usd and risk_pct else None)
     )
+    if account_balance is None and position_size_usd and risk_pct:
+        try:
+            account_balance = position_size_usd / max(risk_pct, 1e-6)
+        except ZeroDivisionError:
+            account_balance = None
 
     max_position_pct = _safe_float(
         params.get("max_position_size_pct")
         or params.get("position_config", {}).get("max_position_size_pct")
         or metadata.get("position_config", {}).get("max_position_size_pct")
+        or plan_metadata.get("max_position_size_pct")
     )
+
+    if position_size_usd is None and account_balance and risk_pct:
+        risk_amount = risk_amount_usd or account_balance * risk_pct
+        risk_per_unit = risk_distance / entry_price if entry_price else None
+        if risk_per_unit and risk_per_unit > 0:
+            position_size_usd = risk_amount / risk_per_unit
+            plan_warnings.append("Position size derived from risk parameters.")
+        else:
+            position_size_usd = account_balance * risk_pct
+            plan_warnings.append("Position size fallback applied due to zero risk distance.")
+
+    if max_position_pct and position_size_usd and account_balance:
+        pct_fraction = max_position_pct / 100.0 if max_position_pct > 1 else max_position_pct
+        if pct_fraction and pct_fraction > 0:
+            position_size_usd = min(position_size_usd, account_balance * pct_fraction)
 
     position_size_pct: Optional[float] = None
     if account_balance and position_size_usd:
@@ -385,29 +459,30 @@ def _build_plan_details(
             position_size_pct = None
 
     if position_size_pct is None and position_size_usd and max_position_pct:
-        pct_fraction: Optional[float]
-        if max_position_pct > 1:
-            pct_fraction = max_position_pct / 100.0
-        else:
-            pct_fraction = max_position_pct
+        pct_fraction = max_position_pct / 100.0 if max_position_pct > 1 else max_position_pct
         if pct_fraction and pct_fraction > 0:
             if account_balance is None:
                 account_balance = position_size_usd / pct_fraction
             position_size_pct = round(min(100.0, pct_fraction * 100.0), 2)
 
     holding_horizon_bars = plan_metadata.get("holding_horizon_bars")
-    holding_period = _classify_holding_period(holding_horizon_bars, position_plan.get("timeframe") or metadata.get("timeframe_used"))
+    holding_period = _classify_holding_period(
+        holding_horizon_bars,
+        working_plan.get("timeframe") or metadata.get("timeframe_used"),
+    )
 
     entry_zone = _compute_entry_zone(entry_price, plan_metadata.get("atr"), signal_type)
+
+    deduped_warnings = list(dict.fromkeys([warning for warning in plan_warnings if warning]))
 
     sanitized_plan: Dict[str, Any] = {
         "entry_price": entry_price,
         "stop_loss": stop_loss,
         "take_profit_levels": [tp_levels.get("tp1"), tp_levels.get("tp2"), tp_levels.get("tp3")],
         "position_size_usd": position_size_usd,
-        "leverage": position_plan.get("leverage"),
-        "direction": position_plan.get("direction"),
-        "notes": position_plan.get("notes"),
+        "leverage": working_plan.get("leverage"),
+        "direction": working_plan.get("direction"),
+        "notes": working_plan.get("notes"),
         "position_size_pct": position_size_pct,
         "metadata": {
             "holding_horizon_bars": holding_horizon_bars,
@@ -417,6 +492,7 @@ def _build_plan_details(
             "account_balance_estimate": account_balance,
             "risk_per_trade_pct": risk_pct,
             "max_position_size_pct": max_position_pct,
+            "planning_warnings": deduped_warnings,
         },
     }
 
@@ -428,6 +504,7 @@ def _build_plan_details(
             holding_period=holding_period,
             holding_horizon_bars=holding_horizon_bars,
             entry_zone=entry_zone,
+            warnings=deduped_warnings,
         )
 
     return PlanDetails(
@@ -440,7 +517,159 @@ def _build_plan_details(
         holding_horizon_bars=holding_horizon_bars,
         sanitized_plan=sanitized_plan,
         entry_zone=entry_zone,
+        warnings=deduped_warnings,
     )
+
+
+def _synthesize_plan_from_metadata(
+    payload: Dict[str, Any],
+    signal_type: str,
+    params: Dict[str, Any],
+    metadata: Dict[str, Any],
+) -> Tuple[Optional[Dict[str, Any]], List[str]]:
+    warnings: List[str] = []
+    latest = payload.get("latest") or {}
+
+    entry_candidates = [
+        latest.get("close"),
+        latest.get("open"),
+        latest.get("price"),
+        metadata.get("entry_price"),
+        metadata.get("last_close"),
+        metadata.get("last_price"),
+        metadata.get("price"),
+    ]
+    for factor in payload.get("factors") or []:
+        if not isinstance(factor, dict):
+            continue
+        factor_metadata = factor.get("metadata") or {}
+        entry_candidates.append(factor_metadata.get("current_price"))
+        entry_candidates.append(factor_metadata.get("price"))
+
+    entry_price = _first_positive(entry_candidates)
+    if entry_price is None:
+        return None, warnings
+
+    atr_candidates = [
+        metadata.get("atr"),
+        metadata.get("volatility_atr"),
+        latest.get("atr"),
+    ]
+    indicator_summary = metadata.get("indicator_summary")
+    if isinstance(indicator_summary, dict):
+        atr_candidates.extend(indicator_summary.values())
+    atr_value = _first_positive(atr_candidates)
+    if atr_value is None:
+        atr_value = max(entry_price * 0.015, 0.5)
+        warnings.append("ATR missing; synthetic plan using price-based volatility.")
+
+    direction = "long" if signal_type == "BUY" else "short"
+    buffer = max(atr_value, entry_price * 0.006)
+    if direction == "long":
+        stop_loss = entry_price - buffer
+        if stop_loss <= 0:
+            stop_loss = max(entry_price * 0.95, 0.0001)
+            warnings.append("Synthetic plan adjusted stop loss to remain positive.")
+    else:
+        stop_loss = entry_price + buffer
+
+    risk_distance = abs(entry_price - stop_loss)
+    if risk_distance <= entry_price * 1e-5:
+        adjustment = max(entry_price * 0.01, atr_value)
+        if direction == "long":
+            stop_loss = max(0.0001, entry_price - adjustment)
+        else:
+            stop_loss = entry_price + adjustment
+        warnings.append("Synthetic plan widened stop due to minimal risk distance.")
+        risk_distance = abs(entry_price - stop_loss)
+
+    multipliers = metadata.get("plan_defaults", {}).get("tp_sl_multipliers") or params.get("tp_sl_multipliers") or {}
+    tp_levels = _compute_tp_levels(entry_price, stop_loss, signal_type, multipliers)
+    if len(tp_levels) < 3:
+        if signal_type == "BUY":
+            tp_levels = {
+                "tp1": float(entry_price + risk_distance),
+                "tp2": float(entry_price + risk_distance * 1.8),
+                "tp3": float(entry_price + risk_distance * 3.0),
+            }
+        else:
+            tp_levels = {
+                "tp1": float(entry_price - risk_distance),
+                "tp2": float(entry_price - risk_distance * 1.8),
+                "tp3": float(entry_price - risk_distance * 3.0),
+            }
+        warnings.append("Synthetic take profit levels derived from risk multiples.")
+
+    take_profit_levels = [
+        float(tp_levels["tp1"]),
+        float(tp_levels["tp2"]),
+        float(tp_levels["tp3"]),
+    ]
+
+    risk_pct = _safe_float(
+        params.get("max_risk_per_trade_pct")
+        or params.get("position_config", {}).get("max_risk_per_trade_pct")
+        or metadata.get("position_config", {}).get("max_risk_per_trade_pct")
+    )
+    if risk_pct is None:
+        risk_pct = _DEFAULT_RISK_PER_TRADE
+        warnings.append("Using default risk per trade for synthetic plan.")
+
+    account_balance = _safe_float(
+        params.get("account_balance")
+        or metadata.get("account_balance")
+        or metadata.get("account_balance_estimate")
+    )
+    if account_balance is None or account_balance <= 0:
+        account_balance = 10000.0
+        warnings.append("Synthetic plan assumed $10,000 account balance.")
+
+    risk_amount = account_balance * risk_pct
+    risk_per_unit = risk_distance / entry_price if entry_price else None
+    if risk_per_unit and risk_per_unit > 0:
+        position_size_usd = risk_amount / risk_per_unit
+    else:
+        position_size_usd = account_balance * risk_pct
+        warnings.append("Synthetic plan fallback sizing applied due to zero risk distance.")
+
+    max_position_pct = _safe_float(
+        params.get("max_position_size_pct")
+        or params.get("position_config", {}).get("max_position_size_pct")
+        or metadata.get("position_config", {}).get("max_position_size_pct")
+    )
+    if max_position_pct:
+        pct_fraction = max_position_pct / 100.0 if max_position_pct > 1 else max_position_pct
+        if pct_fraction and pct_fraction > 0:
+            position_size_usd = min(position_size_usd, account_balance * pct_fraction)
+
+    leverage = _safe_float(
+        params.get("position_config", {}).get("default_leverage")
+        or metadata.get("position_config", {}).get("default_leverage")
+        or metadata.get("leverage")
+    )
+    if leverage is None or leverage <= 0:
+        leverage = 3.0
+
+    plan_metadata = {
+        "atr": atr_value,
+        "risk_amount_usd": risk_amount,
+        "account_balance_estimate": account_balance,
+        "risk_per_trade_pct": risk_pct,
+        "max_position_size_pct": max_position_pct,
+        "planning_warnings": warnings,
+    }
+
+    plan = {
+        "entry_price": entry_price,
+        "stop_loss": stop_loss,
+        "take_profit_levels": take_profit_levels,
+        "position_size_usd": position_size_usd,
+        "leverage": leverage,
+        "direction": "long" if signal_type == "BUY" else "short",
+        "notes": "Synthetic plan generated from metadata.",
+        "metadata": plan_metadata,
+    }
+    return plan, warnings
 
 
 def _compute_entry_zone(entry_price: float, atr: Optional[float], signal_type: str) -> Optional[Dict[str, float]]:
@@ -570,13 +799,9 @@ def _build_rationale(
             if reason:
                 points.append(reason)
 
-    missing_categories = composite_context.get("missing_categories", [])
-    if missing_categories:
-        points.append(
-            "Missing category data: "
-            + ", ".join(_format_category_name(cat) for cat in missing_categories)
-            + " (weighted 0)."
-        )
+    neutralized_categories = composite_context.get("neutralized_categories", [])
+    for category in neutralized_categories:
+        points.append(f"{_format_category_name(category)} data unavailable (neutral contribution).")
 
     primary_reason = explanation.get("primary_reason")
     if primary_reason:
@@ -794,18 +1019,31 @@ def _compute_composite_context(
         }
 
     contributions: Dict[str, float] = {}
-    missing_categories: List[str] = []
+    neutralized_categories: List[str] = []
+    skipped_categories: List[str] = []
     category_scores: Dict[str, Optional[float]] = {}
 
     for category in _COMPOSITE_CATEGORIES:
+        weight = normalized_weights.get(category, 0.0)
         data = category_data.get(category, {})
         score = data.get("score")
-        category_scores[category] = score
-        if score is None:
+
+        if weight <= 0:
+            category_scores[category] = _safe_float(score)
             contributions[category] = 0.0
-            missing_categories.append(category)
+            if score is None:
+                skipped_categories.append(category)
+            continue
+
+        if score is None:
+            neutral_score = 0.5
+            category_scores[category] = neutral_score
+            contributions[category] = weight * neutral_score
+            neutralized_categories.append(category)
         else:
-            contributions[category] = normalized_weights.get(category, 0.0) * float(score)
+            numeric_score = float(score)
+            category_scores[category] = numeric_score
+            contributions[category] = weight * numeric_score
 
     composite_score = clamp(sum(contributions.values()), 0.0, 1.0)
     top_contributors = sorted(
@@ -829,7 +1067,9 @@ def _compute_composite_context(
         "weights": normalized_weights,
         "category_scores": category_scores,
         "contributions": contributions,
-        "missing_categories": missing_categories,
+        "missing_categories": [],
+        "neutralized_categories": neutralized_categories,
+        "skipped_categories": skipped_categories,
         "top_contributors": top_contributors,
         "directions": directions,
     }
@@ -860,10 +1100,15 @@ def _build_metadata_block(
         "category_scores": composite_context.get("category_scores"),
         "category_contributions": composite_context.get("contributions"),
         "missing_categories": composite_context.get("missing_categories"),
+        "neutralized_categories": composite_context.get("neutralized_categories"),
+        "skipped_categories": composite_context.get("skipped_categories"),
         "buy_threshold": buy_threshold,
         "sell_threshold": sell_threshold,
         "original_signal_type": original_signal_type,
     }
+
+    if plan_details.warnings:
+        metadata["plan_warnings"] = plan_details.warnings
 
     top_contributors = composite_context.get("top_contributors") or []
     if top_contributors:

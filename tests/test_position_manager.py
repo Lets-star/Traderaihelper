@@ -271,6 +271,8 @@ class TestAssessMarketConditions(unittest.TestCase):
         context.advanced_metrics = {
             "market_context": {"risk_score": risk_score}
         }
+        context.metadata = {}
+        context.extras = {}
         return context
     
     def test_normal_conditions(self):
@@ -278,10 +280,11 @@ class TestAssessMarketConditions(unittest.TestCase):
         config = PositionManagerConfig()
         context = self.create_context()
         
-        can_trade, reasons = assess_market_conditions(context, config)
+        can_trade, fatal_reasons, warnings = assess_market_conditions(context, config)
         
         self.assertTrue(can_trade)
-        self.assertEqual(len(reasons), 0)
+        self.assertEqual(fatal_reasons, [])
+        self.assertEqual(warnings, [])
     
     def test_high_volatility_cancellation(self):
         """Test cancellation due to high volatility."""
@@ -289,33 +292,33 @@ class TestAssessMarketConditions(unittest.TestCase):
         # High volatility: 10% ATR/price ratio
         context = self.create_context(atr=10.0, current_price=100.0)
         
-        can_trade, reasons = assess_market_conditions(context, config)
+        can_trade, fatal_reasons, warnings = assess_market_conditions(context, config)
         
-        self.assertFalse(can_trade)
-        self.assertGreater(len(reasons), 0)
-        self.assertTrue(any("High volatility" in reason for reason in reasons))
+        self.assertTrue(can_trade)
+        self.assertEqual(fatal_reasons, [])
+        self.assertTrue(any("High volatility" in warning for warning in warnings))
     
     def test_low_liquidity_cancellation(self):
         """Test cancellation due to low liquidity."""
         config = PositionManagerConfig()
         context = self.create_context(volume_confidence=0.1)  # Below threshold
         
-        can_trade, reasons = assess_market_conditions(context, config)
+        can_trade, fatal_reasons, warnings = assess_market_conditions(context, config)
         
-        self.assertFalse(can_trade)
-        self.assertGreater(len(reasons), 0)
-        self.assertTrue(any("Low liquidity" in reason for reason in reasons))
+        self.assertTrue(can_trade)
+        self.assertEqual(fatal_reasons, [])
+        self.assertTrue(any("Low liquidity" in warning for warning in warnings))
     
     def test_high_risk_score_cancellation(self):
         """Test cancellation due to high risk score."""
         config = PositionManagerConfig()
         context = self.create_context(risk_score=0.9)  # Above threshold
         
-        can_trade, reasons = assess_market_conditions(context, config)
+        can_trade, fatal_reasons, warnings = assess_market_conditions(context, config)
         
-        self.assertFalse(can_trade)
-        self.assertGreater(len(reasons), 0)
-        self.assertTrue(any("High risk score" in reason for reason in reasons))
+        self.assertTrue(can_trade)
+        self.assertEqual(fatal_reasons, [])
+        self.assertTrue(any("High risk score" in warning for warning in warnings))
     
     def test_multiple_cancellation_reasons(self):
         """Test multiple cancellation reasons."""
@@ -327,10 +330,11 @@ class TestAssessMarketConditions(unittest.TestCase):
             risk_score=0.9,  # High risk
         )
         
-        can_trade, reasons = assess_market_conditions(context, config)
+        can_trade, fatal_reasons, warnings = assess_market_conditions(context, config)
         
-        self.assertFalse(can_trade)
-        self.assertGreaterEqual(len(reasons), 3)
+        self.assertTrue(can_trade)
+        self.assertEqual(fatal_reasons, [])
+        self.assertGreaterEqual(len(warnings), 3)
 
 
 class TestEstimateHoldingHorizon(unittest.TestCase):
@@ -492,6 +496,14 @@ class TestCreatePositionPlan(unittest.TestCase):
         context.volume_analysis = {"volume_confidence": 0.5}
         context.market_structure = {"structure_state": "neutral"}
         context.advanced_metrics = {"market_context": {"risk_score": 0.3}}
+        context.metadata = {}
+        context.extras = {}
+        context.ohlcv = {
+            "open": current_price,
+            "close": current_price,
+            "high": current_price * 1.01,
+            "low": current_price * 0.99,
+        }
         return context
     
     def test_successful_position_plan_creation(self):
@@ -579,10 +591,10 @@ class TestCreatePositionPlan(unittest.TestCase):
             account_balance=10000.0,
         )
         
-        self.assertFalse(result.can_trade)
-        self.assertIsNone(result.position_plan)
-        self.assertGreater(len(result.cancellation_reasons), 0)
-        self.assertTrue(any("High volatility" in reason for reason in result.cancellation_reasons))
+        self.assertTrue(result.can_trade)
+        self.assertIsNotNone(result.position_plan)
+        self.assertEqual(result.cancellation_reasons, [])
+        self.assertTrue(any("High volatility" in warning for warning in result.warnings))
     
     def test_no_atr_cancellation(self):
         """Test position plan blocked by missing ATR."""
@@ -596,10 +608,10 @@ class TestCreatePositionPlan(unittest.TestCase):
             account_balance=10000.0,
         )
         
-        self.assertFalse(result.can_trade)
-        self.assertIsNone(result.position_plan)
-        self.assertGreater(len(result.cancellation_reasons), 0)
-        self.assertTrue(any("No valid ATR" in reason for reason in result.cancellation_reasons))
+        self.assertTrue(result.can_trade)
+        self.assertIsNotNone(result.position_plan)
+        self.assertEqual(result.cancellation_reasons, [])
+        self.assertTrue(any("ATR" in warning for warning in result.warnings))
     
     def test_position_size_limiting(self):
         """Test position size limiting by max position size."""
@@ -622,6 +634,7 @@ class TestCreatePositionPlan(unittest.TestCase):
         # Check sizing result indicates limitation
         self.assertTrue(result.sizing_result.sizing_factors.get("size_limited", False))
         self.assertIn("original_size", result.sizing_result.sizing_factors)
+        self.assertTrue(any("limited" in warning.lower() for warning in result.warnings))
     
     def test_short_position_plan(self):
         """Test short position plan creation."""

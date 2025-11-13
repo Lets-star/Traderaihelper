@@ -12,7 +12,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
-from .backtester import DEFAULT_WEIGHTS, indicator_defaults_for
+from .backtester import DEFAULT_WEIGHTS, DEFAULT_SIGNAL_THRESHOLDS, indicator_defaults_for
 from .interfaces import TradingSignalPayload
 from .signal_schema import validate_signal_json
 from .utils import clamp, safe_div
@@ -74,7 +74,7 @@ def generate_signals(
         metadata = payload.get("metadata") or {}
         position_plan = payload.get("position_plan") or {}
         timeframe = _infer_timeframe(payload, metadata, params_dict)
-        _ensure_indicator_params(params_dict, timeframe)
+        final_indicator_params = _ensure_indicator_params(params_dict, timeframe)
 
         weights = _extract_weights(payload, metadata, params_dict)
         composite_context = _compute_composite_context(factors, weights)
@@ -152,6 +152,7 @@ def generate_signals(
             sell_threshold,
             composite_score,
             original_signal_type,
+            indicator_params=final_indicator_params,
         )
 
         result: Dict[str, Any] = {
@@ -189,6 +190,7 @@ def generate_signals(
                 "original_signal_type": original_signal_type,
                 "plan_warnings": plan_details.warnings,
                 "reasons": hold_reasons,
+                "indicator_params": final_indicator_params,
             }
 
         validated = validate_signal_json(result)
@@ -243,6 +245,7 @@ def _normalize_params(params: Optional[Union[Dict[str, Any], Any]]) -> Dict[str,
         "take_profit_pct",
         "max_position_size_pct",
         "confirmation_threshold",
+        "signal_thresholds",
         "max_risk_per_trade_pct",
         "account_balance",
     ):
@@ -932,7 +935,12 @@ def _resolve_composite_thresholds(
             return None
         return _safe_float(source.get(key))
 
-    buy = _lookup(params, "buy_threshold")
+    threshold_overrides = params.get("signal_thresholds")
+    buy = _lookup(threshold_overrides, "buy")
+    sell = _lookup(threshold_overrides, "sell")
+
+    if buy is None:
+        buy = _lookup(params, "buy_threshold")
     if buy is None:
         buy = _lookup(metadata, "buy_threshold")
     composite_section = metadata.get("composite")
@@ -942,7 +950,8 @@ def _resolve_composite_thresholds(
     if buy is None:
         buy = _lookup(analysis_debug, "buy_threshold")
 
-    sell = _lookup(params, "sell_threshold")
+    if sell is None:
+        sell = _lookup(params, "sell_threshold")
     if sell is None:
         sell = _lookup(metadata, "sell_threshold")
     if sell is None:
@@ -950,8 +959,25 @@ def _resolve_composite_thresholds(
     if sell is None:
         sell = _lookup(analysis_debug, "sell_threshold")
 
-    buy = float(clamp(buy if buy is not None else 0.6, 0.0, 1.0))
-    sell = float(clamp(sell if sell is not None else 0.4, 0.0, 1.0))
+    default_buy = DEFAULT_SIGNAL_THRESHOLDS["buy"]
+    default_sell = DEFAULT_SIGNAL_THRESHOLDS["sell"]
+
+    buy = float(clamp(buy if buy is not None else default_buy, 0.0, 1.0))
+    sell = float(clamp(sell if sell is not None else default_sell, 0.0, 1.0))
+
+    if buy <= sell:
+        buy, sell = max(buy, sell), min(buy, sell)
+        if buy <= sell:
+            buy = min(1.0, max(sell + 0.01, default_buy))
+        if buy > 1.0:
+            buy = 1.0
+        if buy <= sell:
+            sell = max(0.0, min(buy - 0.01, default_sell))
+
+    if buy <= sell:
+        buy = default_buy
+        sell = default_sell
+
     return buy, sell
 
 
@@ -1089,6 +1115,8 @@ def _build_metadata_block(
     sell_threshold: float,
     composite_score: float,
     original_signal_type: str,
+    *,
+    indicator_params: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     metadata: Dict[str, Any] = {
         "symbol": payload.get("symbol"),
@@ -1109,6 +1137,9 @@ def _build_metadata_block(
 
     if plan_details.warnings:
         metadata["plan_warnings"] = plan_details.warnings
+
+    if indicator_params:
+        metadata["indicator_params"] = indicator_params
 
     top_contributors = composite_context.get("top_contributors") or []
     if top_contributors:

@@ -5,7 +5,10 @@ from typing import Any, Dict, Optional
 
 import streamlit as st
 
-from indicator_collector.trading_system.backtester import indicator_defaults_for
+from indicator_collector.trading_system.backtester import (
+    DEFAULT_SIGNAL_THRESHOLDS,
+    indicator_defaults_for,
+)
 from indicator_collector.trading_system.signal_generator import SignalConfig
 
 DEFAULT_TOKEN = "BINANCE:BTCUSDT"
@@ -178,6 +181,8 @@ class ConfigStore:
         macd_defaults = defaults.get("macd", {})
         rsi_defaults = defaults.get("rsi", {})
         atr_defaults = defaults.get("atr", {})
+        atr_channel_defaults = defaults.get("atr_channels", {})
+        bollinger_defaults = defaults.get("bollinger", {})
         volume_defaults = defaults.get("volume", {})
         structure_defaults = defaults.get("structure", {})
         composite_defaults = defaults.get("composite", {})
@@ -197,6 +202,16 @@ class ConfigStore:
                 "period": int(atr_defaults.get("period", 14)),
                 "mult": float(atr_defaults.get("mult", atr_defaults.get("mult_1x", 1.0))),
             },
+            "atr_channels": {
+                "period": int(atr_channel_defaults.get("period", atr_defaults.get("period", 14))),
+                "mult_1x": float(atr_channel_defaults.get("mult_1x", atr_defaults.get("mult", 1.0))),
+                "mult_3x": float(atr_channel_defaults.get("mult_3x", 3.0)),
+            },
+            "bollinger": {
+                "period": int(bollinger_defaults.get("period", 20)),
+                "mult": float(bollinger_defaults.get("mult", bollinger_defaults.get("stddev", 2.0))),
+                "source": str(bollinger_defaults.get("source", "close")),
+            },
             "volume": {
                 "ma_period": int(volume_defaults.get("ma_period", 20)),
                 "cvd_atr_multiplier": float(volume_defaults.get("cvd_atr_multiplier", 0.75)),
@@ -212,8 +227,8 @@ class ConfigStore:
                 "atr_distance": float(structure_defaults.get("atr_distance", 1.0)),
             },
             "composite": {
-                "buy_threshold": float(composite_defaults.get("buy_threshold", 0.6)),
-                "sell_threshold": float(composite_defaults.get("sell_threshold", 0.4)),
+                "buy_threshold": float(composite_defaults.get("buy_threshold", DEFAULT_SIGNAL_THRESHOLDS["buy"])),
+                "sell_threshold": float(composite_defaults.get("sell_threshold", DEFAULT_SIGNAL_THRESHOLDS["sell"])),
                 "confidence_floor": float(composite_defaults.get("confidence_floor", 0.3)),
                 "confidence_ceiling": float(composite_defaults.get("confidence_ceiling", 0.9)),
                 "min_confirmations": int(composite_defaults.get("min_confirmations", 3)),
@@ -298,13 +313,16 @@ class ConfigStore:
     def signal_params_signature(self) -> str:
         settings = self.signal_settings()
         risk = self.risk_settings()
+        buy_threshold = float(settings.get("buy_threshold", DEFAULT_SIGNAL_THRESHOLDS["buy"]))
+        sell_threshold = float(settings.get("sell_threshold", DEFAULT_SIGNAL_THRESHOLDS["sell"]))
         params = {
             "max_risk_per_trade_pct": risk.get("max_risk_per_trade_pct", 0.02),
             "account_balance": risk.get("account_balance", 10_000.0),
             "max_position_size_pct": risk.get("max_position_size_pct", 0.05),
             "min_confirmations": settings.get("min_confirmations", 3),
-            "buy_threshold": settings.get("buy_threshold", 0.65),
-            "sell_threshold": settings.get("sell_threshold", 0.35),
+            "buy_threshold": buy_threshold,
+            "sell_threshold": sell_threshold,
+            "signal_thresholds": (buy_threshold, sell_threshold),
             "min_confidence": settings.get("min_confidence", 0.6),
         }
         return str(sorted(params.items()))
@@ -327,10 +345,16 @@ class ConfigStore:
 
     def build_signal_params(self) -> Dict[str, Any]:
         risk = self.risk_settings()
+        settings = self.signal_settings()
+        thresholds = {
+            "buy": float(settings.get("buy_threshold", DEFAULT_SIGNAL_THRESHOLDS["buy"])),
+            "sell": float(settings.get("sell_threshold", DEFAULT_SIGNAL_THRESHOLDS["sell"])),
+        }
         return {
             "max_risk_per_trade_pct": float(risk.get("max_risk_per_trade_pct", 0.02)),
             "account_balance": float(risk.get("account_balance", 10_000.0)),
             "max_position_size_pct": float(risk.get("max_position_size_pct", 0.05)),
+            "signal_thresholds": thresholds,
         }
 
     # ------------------------------------------------------------------

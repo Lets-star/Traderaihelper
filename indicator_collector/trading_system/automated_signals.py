@@ -422,6 +422,30 @@ def run_automated_signal_flow(
             "composite": signal_config.composite_weight,
         })
 
+    composite_overrides = (indicator_params or {}).get("composite") if indicator_params else None
+    if isinstance(composite_overrides, dict):
+        buy_override = composite_overrides.get("buy_threshold")
+        sell_override = composite_overrides.get("sell_threshold")
+        if buy_override is not None or sell_override is not None:
+            thresholds = dict(params.get("signal_thresholds") or {})
+            metadata = processed_payload.setdefault("metadata", {})
+            composite_meta = metadata.get("composite")
+            if not isinstance(composite_meta, dict):
+                composite_meta = {}
+                metadata["composite"] = composite_meta
+            if buy_override is not None:
+                buy_value = float(buy_override)
+                thresholds["buy"] = buy_value
+                metadata["buy_threshold"] = buy_value
+                composite_meta["buy_threshold"] = buy_value
+            if sell_override is not None:
+                sell_value = float(sell_override)
+                thresholds["sell"] = sell_value
+                metadata["sell_threshold"] = sell_value
+                composite_meta["sell_threshold"] = sell_value
+            if thresholds:
+                params["signal_thresholds"] = thresholds
+
     explicit_signal = generate_signals(processed_payload, params=params or None)
 
     return AutomatedSignalResult(

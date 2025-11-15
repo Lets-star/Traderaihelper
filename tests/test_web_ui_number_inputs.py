@@ -22,6 +22,9 @@ class FakeColumn:
     def slider(self, label: str, **kwargs: Any) -> Any:
         return self._parent._handle_slider(label, kwargs)
 
+    def selectbox(self, label: str, options: list[Any], **kwargs: Any) -> Any:
+        return self._parent.selectbox(label, options, **kwargs)
+
 
 class FakeStreamlit:
     """Minimal Streamlit stub that enforces consistent numeric typing."""
@@ -29,6 +32,7 @@ class FakeStreamlit:
     def __init__(self) -> None:
         self.number_input_calls: list[tuple[str, Any, Dict[str, Any]]] = []
         self.slider_calls: list[tuple[str, Dict[str, Any]]] = []
+        self.selectbox_calls: list[tuple[str, list[Any], Dict[str, Any]]] = []
         self.session_state: Dict[str, Any] = {}
 
     # Core widget handlers -------------------------------------------------
@@ -62,6 +66,9 @@ class FakeStreamlit:
 
     def _handle_slider(self, label: str, kwargs: Dict[str, Any]) -> Any:
         self.slider_calls.append((label, kwargs))
+        key = kwargs.get("key")
+        if key is not None:
+            self.session_state[key] = kwargs["value"]
         return kwargs["value"]
 
     # Streamlit-like API ---------------------------------------------------
@@ -74,6 +81,17 @@ class FakeStreamlit:
     def slider(self, label: str, **kwargs: Any) -> Any:
         return self._handle_slider(label, kwargs)
 
+    def selectbox(self, label: str, options: list[Any], **kwargs: Any) -> Any:
+        self.selectbox_calls.append((label, options, kwargs))
+        index = kwargs.get("index", 0)
+        if not isinstance(index, int) or not (0 <= index < len(options)):
+            index = 0
+        value = options[index]
+        key = kwargs.get("key")
+        if key is not None:
+            self.session_state[key] = value
+        return value
+
     def cache_data(self, *args: Any, **kwargs: Any):  # pragma: no cover - caching disabled for tests
         def decorator(func: Any) -> Any:
             return func
@@ -85,6 +103,9 @@ class FakeStreamlit:
         return None
 
     def warning(self, *args: Any, **kwargs: Any) -> None:  # pragma: no cover - non-critical
+        return None
+
+    def error(self, *args: Any, **kwargs: Any) -> None:  # pragma: no cover - non-critical
         return None
 
     def metric(self, *args: Any, **kwargs: Any) -> None:  # pragma: no cover - non-critical
@@ -142,8 +163,8 @@ def test_indicator_controls_use_consistent_number_input_types(
     store = ConfigStore(ConfigStore._default_state())
     web_ui_module.render_indicator_controls(store)
 
-    # MACD (3) + RSI (3) + ATR (2) inputs must all be registered
-    assert len(fake_st.number_input_calls) == 8
+    # MACD (3) + RSI (3) + ATR (2) + ATR Channels (4) + Bollinger (2)
+    assert len(fake_st.number_input_calls) == 14
 
 
 def test_signal_controls_produce_expected_numeric_types(
@@ -165,6 +186,15 @@ def test_signal_controls_produce_expected_numeric_types(
     assert isinstance(indicator_params["rsi"]["oversold"], int)
     assert isinstance(indicator_params["atr"]["period"], int)
     assert isinstance(indicator_params["atr"]["mult"], float)
+    atr_channels = indicator_params["atr_channels"]
+    assert isinstance(atr_channels["period"], int)
+    assert isinstance(atr_channels["mult_1x"], float)
+    assert isinstance(atr_channels["mult_2x"], float)
+    assert isinstance(atr_channels["mult_3x"], float)
+    bollinger = indicator_params["bollinger"]
+    assert isinstance(bollinger["period"], int)
+    assert isinstance(bollinger["mult"], float)
+    assert isinstance(bollinger["source"], str)
 
     risk_settings = store.risk_settings()
     assert isinstance(risk_settings["account_balance"], float)

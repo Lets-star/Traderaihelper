@@ -205,11 +205,13 @@ class ConfigStore:
             "atr_channels": {
                 "period": int(atr_channel_defaults.get("period", atr_defaults.get("period", 14))),
                 "mult_1x": float(atr_channel_defaults.get("mult_1x", atr_defaults.get("mult", 1.0))),
+                "mult_2x": float(atr_channel_defaults.get("mult_2x", 2.0)),
                 "mult_3x": float(atr_channel_defaults.get("mult_3x", 3.0)),
             },
             "bollinger": {
                 "period": int(bollinger_defaults.get("period", 20)),
                 "mult": float(bollinger_defaults.get("mult", bollinger_defaults.get("stddev", 2.0))),
+                "stddev": float(bollinger_defaults.get("stddev", bollinger_defaults.get("mult", 2.0))),
                 "source": str(bollinger_defaults.get("source", "close")),
             },
             "volume": {

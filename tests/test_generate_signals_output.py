@@ -3,6 +3,7 @@ from typing import Any, Dict
 
 import pytest
 
+from indicator_collector.trading_system.backtester import DEFAULT_SIGNAL_THRESHOLDS
 from indicator_collector.trading_system.generate_signals import generate_signals
 
 
@@ -43,38 +44,38 @@ class TestGenerateSignalsOutput:
     def test_generate_signals_actionable_buy(self):
         payload = {
             "signal_type": "BUY",
-            "confidence": 0.72,
+            "confidence": 0.82,
             "timestamp": 1700000000000,
             "symbol": "BTCUSDT",
             "timeframe": "1h",
             "factors": [
                 {
                     "factor_name": "technical_analysis",
-                    "score": 0.74,
+                    "score": 0.84,
                     "weight": 0.25,
                     "metadata": {"direction": "bullish"},
                 },
                 {
                     "factor_name": "sentiment",
-                    "score": 0.68,
+                    "score": 0.78,
                     "weight": 0.15,
                     "metadata": {"direction": "bullish"},
                 },
                 {
                     "factor_name": "multitimeframe_alignment",
-                    "score": 0.65,
+                    "score": 0.74,
                     "weight": 0.10,
                     "metadata": {"direction": "bullish"},
                 },
                 {
                     "factor_name": "volume_analysis",
-                    "score": 0.62,
+                    "score": 0.76,
                     "weight": 0.20,
                     "metadata": {"direction": "bullish"},
                 },
                 {
                     "factor_name": "market_structure",
-                    "score": 0.70,
+                    "score": 0.80,
                     "weight": 0.15,
                     "metadata": {"direction": "bullish"},
                 },
@@ -128,6 +129,7 @@ class TestGenerateSignalsOutput:
         metadata = explicit["metadata"]
         assert pytest.approx(metadata["composite_score"], rel=1e-6) == _expected_composite_score(payload)
         assert metadata.get("missing_categories") == []
+        assert "indicator_params" in metadata
         assert "Composite score" in " ".join(explicit["rationale"])
 
     def test_generate_signals_hold_due_to_confirmations(self):
@@ -193,6 +195,8 @@ class TestGenerateSignalsOutput:
         assert explicit["position_size_pct"] is None
         rationale_text = " ".join(explicit["rationale"]).lower()
         assert "composite score" in rationale_text
+        assert f"buy ≥ {DEFAULT_SIGNAL_THRESHOLDS['buy']:.2f}".lower() in rationale_text
+        assert f"sell ≤ {DEFAULT_SIGNAL_THRESHOLDS['sell']:.2f}".lower() in rationale_text
         metadata = explicit["metadata"]
         assert pytest.approx(metadata["composite_score"], rel=1e-6) == _expected_composite_score(payload)
         neutralized_categories = set(metadata.get("neutralized_categories", []))
@@ -476,3 +480,97 @@ class TestGenerateSignalsOutput:
         metadata = explicit["metadata"]
         assert pytest.approx(metadata["buy_threshold"], rel=1e-6) == 0.7
         assert pytest.approx(metadata["composite_score"], rel=1e-6) == _expected_composite_score(payload)
+
+    def test_generate_signals_respects_signal_params_thresholds(self):
+        payload = {
+            "signal_type": "BUY",
+            "timestamp": 1700005000000,
+            "symbol": "ETHUSDT",
+            "timeframe": "1h",
+            "factors": [
+                {
+                    "factor_name": "technical_analysis",
+                    "score": 0.75,
+                    "weight": 0.25,
+                    "metadata": {"direction": "bullish"},
+                },
+                {
+                    "factor_name": "sentiment",
+                    "score": 0.65,
+                    "weight": 0.15,
+                    "metadata": {"direction": "bullish"},
+                },
+                {
+                    "factor_name": "multitimeframe_alignment",
+                    "score": 0.62,
+                    "weight": 0.10,
+                    "metadata": {"direction": "bullish"},
+                },
+                {
+                    "factor_name": "volume_analysis",
+                    "score": 0.66,
+                    "weight": 0.20,
+                    "metadata": {"direction": "bullish"},
+                },
+                {
+                    "factor_name": "market_structure",
+                    "score": 0.63,
+                    "weight": 0.15,
+                    "metadata": {"direction": "bullish"},
+                },
+            ],
+            "position_plan": {
+                "entry_price": 1_850.0,
+                "stop_loss": 1_830.0,
+                "take_profit_levels": [1_870.0, 1_890.0, 1_930.0],
+                "position_size_usd": 900.0,
+                "direction": "long",
+                "metadata": {"atr": 18.0},
+            },
+            "metadata": {
+                "config_weights": {
+                    "technical": 0.25,
+                    "sentiment": 0.15,
+                    "multitimeframe": 0.10,
+                    "volume": 0.20,
+                    "market_structure": 0.15,
+                    "composite": 0.15,
+                }
+            },
+        }
+
+        explicit = generate_signals(
+            payload,
+            params={"signal_thresholds": {"buy": 0.55, "sell": 0.45}},
+        )
+
+        assert explicit["signal"] == "BUY"
+        thresholds_meta = explicit["metadata"]
+        assert pytest.approx(thresholds_meta["buy_threshold"], rel=1e-6) == 0.55
+        assert pytest.approx(thresholds_meta["sell_threshold"], rel=1e-6) == 0.45
+
+    def test_generate_signals_includes_indicator_params_metadata(self):
+        payload = {
+            "signal_type": "BUY",
+            "timestamp": 1700010000000,
+            "symbol": "BTCUSDT",
+            "timeframe": "1h",
+            "factors": [
+                {
+                    "factor_name": "technical_analysis",
+                    "score": 0.6,
+                    "weight": 0.25,
+                    "metadata": {"direction": "bullish"},
+                }
+            ],
+        }
+
+        explicit = generate_signals(
+            payload,
+            params={"indicator_params": {"bollinger": {"period": 15}}},
+        )
+
+        metadata = explicit["metadata"]
+        indicator_params = metadata.get("indicator_params")
+        assert indicator_params
+        assert indicator_params["bollinger"]["period"] == 15

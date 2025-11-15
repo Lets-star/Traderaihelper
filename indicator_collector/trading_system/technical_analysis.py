@@ -253,13 +253,17 @@ def analyze_atr(
     candles: List[Dict[str, float]],
     period: int = 14,
     multiplier: float = 1.0,
+    *,
+    channel_period: Optional[int] = None,
+    channel_multipliers: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, object]:
     """
     Analyze ATR (Average True Range) to assess volatility context.
     
     Returns volatility level and channel boundaries.
     """
-    if not candles or len(candles) < max(16, period + 2):
+    min_period = max(period, channel_period or period)
+    if not candles or len(candles) < max(16, min_period + 2):
         return {
             "atr_score": 0.5,
             "atr_volatility": "neutral",
@@ -270,6 +274,7 @@ def analyze_atr(
                 "upper": 0.0,
                 "lower": 0.0,
                 "width": 0.0,
+                "levels": {},
             },
         }
     
@@ -288,6 +293,7 @@ def analyze_atr(
                 "upper": 0.0,
                 "lower": 0.0,
                 "width": 0.0,
+                "levels": {},
             },
         }
     
@@ -304,6 +310,7 @@ def analyze_atr(
                 "upper": 0.0,
                 "lower": 0.0,
                 "width": 0.0,
+                "levels": {},
             },
         }
     
@@ -322,6 +329,7 @@ def analyze_atr(
                 "upper": 0.0,
                 "lower": 0.0,
                 "width": 0.0,
+                "levels": {},
             },
         }
     
@@ -363,9 +371,35 @@ def analyze_atr(
         rationale_parts.append(f"Normal volatility (ATR {atr_percent:.2f}% of price)")
     
     # Calculate ATR channels
-    upper_channel = round(current_close + current_atr, 4)
-    lower_channel = round(current_close - current_atr, 4)
-    channel_width = round(current_atr * 2, 4)
+    level_multipliers: Dict[str, float] = {}
+    if isinstance(channel_multipliers, dict):
+        for key, value in channel_multipliers.items():
+            try:
+                level_multipliers[key] = float(value)
+            except (TypeError, ValueError):
+                continue
+    if not level_multipliers:
+        level_multipliers["mult_1x"] = float(multiplier)
+    channel_len = channel_period or period
+    try:
+        channel_atr_values = (
+            atr_values if channel_len == period else math_utils.atr(highs, lows, closes, length=channel_len)
+        )
+        raw_channel_atr = channel_atr_values[-1]
+    except (ValueError, IndexError):
+        raw_channel_atr = raw_atr
+    levels: Dict[str, Dict[str, float]] = {}
+    for key, mult in level_multipliers.items():
+        offset = raw_channel_atr * mult
+        levels[key] = {
+            "upper": round(current_close + offset, 4),
+            "lower": round(current_close - offset, 4),
+            "width": round(offset * 2, 4),
+        }
+    primary_level = levels.get("mult_1x") or next(iter(levels.values()))
+    upper_channel = primary_level["upper"]
+    lower_channel = primary_level["lower"]
+    channel_width = primary_level["width"]
     
     rationale = "; ".join(rationale_parts) if rationale_parts else "ATR neutral"
     
@@ -380,11 +414,14 @@ def analyze_atr(
             "upper": upper_channel,
             "lower": lower_channel,
             "width": channel_width,
+            "levels": levels,
         },
         "metadata": {
             "raw_atr": round(raw_atr, 4),
             "multiplier": multiplier,
             "period": period,
+            "channel_period": channel_len,
+            "channel_multipliers": level_multipliers,
         },
     }
 
@@ -392,13 +429,16 @@ def analyze_atr(
 
 def analyze_bollinger_bands(
     candles: List[Dict[str, float]],
+    period: int = 20,
+    mult: float = 2.0,
+    source: str = "close",
 ) -> Dict[str, object]:
     """
     Analyze Bollinger Bands for squeeze/breakout and mean reversion signals.
     
     Returns score based on bands position and price proximity.
     """
-    if not candles or len(candles) < 21:
+    if not candles or len(candles) < max(21, period + 1):
         return {
             "bollinger_score": 0.5,
             "bollinger_state": "neutral",
@@ -409,10 +449,31 @@ def analyze_bollinger_bands(
             "band_width_percent": 0.0,
         }
     
-    closes = [float(c.get("close", 0)) for c in candles]
+    def _extract_series() -> List[float]:
+        normalized_source = source.lower()
+        if normalized_source in {"close", "c"}:
+            return [float(c.get("close", 0.0)) for c in candles]
+        if normalized_source in {"ohlc4", "avg"}:
+            return [
+                float(
+                    (c.get("open", 0.0) + c.get("high", 0.0) + c.get("low", 0.0) + c.get("close", 0.0))
+                    / 4.0
+                )
+                for c in candles
+            ]
+        if normalized_source in {"hlc3", "typical"}:
+            return [
+                float((c.get("high", 0.0) + c.get("low", 0.0) + c.get("close", 0.0)) / 3.0)
+                for c in candles
+            ]
+        if normalized_source in {"open", "o"}:
+            return [float(c.get("open", 0.0)) for c in candles]
+        return [float(c.get("close", 0.0)) for c in candles]
+    
+    series = _extract_series()
     
     try:
-        upper_band, middle_band, lower_band = math_utils.bollinger_bands(closes, length=20, mult=2.0)
+        upper_band, middle_band, lower_band = math_utils.bollinger_bands(series, length=period, mult=mult)
     except (ValueError, IndexError):
         return {
             "bollinger_score": 0.5,
@@ -427,7 +488,7 @@ def analyze_bollinger_bands(
     current_upper = upper_band[-1]
     current_middle = middle_band[-1]
     current_lower = lower_band[-1]
-    current_close = closes[-1]
+    current_close = series[-1]
     
     # Validate values
     if not all(isinstance(v, (int, float)) and v == v for v in [current_upper, current_middle, current_lower]):
@@ -507,6 +568,12 @@ def analyze_bollinger_bands(
         "upper_band": round(current_upper, 4),
         "middle_band": round(current_middle, 4),
         "lower_band": round(current_lower, 4),
+        "metadata": {
+            "period": period,
+            "mult": mult,
+            "source": source,
+            "series_value": round(current_close, 4),
+        },
     }
 
 
@@ -654,12 +721,41 @@ def analyze_technical_factors(
             "period": _safe_int(params_source.get("atr", {}).get("period"), 14),
             "mult": _safe_float(params_source.get("atr", {}).get("mult"), 1.0),
         },
+        "atr_channels": {
+            "period": _safe_int(params_source.get("atr_channels", {}).get("period"), _safe_int(params_source.get("atr", {}).get("period"), 14)),
+            "multipliers": {
+                key: _safe_float(value, default)
+                for key, value, default in [
+                    ("mult_1x", params_source.get("atr_channels", {}).get("mult_1x"), 1.0),
+                    ("mult_2x", params_source.get("atr_channels", {}).get("mult_2x"), 2.0),
+                    ("mult_3x", params_source.get("atr_channels", {}).get("mult_3x"), 3.0),
+                ]
+            },
+        },
+        "bollinger": {
+            "period": _safe_int(params_source.get("bollinger", {}).get("period"), 20),
+            "mult": _safe_float(
+                params_source.get("bollinger", {}).get("mult"),
+                _safe_float(params_source.get("bollinger", {}).get("stddev"), 2.0),
+            ),
+            "stddev": _safe_float(params_source.get("bollinger", {}).get("stddev"), 2.0),
+            "source": str(params_source.get("bollinger", {}).get("source", "close")),
+        },
     }
+
+    resolved_params["atr_channels"]["multipliers"] = {
+        key: value
+        for key, value in resolved_params["atr_channels"]["multipliers"].items()
+        if isinstance(value, (int, float))
+    } or {"mult_1x": resolved_params["atr"]["mult"]}
+    resolved_params["atr_channels"].update(resolved_params["atr_channels"]["multipliers"])
 
     min_required_candles = max(
         30,
         resolved_params["rsi"]["period"] + 2,
         resolved_params["atr"]["period"] + 2,
+        resolved_params["atr_channels"]["period"] + 2,
+        resolved_params["bollinger"]["period"] + 1,
         resolved_params["macd"]["slow"] + resolved_params["macd"]["signal"],
     )
 
@@ -708,8 +804,15 @@ def analyze_technical_factors(
         candles,
         period=resolved_params["atr"]["period"],
         multiplier=resolved_params["atr"]["mult"],
+        channel_period=resolved_params["atr_channels"]["period"],
+        channel_multipliers=resolved_params["atr_channels"]["multipliers"],
     )
-    bollinger_analysis = analyze_bollinger_bands(candles)
+    bollinger_analysis = analyze_bollinger_bands(
+        candles,
+        period=resolved_params["bollinger"]["period"],
+        mult=resolved_params["bollinger"]["mult"],
+        source=resolved_params["bollinger"]["source"],
+    )
     divergence_analysis = detect_divergences(candles)
 
     # Extract normalized scores

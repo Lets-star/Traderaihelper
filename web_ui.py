@@ -27,7 +27,10 @@ from indicator_collector.real_data_validator import DataValidationError
 from indicator_collector.time_series import TimeframeSeries
 from indicator_collector.timeframes import Timeframe
 from indicator_collector.trade_signals import calculate_position_metrics, calculate_tp_sl_levels
-from indicator_collector.trading_system import indicator_defaults_for
+from indicator_collector.trading_system.backtester import (
+    DEFAULT_SIGNAL_THRESHOLDS,
+    indicator_defaults_for,
+)
 from indicator_collector.trading_system.automated_signals import run_automated_signal_flow
 from indicator_collector.trading_system.signal_generator import SignalConfig
 from indicator_collector.trading_system.signal_schema import is_valid_signal_structure
@@ -921,6 +924,84 @@ def render_indicator_controls(config_store: ConfigStore) -> None:
     config_store.update_indicator_param("atr", "period", int(atr_period))
     config_store.update_indicator_param("atr", "mult", float(atr_mult))
 
+    st.markdown("#### ATR Channels")
+    atr_channel_params = params.get("atr_channels", {})
+    atr_channel_cols = st.columns(4)
+    atr_channel_period = num_int(
+        "Channel period",
+        min_v=5,
+        max_v=100,
+        value=int(atr_channel_params.get("period", atr_period)),
+        key=ui_key("indicator", "atr_channel_period"),
+        ui=atr_channel_cols[0],
+    )
+    atr_channel_mult_1x = num_float(
+        "1x ATR multiplier",
+        min_v=0.1,
+        max_v=10.0,
+        value=float(atr_channel_params.get("mult_1x", atr_mult)),
+        step=0.1,
+        key=ui_key("indicator", "atr_channel_mult_1x"),
+        ui=atr_channel_cols[1],
+    )
+    atr_channel_mult_2x = num_float(
+        "2x ATR multiplier",
+        min_v=0.1,
+        max_v=10.0,
+        value=float(atr_channel_params.get("mult_2x", 2.0)),
+        step=0.1,
+        key=ui_key("indicator", "atr_channel_mult_2x"),
+        ui=atr_channel_cols[2],
+    )
+    atr_channel_mult_3x = num_float(
+        "3x ATR multiplier",
+        min_v=0.1,
+        max_v=10.0,
+        value=float(atr_channel_params.get("mult_3x", 3.0)),
+        step=0.1,
+        key=ui_key("indicator", "atr_channel_mult_3x"),
+        ui=atr_channel_cols[3],
+    )
+    config_store.update_indicator_param("atr_channels", "period", int(atr_channel_period))
+    config_store.update_indicator_param("atr_channels", "mult_1x", float(atr_channel_mult_1x))
+    config_store.update_indicator_param("atr_channels", "mult_2x", float(atr_channel_mult_2x))
+    config_store.update_indicator_param("atr_channels", "mult_3x", float(atr_channel_mult_3x))
+
+    st.markdown("#### Bollinger Bands")
+    bollinger_params = params.get("bollinger", {})
+    bollinger_cols = st.columns(3)
+    bollinger_period = num_int(
+        "Bollinger period",
+        min_v=5,
+        max_v=200,
+        value=int(bollinger_params.get("period", 20)),
+        key=ui_key("indicator", "bollinger_period"),
+        ui=bollinger_cols[0],
+    )
+    bollinger_mult = num_float(
+        "Band multiplier",
+        min_v=0.5,
+        max_v=5.0,
+        value=float(bollinger_params.get("mult", bollinger_params.get("stddev", 2.0))),
+        step=0.1,
+        key=ui_key("indicator", "bollinger_mult"),
+        ui=bollinger_cols[1],
+    )
+    bollinger_source_options = ["close", "hlc3", "ohlc4", "open"]
+    bollinger_source_value = str(bollinger_params.get("source", "close")).lower()
+    if bollinger_source_value not in bollinger_source_options:
+        bollinger_source_value = "close"
+    bollinger_source = bollinger_cols[2].selectbox(
+        "Price source",
+        bollinger_source_options,
+        index=bollinger_source_options.index(bollinger_source_value),
+        key=ui_key("indicator", "bollinger_source"),
+    )
+    config_store.update_indicator_param("bollinger", "period", int(bollinger_period))
+    config_store.update_indicator_param("bollinger", "mult", float(bollinger_mult))
+    config_store.update_indicator_param("bollinger", "stddev", float(bollinger_mult))
+    config_store.update_indicator_param("bollinger", "source", str(bollinger_source))
+
     st.markdown("#### Volume & Order Flow")
     volume_params = params.get("volume", {})
     volume_cols = st.columns(2)
@@ -1028,7 +1109,7 @@ def render_indicator_controls(config_store: ConfigStore) -> None:
         "Composite buy threshold",
         min_v=0.0,
         max_v=1.0,
-        value=float(composite_params.get("buy_threshold", 0.6)),
+        value=float(composite_params.get("buy_threshold", DEFAULT_SIGNAL_THRESHOLDS["buy"])),
         step=0.01,
         key=ui_key("indicator", "composite_buy_threshold"),
         ui=composite_cols[0],
@@ -1037,7 +1118,7 @@ def render_indicator_controls(config_store: ConfigStore) -> None:
         "Composite sell threshold",
         min_v=0.0,
         max_v=1.0,
-        value=float(composite_params.get("sell_threshold", 0.4)),
+        value=float(composite_params.get("sell_threshold", DEFAULT_SIGNAL_THRESHOLDS["sell"])),
         step=0.01,
         key=ui_key("indicator", "composite_sell_threshold"),
         ui=composite_cols[1],
@@ -1170,6 +1251,22 @@ def render_signal_risk_controls(config_store: ConfigStore) -> None:
     signal_settings = config_store.signal_settings()
     signal_cols = st.columns(3)
 
+    def _sanitize_threshold_pair(buy_val: float, sell_val: float) -> tuple[float, float]:
+        buy_val = float(min(max(buy_val, 0.0), 1.0))
+        sell_val = float(min(max(sell_val, 0.0), 1.0))
+        if buy_val <= sell_val:
+            buy_val, sell_val = max(buy_val, sell_val), min(buy_val, sell_val)
+            if buy_val <= sell_val:
+                buy_val = min(1.0, max(sell_val + 0.01, DEFAULT_SIGNAL_THRESHOLDS["buy"]))
+            if buy_val > 1.0:
+                buy_val = 1.0
+            if buy_val <= sell_val:
+                sell_val = max(0.0, min(buy_val - 0.01, DEFAULT_SIGNAL_THRESHOLDS["sell"]))
+        if buy_val <= sell_val:
+            buy_val = DEFAULT_SIGNAL_THRESHOLDS["buy"]
+            sell_val = DEFAULT_SIGNAL_THRESHOLDS["sell"]
+        return round(buy_val, 2), round(sell_val, 2)
+
     min_confirmations = num_int(
         "Min Confirmations",
         min_v=1,
@@ -1178,22 +1275,34 @@ def render_signal_risk_controls(config_store: ConfigStore) -> None:
         key=ui_key("signal", "min_confirmations"),
         ui=signal_cols[0],
     )
+    buy_threshold_key = ui_key("signal", "buy_threshold")
     buy_threshold = signal_cols[1].slider(
         "Buy Threshold",
-        min_value=0.4,
-        max_value=0.9,
-        value=float(signal_settings.get("buy_threshold", 0.65)),
+        min_value=0.0,
+        max_value=1.0,
+        value=float(signal_settings.get("buy_threshold", DEFAULT_SIGNAL_THRESHOLDS["buy"])),
         step=0.01,
-        key=ui_key("signal", "buy_threshold"),
+        key=buy_threshold_key,
     )
+    sell_threshold_key = ui_key("signal", "sell_threshold")
     sell_threshold = signal_cols[2].slider(
         "Sell Threshold",
-        min_value=0.1,
-        max_value=0.6,
-        value=float(signal_settings.get("sell_threshold", 0.35)),
+        min_value=0.0,
+        max_value=1.0,
+        value=float(signal_settings.get("sell_threshold", DEFAULT_SIGNAL_THRESHOLDS["sell"])),
         step=0.01,
-        key=ui_key("signal", "sell_threshold"),
+        key=sell_threshold_key,
     )
+
+    sanitized_buy, sanitized_sell = _sanitize_threshold_pair(buy_threshold, sell_threshold)
+    if (sanitized_buy, sanitized_sell) != (round(buy_threshold, 2), round(sell_threshold, 2)):
+        st.error("Buy threshold must be greater than sell threshold. Values adjusted automatically.")
+        st.session_state[buy_threshold_key] = sanitized_buy
+        st.session_state[sell_threshold_key] = sanitized_sell
+        buy_threshold, sell_threshold = sanitized_buy, sanitized_sell
+    else:
+        buy_threshold, sell_threshold = sanitized_buy, sanitized_sell
+
     config_store.update_signal_setting("min_confirmations", int(min_confirmations))
     config_store.update_signal_setting("buy_threshold", float(buy_threshold))
     config_store.update_signal_setting("sell_threshold", float(sell_threshold))
@@ -2720,6 +2829,16 @@ def main():
                 if not is_valid_signal_structure(result_dict["explicit_signal"]):
                     raise ValueError("Generated signal does not match required schema")
 
+                final_indicator_params = (
+                    result_dict.get("explicit_signal", {})
+                    .get("metadata", {})
+                    .get("indicator_params")
+                    or result_dict.get("processed_payload", {})
+                    .get("metadata", {})
+                    .get("indicator_params")
+                    or indicator_params
+                )
+
                 state.update(
                     {
                         "result": result_dict,
@@ -2728,7 +2847,7 @@ def main():
                         "processed_payload": result_dict.get("processed_payload"),
                         "explicit_signal": result_dict.get("explicit_signal"),
                         "weights": normalized_weights,
-                        "indicator_params": indicator_params,
+                        "indicator_params": final_indicator_params,
                         "signal_params": signal_params,
                         "signal_config": signal_config_payload,
                         "params_hash": params_hash,
@@ -2873,7 +2992,8 @@ def main():
                 st.markdown("### 🧩 Composite Breakdown")
                 st.metric("Composite Score", f"{composite_score:.2f}")
                 st.caption(
-                    f"Buy ≥ {composite_meta.get('buy_threshold', 0.6):.2f} · Sell ≤ {composite_meta.get('sell_threshold', 0.4):.2f}"
+                    f"Buy ≥ {composite_meta.get('buy_threshold', DEFAULT_SIGNAL_THRESHOLDS['buy']):.2f} · "
+                    f"Sell ≤ {composite_meta.get('sell_threshold', DEFAULT_SIGNAL_THRESHOLDS['sell']):.2f}"
                 )
 
                 top_contributors = composite_meta.get("top_contributors") or []

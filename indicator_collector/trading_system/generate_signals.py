@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import math
 import os
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
@@ -190,7 +191,7 @@ def generate_signals(
                 "original_signal_type": original_signal_type,
                 "plan_warnings": plan_details.warnings,
                 "reasons": hold_reasons,
-                "indicator_params": final_indicator_params,
+                "indicator_params": deepcopy(final_indicator_params),
             }
 
         validated = validate_signal_json(result)
@@ -1139,7 +1140,7 @@ def _build_metadata_block(
         metadata["plan_warnings"] = plan_details.warnings
 
     if indicator_params:
-        metadata["indicator_params"] = indicator_params
+        metadata["indicator_params"] = deepcopy(indicator_params)
 
     top_contributors = composite_context.get("top_contributors") or []
     if top_contributors:

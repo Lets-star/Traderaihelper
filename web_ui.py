@@ -184,6 +184,80 @@ SYNTHETIC_MARKER_VALUES = {
     "artificial",
 }
 
+FACTOR_CATEGORY_ORDER = [
+    "technical",
+    "sentiment",
+    "multitimeframe",
+    "volume",
+    "market_structure",
+    "composite",
+]
+
+FACTOR_NAME_TO_CATEGORY = {
+    "technical_analysis": "technical",
+    "technical": "technical",
+    "sentiment_analysis": "sentiment",
+    "sentiment": "sentiment",
+    "multitimeframe_alignment": "multitimeframe",
+    "multitimeframe": "multitimeframe",
+    "volume_analysis": "volume",
+    "volume": "volume",
+    "market_structure": "market_structure",
+    "structure": "market_structure",
+    "composite_analysis": "composite",
+    "composite": "composite",
+}
+
+FACTOR_CATEGORY_LABELS = {
+    "technical": "Technical",
+    "sentiment": "Sentiment",
+    "multitimeframe": "Multi-timeframe",
+    "volume": "Volume",
+    "market_structure": "Market Structure",
+    "composite": "Composite",
+}
+
+
+def format_category_label(category: str) -> str:
+    return FACTOR_CATEGORY_LABELS.get(category, category.replace("_", " ").title())
+
+
+def normalize_factor_category(name: Optional[str]) -> Optional[str]:
+    if not name:
+        return None
+    key = str(name).lower()
+    return FACTOR_NAME_TO_CATEGORY.get(key, key)
+
+
+def normalize_category_weights(weights: Optional[Dict[str, Any]]) -> tuple[Dict[str, float], Dict[str, float]]:
+    raw_values: Dict[str, float] = {}
+    if isinstance(weights, dict):
+        for category in FACTOR_CATEGORY_ORDER:
+            value = weights.get(category)
+            if value is None:
+                continue
+            try:
+                raw_values[category] = float(value)
+            except (TypeError, ValueError):
+                continue
+    total = sum(raw_values.values())
+    normalized: Dict[str, float] = {}
+    if total > 0:
+        needs_normalization = abs(total - 1.0) > 1e-6
+        for category, value in raw_values.items():
+            normalized[category] = value / total if needs_normalization else value
+    for category in FACTOR_CATEGORY_ORDER:
+        normalized.setdefault(category, 0.0)
+        raw_values.setdefault(category, 0.0)
+    return normalized, raw_values
+
+
+def safe_float(value: Any, default: Optional[float] = None) -> Optional[float]:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
 
 def sanitize_payload_for_real_data(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Remove known synthetic markers and enforce Binance metadata."""
@@ -1151,6 +1225,8 @@ def render_indicator_controls(config_store: ConfigStore) -> None:
     )
     config_store.update_indicator_param("composite", "buy_threshold", float(composite_buy))
     config_store.update_indicator_param("composite", "sell_threshold", float(composite_sell))
+    config_store.update_signal_setting("buy_threshold", float(composite_buy))
+    config_store.update_signal_setting("sell_threshold", float(composite_sell))
     config_store.update_indicator_param("composite", "confidence_floor", float(confidence_floor))
     config_store.update_indicator_param("composite", "confidence_ceiling", float(confidence_ceiling))
     config_store.update_indicator_param("composite", "min_confirmations", int(min_confirmations))
@@ -2516,14 +2592,42 @@ def main():
         patterns = advanced.get("patterns", {})
         
         st.markdown("### Elliott Wave Analysis")
-        elliott = patterns.get("elliott", {})
+        elliott = patterns.get("elliott", {}) or {}
+        current_wave = elliott.get("current_wave") or {}
+        total_waves = elliott.get("total_waves") or elliott.get("wave_count", 0)
+        current_wave_label = (
+            current_wave.get("label")
+            or elliott.get("current_wave_label")
+            or elliott.get("label", "Unknown")
+        )
+        current_direction = current_wave.get("direction")
+        pivot_structure = (
+            current_wave.get("structure_label")
+            or current_wave.get("structure")
+            or elliott.get("structure", "Unknown")
+        )
+        structure_regime = elliott.get("structure", "Unknown")
+
         col1, col2, col3 = st.columns(3)
         with col1:
-            st.metric("Wave Count", elliott.get("wave_count", 0))
+            st.metric("Wave Count", total_waves if total_waves is not None else 0)
         with col2:
-            st.metric("Current Wave", elliott.get("label", "Unknown"))
+            delta_label = current_direction.title() if isinstance(current_direction, str) else None
+            st.metric("Current Wave", current_wave_label, delta=delta_label)
         with col3:
-            st.metric("Structure Type", elliott.get("structure", "Unknown").upper())
+            pivot_display = str(pivot_structure).replace("_", " ").title() if pivot_structure else "Unknown"
+            regime_display = str(structure_regime).replace("_", " ").title() if structure_regime else "—"
+            st.metric("Pivot Structure", pivot_display, delta=regime_display if regime_display else None)
+
+        pivot_price = safe_float(current_wave.get("price"))
+        pivot_time = current_wave.get("time_iso")
+        caption_parts = []
+        if pivot_price is not None:
+            caption_parts.append(f"Price ${pivot_price:.4f}")
+        if pivot_time:
+            caption_parts.append(pivot_time.replace("T", " ")[:19])
+        if caption_parts:
+            st.caption("Last pivot: " + " • ".join(caption_parts))
         
         pivot_points = elliott.get("pivot_points", [])
         if pivot_points:
@@ -2532,11 +2636,19 @@ def main():
                 {
                     "Time": point.get("time_iso", "")[:19],
                     "Price": f"${point.get('price', 0):.4f}",
-                    "Type": point.get("type", "")
+                    "Type": point.get("type", ""),
                 }
                 for point in pivot_points
             ])
-            st.dataframe(pivot_df, width="stretch", hide_index=True)
+            st.dataframe(
+                pivot_df,
+                width="stretch",
+                hide_index=True,
+                key=ui_key(
+                    "patterns",
+                    f"pivot_points_{config_store.symbol}_{config_store.timeframe}"
+                ),
+            )
         
         st.markdown("---")
         st.markdown("### Orderbook Clusters")
@@ -2547,11 +2659,19 @@ def main():
                     "Side": cluster["side"].upper(),
                     "Price": f"${cluster['price']:.4f}",
                     "Volume": f"{cluster['volume']:,.2f}",
-                    "Strength": f"{cluster['strength']:.2f}x"
+                    "Strength": f"{cluster['strength']:.2f}x",
                 }
                 for cluster in clusters
             ])
-            st.dataframe(cluster_df, width="stretch", hide_index=True)
+            st.dataframe(
+                cluster_df,
+                width="stretch",
+                hide_index=True,
+                key=ui_key(
+                    "patterns",
+                    f"clusters_{config_store.symbol}_{config_store.timeframe}"
+                ),
+            )
         else:
             st.info("No significant orderbook clusters detected")
         
@@ -2565,11 +2685,19 @@ def main():
                     "Type": anom["type"].upper().replace("_", " "),
                     "Price": f"${anom['price']:.4f}",
                     "Severity": f"{anom['severity']:.2f}x",
-                    "Description": anom["description"]
+                    "Description": anom["description"],
                 }
                 for anom in anomalies
             ])
-            st.dataframe(anom_df, width="stretch", hide_index=True)
+            st.dataframe(
+                anom_df,
+                width="stretch",
+                hide_index=True,
+                key=ui_key(
+                    "patterns",
+                    f"liquidity_anomalies_{config_store.symbol}_{config_store.timeframe}"
+                ),
+            )
         else:
             st.info("No liquidity anomalies detected")
     
@@ -2891,6 +3019,12 @@ def main():
             signal_data = result["explicit_signal"]
             processed_signal = result["processed_payload"]
 
+            raw_weight_data = signal_data.get("weights") or state.get("weights")
+            normalized_weights_map, raw_weights_map = normalize_category_weights(raw_weight_data)
+            has_weight_data = any(raw_weights_map.get(category, 0.0) > 0 for category in FACTOR_CATEGORY_ORDER)
+            if not has_weight_data:
+                has_weight_data = any(normalized_weights_map.get(category, 0.0) > 0 for category in FACTOR_CATEGORY_ORDER)
+
             col1, col2, col3 = st.columns([2, 1, 1])
 
             with col1:
@@ -2972,17 +3106,21 @@ def main():
                     if position_size is not None:
                         st.write(f"**Position Size:** {position_size:.1f}%")
 
-                    weights = signal_data.get("weights", {})
-                    if weights:
+                    if has_weight_data:
                         st.write("**Component Weights:**")
-                        for component, weight in weights.items():
-                            st.write(f"  {component.title()}: {weight:.2f}")
+                        for category in FACTOR_CATEGORY_ORDER:
+                            weight_value = normalized_weights_map.get(category, 0.0)
+                            if weight_value <= 0:
+                                continue
+                            st.write(f"  {format_category_label(category)}: {weight_value:.2f}")
                 else:
                     st.markdown("### 📊 Component Weights")
-                    weights = signal_data.get("weights", {})
-                    if weights:
-                        for component, weight in weights.items():
-                            st.write(f"• {component.title()}: {weight:.2f}")
+                    if has_weight_data:
+                        for category in FACTOR_CATEGORY_ORDER:
+                            weight_value = normalized_weights_map.get(category, 0.0)
+                            if weight_value <= 0:
+                                continue
+                            st.write(f"• {format_category_label(category)}: {weight_value:.2f}")
                     else:
                         st.write("No component weights available.")
 
@@ -3070,9 +3208,28 @@ def main():
             analyzer_indicator_params = signal_data.get("metadata", {}).get("indicator_params") or processed_signal.get("metadata", {}).get("indicator_params")
             with st.expander("🛠 Analyzer Inputs", expanded=False):
                 st.write("**Category Weights**")
-                weight_display = signal_data.get("weights") or state.get("weights")
-                if weight_display:
-                    st.json(weight_display)
+                if raw_weight_data or has_weight_data:
+                    weight_rows = []
+                    for category in FACTOR_CATEGORY_ORDER:
+                        normalized_value = normalized_weights_map.get(category, 0.0)
+                        raw_value = raw_weights_map.get(category, 0.0)
+                        row = {
+                            "Category": format_category_label(category),
+                            "Normalized Weight": f"{normalized_value:.2f}",
+                        }
+                        if raw_weight_data:
+                            row["Raw Weight"] = f"{raw_value:.2f}"
+                        weight_rows.append(row)
+                    weight_df = pd.DataFrame(weight_rows)
+                    st.dataframe(
+                        weight_df,
+                        width="stretch",
+                        hide_index=True,
+                        key=ui_key(
+                            "automated_signals",
+                            f"category_weights_{config_store.symbol}_{config_store.timeframe}"
+                        ),
+                    )
                 else:
                     st.write("No weight data available.")
 
@@ -3088,34 +3245,68 @@ def main():
                     st.write("**Weights Hash:**", state.get("weights_hash"))
 
             # Factor Analysis
-            factors = signal_data.get("factors", [])
-            if factors:
-                st.markdown("### 📊 Factor Analysis")
+            factors = signal_data.get("factors", []) or []
+            factor_entries: Dict[str, Dict[str, Any]] = {}
+            for factor in factors:
+                if not isinstance(factor, dict):
+                    continue
+                category = normalize_factor_category(factor.get("factor_name"))
+                if not category or category not in FACTOR_CATEGORY_ORDER:
+                    continue
+                score = safe_float(factor.get("score"))
+                metadata = factor.get("metadata") or {}
+                direction = metadata.get("direction")
+                confidence = safe_float(metadata.get("confidence"))
+                entry = factor_entries.get(category)
+                if entry is None or (score is not None and entry.get("score") is not None and abs(score - 0.5) > abs(entry["score"] - 0.5)):
+                    factor_entries[category] = {
+                        "score": score,
+                        "emoji": factor.get("emoji", "⚪"),
+                        "description": factor.get("description", ""),
+                        "direction": direction,
+                        "confidence": confidence,
+                    }
 
-                factors_data = []
-                for factor in factors:
-                    if isinstance(factor, dict):
-                        factors_data.append(
-                            {
-                                "Factor": factor.get("factor_name", "Unknown"),
-                                "Score": f"{factor.get('score', 0):.2f}",
-                                "Weight": f"{factor.get('weight', 1.0):.2f}",
-                                "Emoji": factor.get("emoji", "⚪"),
-                                "Description": factor.get("description", ""),
-                            }
-                        )
-
-                if factors_data:
-                    factors_df = pd.DataFrame(factors_data)
-                    st.dataframe(
-                        factors_df,
-                        width="stretch",
-                        hide_index=True,
-                        key=ui_key(
-                            "automated_signals",
-                            f"factors_{config_store.symbol}_{config_store.timeframe}"
-                        ),
+            factors_rows = []
+            for category in FACTOR_CATEGORY_ORDER:
+                entry = factor_entries.get(category)
+                weight_value = normalized_weights_map.get(category, 0.0)
+                if entry and entry.get("score") is not None:
+                    row = {
+                        "Category": format_category_label(category),
+                        "Score": f"{entry['score']:.2f}",
+                        "Weight": f"{weight_value:.2f}",
+                        "Direction": entry.get("direction", "").title() if entry.get("direction") else "—",
+                        "Emoji": entry.get("emoji", "⚪") or "⚪",
+                        "Description": entry.get("description", ""),
+                        "Confidence": f"{entry['confidence']:.1f}" if entry.get("confidence") is not None else "—",
+                    }
+                    factors_rows.append(row)
+                elif has_weight_data and weight_value > 0:
+                    factors_rows.append(
+                        {
+                            "Category": format_category_label(category),
+                            "Score": "N/A",
+                            "Weight": f"{weight_value:.2f}",
+                            "Direction": "Neutral",
+                            "Emoji": "⚪",
+                            "Description": "No factor data available",
+                            "Confidence": "—",
+                        }
                     )
+
+            if factors_rows:
+                st.markdown("### 📊 Factor Analysis")
+                factors_df = pd.DataFrame(factors_rows)
+                st.dataframe(
+                    factors_df,
+                    width="stretch",
+                    hide_index=True,
+                    key=ui_key(
+                        "automated_signals",
+                        f"factors_{config_store.symbol}_{config_store.timeframe}"
+                    ),
+                )
 
             st.markdown("---")
 

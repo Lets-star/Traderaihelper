@@ -801,7 +801,8 @@ def calculate_patterns_and_waves(
         wave_points.extend(entries)
     wave_points.sort(key=lambda item: item.get("timestamp", 0))
 
-    wave_count = min(5, len(wave_points))
+    total_waves = len(wave_points)
+    wave_count = min(5, total_waves)
     trend = market_structure.get("trend") if market_structure else "neutral"
     if trend == "bullish":
         wave_label = f"Impulse Wave {wave_count}" if wave_count else "Impulse"
@@ -813,7 +814,48 @@ def calculate_patterns_and_waves(
         wave_label = "Sideways"
         structure_type = "indecision"
 
+    structure_name_map = {
+        "HH": "Higher High",
+        "HL": "Higher Low",
+        "LH": "Lower High",
+        "LL": "Lower Low",
+        "IMPULSE": "Impulse",
+        "CORRECTIVE": "Corrective",
+    }
+
+    current_wave: Dict[str, object] = {}
+    current_wave_label = wave_label
+    if wave_points:
+        latest_wave = wave_points[-1]
+        structure_code = str(latest_wave.get("structure") or latest_wave.get("type") or "").upper()
+        structure_name = structure_name_map.get(structure_code, structure_code.title() if structure_code else "Unknown")
+        wave_number = total_waves or wave_count
+        if structure_name and structure_name != "Unknown":
+            current_wave_label = f"Wave {wave_number} ({structure_name})"
+        else:
+            current_wave_label = f"Wave {wave_number}" if wave_number else wave_label
+
+        if structure_code in {"HH", "HL"}:
+            direction = "bullish"
+        elif structure_code in {"LH", "LL"}:
+            direction = "bearish"
+        else:
+            direction = trend
+
+        current_wave = {
+            "wave_number": wave_number,
+            "structure": structure_code or None,
+            "structure_label": structure_name if structure_name else None,
+            "timestamp": latest_wave.get("timestamp"),
+            "time_iso": latest_wave.get("time_iso"),
+            "price": latest_wave.get("price"),
+            "direction": direction,
+            "trend": trend,
+            "label": current_wave_label,
+        }
+
     clusters: List[Dict[str, object]] = []
+
     if orderbook_data:
         raw = orderbook_data.get("raw_levels", {})
         bids = raw.get("bids", [])
@@ -891,7 +933,10 @@ def calculate_patterns_and_waves(
     return {
         "elliott": {
             "wave_count": wave_count,
+            "total_waves": total_waves,
             "label": wave_label,
+            "current_wave_label": current_wave_label,
+            "current_wave": current_wave,
             "structure": structure_type,
             "pivot_points": wave_points[-8:],
         },

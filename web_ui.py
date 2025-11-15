@@ -1391,7 +1391,7 @@ def main():
         st.session_state.export_token = export_token
 
         analyze_button = st.button(
-            "🔄 Analyze", type="primary", use_container_width=True
+            "🔄 Analyze", type="primary", width="stretch"
         )
 
     selected_token = config_store.token
@@ -1470,13 +1470,13 @@ def main():
     with chart_tab:
         st.subheader(f"Price Chart with Indicators - {selected_token}")
         fig = create_candlestick_chart(summary, main_series)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
     
     with multi_tab:
         st.subheader("Multi-Timeframe Analysis")
         mtf_fig = create_multi_timeframe_chart(payload)
         if mtf_fig:
-            st.plotly_chart(mtf_fig, use_container_width=True)
+            st.plotly_chart(mtf_fig, width="stretch")
         
         col1, col2 = st.columns(2)
         
@@ -1488,7 +1488,7 @@ def main():
                 for tf, val in mtf_data.get("trend_strength", {}).items()
             ])
             if not trend_df.empty:
-                st.dataframe(trend_df, use_container_width=True, hide_index=True)
+                st.dataframe(trend_df, width="stretch", hide_index=True)
         
         with col2:
             st.markdown("### Direction by Timeframe")
@@ -1497,7 +1497,7 @@ def main():
                 for tf, val in mtf_data.get("direction", {}).items()
             ])
             if not direction_df.empty:
-                st.dataframe(direction_df, use_container_width=True, hide_index=True)
+                st.dataframe(direction_df, width="stretch", hide_index=True)
         
         if payload.get("multi_symbol"):
             st.markdown("### Multi-Symbol Confirmation")
@@ -1571,7 +1571,7 @@ def main():
                 {"Indicator": "Bollinger Middle", "Value": f"{latest.get('bollinger_middle', 0):.4f}" if latest.get('bollinger_middle') else "N/A"},
                 {"Indicator": "Bollinger Lower", "Value": f"{latest.get('bollinger_lower', 0):.4f}" if latest.get('bollinger_lower') else "N/A"},
             ])
-            st.dataframe(indicators_df, use_container_width=True, hide_index=True)
+            st.dataframe(indicators_df, width="stretch", hide_index=True)
             
             if atr_channels:
                 st.markdown("### ATR Channels")
@@ -1579,7 +1579,7 @@ def main():
                     {"ATR Level": k.replace("atr_trend_", "ATR ").upper(), "Value": f"{v:.4f}" if v is not None else "N/A"}
                     for k, v in atr_channels.items()
                 ])
-                st.dataframe(atr_df, use_container_width=True, hide_index=True)
+                st.dataframe(atr_df, width="stretch", hide_index=True)
         
         with col2:
             st.markdown("### Performance Statistics")
@@ -1594,7 +1594,7 @@ def main():
                 {"Metric": "Max Drawdown", "Value": f"{pnl_stats.get('max_drawdown_pct', 0):.2f}%"},
                 {"Metric": "Trades Closed", "Value": f"{pnl_stats.get('trades_closed', 0)}"},
             ])
-            st.dataframe(stats_df, use_container_width=True, hide_index=True)
+            st.dataframe(stats_df, width="stretch", hide_index=True)
         
         cme_gaps = latest.get("cme_gaps", {})
         if cme_gaps:
@@ -1620,7 +1620,7 @@ def main():
                             }
                             for gap in gaps_above[:5]
                         ])
-                        st.dataframe(gaps_above_df, use_container_width=True, hide_index=True)
+                        st.dataframe(gaps_above_df, width="stretch", hide_index=True)
                     else:
                         st.info("No unfilled gaps above current price")
                 
@@ -1638,7 +1638,7 @@ def main():
                             }
                             for gap in gaps_below[:5]
                         ])
-                        st.dataframe(gaps_below_df, use_container_width=True, hide_index=True)
+                        st.dataframe(gaps_below_df, width="stretch", hide_index=True)
                     else:
                         st.info("No unfilled gaps below current price")
         
@@ -1683,7 +1683,7 @@ def main():
                         "Ratio": f"{ratio_val:.2f}" if ratio_val is not None else "N/A"
                     })
                 ob_levels_df = pd.DataFrame(levels_data)
-                st.dataframe(ob_levels_df, use_container_width=True, hide_index=True)
+                st.dataframe(ob_levels_df, width="stretch", hide_index=True)
             
             sections = orderbook_data.get('sections', {})
             if sections:
@@ -1702,7 +1702,7 @@ def main():
                         "Ask W. Price": f"{ask_info.get('weighted_price'):.4f}" if ask_info.get('weighted_price') is not None else "N/A",
                     })
                 ob_sections_df = pd.DataFrame(section_rows)
-                st.dataframe(ob_sections_df, use_container_width=True, hide_index=True)
+                st.dataframe(ob_sections_df, width="stretch", hide_index=True)
             
             aggregated_bins = orderbook_data.get('aggregated_bins', {})
             if aggregated_bins:
@@ -1717,7 +1717,7 @@ def main():
                     })
                 if summary_rows:
                     agg_summary_df = pd.DataFrame(summary_rows)
-                    st.dataframe(agg_summary_df, use_container_width=True, hide_index=True)
+                    st.dataframe(agg_summary_df, width="stretch", hide_index=True)
                 
                 for range_label, data in aggregated_bins.items():
                     with st.expander(f"{range_label} Range Breakdown", expanded=False):
@@ -1745,13 +1745,13 @@ def main():
                         with b_col:
                             st.markdown("**Bid Bins**")
                             if not bid_df.empty:
-                                st.dataframe(bid_df, use_container_width=True, hide_index=True)
+                                st.dataframe(bid_df, width="stretch", hide_index=True)
                             else:
                                 st.info("No bid volume in this range")
                         with a_col:
                             st.markdown("**Ask Bins**")
                             if not ask_df.empty:
-                                st.dataframe(ask_df, use_container_width=True, hide_index=True)
+                                st.dataframe(ask_df, width="stretch", hide_index=True)
                             else:
                                 st.info("No ask volume in this range")
 
@@ -1820,7 +1820,7 @@ def main():
                                     }
                                     for w in bid_walls
                                 ])
-                                st.dataframe(bid_walls_df, use_container_width=True, hide_index=True)
+                                st.dataframe(bid_walls_df, width="stretch", hide_index=True)
                             else:
                                 st.info("No significant bid walls detected")
 
@@ -1837,7 +1837,7 @@ def main():
                                     }
                                     for w in ask_walls
                                 ])
-                                st.dataframe(ask_walls_df, use_container_width=True, hide_index=True)
+                                st.dataframe(ask_walls_df, width="stretch", hide_index=True)
                             else:
                                 st.info("No significant ask walls detected")
 
@@ -1867,7 +1867,7 @@ def main():
                                     }
                                     for l in bid_layers
                                 ])
-                                st.dataframe(bid_layers_df, use_container_width=True, hide_index=True)
+                                st.dataframe(bid_layers_df, width="stretch", hide_index=True)
                             else:
                                 st.info("No bid layers detected")
 
@@ -1885,7 +1885,7 @@ def main():
                                     }
                                     for l in ask_layers
                                 ])
-                                st.dataframe(ask_layers_df, use_container_width=True, hide_index=True)
+                                st.dataframe(ask_layers_df, width="stretch", hide_index=True)
                             else:
                                 st.info("No ask layers detected")
 
@@ -1950,7 +1950,7 @@ def main():
                     }
                     for s in signals[-20:]
                 ])
-                st.dataframe(signals_df, use_container_width=True, hide_index=True)
+                st.dataframe(signals_df, width="stretch", hide_index=True)
             else:
                 st.info("No signals detected in the analysis period.")
         
@@ -1968,7 +1968,7 @@ def main():
                     }
                     for z in zones[:20]
                 ])
-                st.dataframe(zones_df, use_container_width=True, hide_index=True)
+                st.dataframe(zones_df, width="stretch", hide_index=True)
             else:
                 st.info("No active zones detected.")
         
@@ -2013,7 +2013,7 @@ def main():
                 }
                 for level in levels[:10]
             ])
-            st.dataframe(vpvr_df, use_container_width=True, hide_index=True)
+            st.dataframe(vpvr_df, width="stretch", hide_index=True)
         
         st.markdown("---")
         st.markdown("### Cumulative Volume Delta (CVD)")
@@ -2037,7 +2037,7 @@ def main():
                 }
                 for entry in recent_cvd
             ])
-            st.dataframe(cvd_df, use_container_width=True, hide_index=True)
+            st.dataframe(cvd_df, width="stretch", hide_index=True)
         
         st.markdown("---")
         st.markdown("### Delta Volume (Market vs Limit Orders)")
@@ -2060,7 +2060,7 @@ def main():
                 }
                 for entry in delta_series[-10:]
             ])
-            st.dataframe(delta_df, use_container_width=True, hide_index=True)
+            st.dataframe(delta_df, width="stretch", hide_index=True)
     
     with structure_tab:
         st.subheader("🏗️ Market Structure")
@@ -2088,7 +2088,7 @@ def main():
                     }
                     for point in hh
                 ])
-                st.dataframe(hh_df, use_container_width=True, hide_index=True)
+                st.dataframe(hh_df, width="stretch", hide_index=True)
             else:
                 st.info("No HH detected")
             
@@ -2103,7 +2103,7 @@ def main():
                     }
                     for point in lh
                 ])
-                st.dataframe(lh_df, use_container_width=True, hide_index=True)
+                st.dataframe(lh_df, width="stretch", hide_index=True)
             else:
                 st.info("No LH detected")
         
@@ -2119,7 +2119,7 @@ def main():
                     }
                     for point in hl
                 ])
-                st.dataframe(hl_df, use_container_width=True, hide_index=True)
+                st.dataframe(hl_df, width="stretch", hide_index=True)
             else:
                 st.info("No HL detected")
             
@@ -2134,7 +2134,7 @@ def main():
                     }
                     for point in ll
                 ])
-                st.dataframe(ll_df, use_container_width=True, hide_index=True)
+                st.dataframe(ll_df, width="stretch", hide_index=True)
             else:
                 st.info("No LL detected")
         
@@ -2155,7 +2155,7 @@ def main():
                     }
                     for level in support
                 ])
-                st.dataframe(support_df, use_container_width=True, hide_index=True)
+                st.dataframe(support_df, width="stretch", hide_index=True)
             else:
                 st.info("No support levels detected")
         
@@ -2170,7 +2170,7 @@ def main():
                     }
                     for level in resistance
                 ])
-                st.dataframe(resistance_df, use_container_width=True, hide_index=True)
+                st.dataframe(resistance_df, width="stretch", hide_index=True)
             else:
                 st.info("No resistance levels detected")
         
@@ -2186,7 +2186,7 @@ def main():
                 }
                 for zone in liquidity_zones
             ])
-            st.dataframe(liq_df, use_container_width=True, hide_index=True)
+            st.dataframe(liq_df, width="stretch", hide_index=True)
         else:
             st.info("No significant liquidity zones detected")
     
@@ -2238,7 +2238,7 @@ def main():
                 }
                 for trade in block_trades
             ])
-            st.dataframe(bt_df, use_container_width=True, hide_index=True)
+            st.dataframe(bt_df, width="stretch", hide_index=True)
         else:
             st.info("No significant block trades detected")
     
@@ -2483,7 +2483,7 @@ def main():
                     if value is not None:
                         liq_rows.append({"Component": label, "Score": f"{value:.3f}"})
                 if liq_rows:
-                    st.dataframe(pd.DataFrame(liq_rows), use_container_width=True, hide_index=True)
+                    st.dataframe(pd.DataFrame(liq_rows), width="stretch", hide_index=True)
                 else:
                     st.info("No liquidity breakdown available.")
             
@@ -2499,7 +2499,7 @@ def main():
                     if value is not None:
                         health_rows.append({"Component": label, "Score": f"{value:.3f}"})
                 if health_rows:
-                    st.dataframe(pd.DataFrame(health_rows), use_container_width=True, hide_index=True)
+                    st.dataframe(pd.DataFrame(health_rows), width="stretch", hide_index=True)
                 else:
                     st.info("No market health breakdown available.")
             
@@ -2536,7 +2536,7 @@ def main():
                 }
                 for point in pivot_points
             ])
-            st.dataframe(pivot_df, use_container_width=True, hide_index=True)
+            st.dataframe(pivot_df, width="stretch", hide_index=True)
         
         st.markdown("---")
         st.markdown("### Orderbook Clusters")
@@ -2551,7 +2551,7 @@ def main():
                 }
                 for cluster in clusters
             ])
-            st.dataframe(cluster_df, use_container_width=True, hide_index=True)
+            st.dataframe(cluster_df, width="stretch", hide_index=True)
         else:
             st.info("No significant orderbook clusters detected")
         
@@ -2569,7 +2569,7 @@ def main():
                 }
                 for anom in anomalies
             ])
-            st.dataframe(anom_df, use_container_width=True, hide_index=True)
+            st.dataframe(anom_df, width="stretch", hide_index=True)
         else:
             st.info("No liquidity anomalies detected")
     
@@ -2589,7 +2589,7 @@ def main():
             with col1:
                 st.markdown("#### 🟢 Bullish Signals")
                 bull_df = pd.DataFrame([
-                    {"Metric": "Total Signals", "Value": bullish_stats.get("total_signals", 0)},
+                    {"Metric": "Total Signals", "Value": f"{bullish_stats.get('total_signals', 0):,}"},
                     {"Metric": "TP1 Hit Rate", "Value": f"{bullish_stats.get('tp1_rate_pct', 0):.2f}%"},
                     {"Metric": "TP2 Hit Rate", "Value": f"{bullish_stats.get('tp2_rate_pct', 0):.2f}%"},
                     {"Metric": "TP3 Hit Rate", "Value": f"{bullish_stats.get('tp3_rate_pct', 0):.2f}%"},
@@ -2597,12 +2597,12 @@ def main():
                     {"Metric": "Win Rate", "Value": f"{bullish_stats.get('overall_win_rate_pct', 0):.2f}%"},
                     {"Metric": "Avg Bars to TP1", "Value": f"{bullish_stats.get('avg_bars_to_tp1', 0):.1f}"},
                 ])
-                st.dataframe(bull_df, use_container_width=True, hide_index=True)
+                st.dataframe(bull_df, width="stretch", hide_index=True)
             
             with col2:
                 st.markdown("#### 🔴 Bearish Signals")
                 bear_df = pd.DataFrame([
-                    {"Metric": "Total Signals", "Value": bearish_stats.get("total_signals", 0)},
+                    {"Metric": "Total Signals", "Value": f"{bearish_stats.get('total_signals', 0):,}"},
                     {"Metric": "TP1 Hit Rate", "Value": f"{bearish_stats.get('tp1_rate_pct', 0):.2f}%"},
                     {"Metric": "TP2 Hit Rate", "Value": f"{bearish_stats.get('tp2_rate_pct', 0):.2f}%"},
                     {"Metric": "TP3 Hit Rate", "Value": f"{bearish_stats.get('tp3_rate_pct', 0):.2f}%"},
@@ -2610,7 +2610,7 @@ def main():
                     {"Metric": "Win Rate", "Value": f"{bearish_stats.get('overall_win_rate_pct', 0):.2f}%"},
                     {"Metric": "Avg Bars to TP1", "Value": f"{bearish_stats.get('avg_bars_to_tp1', 0):.1f}"},
                 ])
-                st.dataframe(bear_df, use_container_width=True, hide_index=True)
+                st.dataframe(bear_df, width="stretch", hide_index=True)
             
             st.markdown("---")
         
@@ -2723,7 +2723,7 @@ def main():
                 
                 if custom_targets:
                     custom_targets_df = pd.DataFrame(custom_targets)
-                    st.dataframe(custom_targets_df, use_container_width=True, hide_index=True)
+                    st.dataframe(custom_targets_df, width="stretch", hide_index=True)
             
             st.markdown("---")
             st.info("⚠️ **Disclaimer:** This is a calculated trade plan based on ATR channels. Always manage your risk and use proper position sizing.")
@@ -3109,7 +3109,7 @@ def main():
                     factors_df = pd.DataFrame(factors_data)
                     st.dataframe(
                         factors_df,
-                        use_container_width=True,
+                        width="stretch",
                         hide_index=True,
                         key=ui_key(
                             "automated_signals",
@@ -3377,7 +3377,7 @@ def main():
                     )
                     st.plotly_chart(
                         equity_fig,
-                        use_container_width=True,
+                        width="stretch",
                         key=ui_key(
                             "automated_signals",
                             f"equity_curve_{config_store.symbol}_{config_store.timeframe}"
@@ -3403,7 +3403,7 @@ def main():
                     st.markdown("### Trades Summary")
                     st.dataframe(
                         trades_df,
-                        use_container_width=True,
+                        width="stretch",
                         key=ui_key(
                             "automated_signals",
                             f"backtest_trades_{config_store.symbol}_{config_store.timeframe}"
@@ -3504,7 +3504,7 @@ def main():
                     max_change = st.slider("Max Change pct", 0.1, 0.5, 0.3, 0.05, key=ui_key("adaptive_tab", "max_change"))
             
             # Run adaptation
-            run_adaptation = st.button("🔄 Run Adaptive Analysis", type="primary", use_container_width=True)
+            run_adaptation = st.button("🔄 Run Adaptive Analysis", type="primary", width="stretch")
             
             if run_adaptation:
                 with st.spinner("Running adaptive weight analysis..."):
@@ -3634,7 +3634,7 @@ def main():
                             
                             if weight_changes:
                                 weight_df = pd.DataFrame(weight_changes)
-                                st.dataframe(weight_df, use_container_width=True, hide_index=True)
+                                st.dataframe(weight_df, width="stretch", hide_index=True)
                             
                             # Performance report
                             st.markdown("### 📈 Performance Report")
@@ -3710,7 +3710,7 @@ def main():
                         
                         if perf_data:
                             perf_df = pd.DataFrame(perf_data)
-                            st.dataframe(perf_df, use_container_width=True, hide_index=True)
+                            st.dataframe(perf_df, width="stretch", hide_index=True)
                         
                     except Exception as e:
                         st.error(f"❌ Adaptive analysis failed: {str(e)}")
@@ -3916,7 +3916,7 @@ def main():
                 data=json_str,
                 file_name=f"{selected_token.replace(':', '_')}_{selected_timeframe}_{export_token}.json",
                 mime="application/json",
-                use_container_width=True,
+                width="stretch",
             )
         
         with col2:
@@ -3929,7 +3929,7 @@ def main():
                 data=csv_data,
                 file_name=f"{selected_token.replace(':', '_')}_{selected_timeframe}_latest.csv",
                 mime="text/csv",
-                use_container_width=True,
+                width="stretch",
             )
         
         with col3:
@@ -3973,7 +3973,7 @@ def main():
                     data=adv_csv,
                     file_name=f"{selected_token.replace(':', '_')}_{selected_timeframe}_advanced.csv",
                     mime="text/csv",
-                    use_container_width=True,
+                    width="stretch",
                 )
             else:
                 st.caption("Advanced metrics unavailable for export.")

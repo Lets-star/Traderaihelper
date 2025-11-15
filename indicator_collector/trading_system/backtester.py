@@ -41,12 +41,17 @@ DEFAULT_WEIGHTS: Dict[str, float] = {
     "composite": 0.15,
 }
 
+DEFAULT_SIGNAL_THRESHOLDS: Dict[str, float] = {
+    "buy": 0.65,
+    "sell": 0.35,
+}
+
 _BASE_INDICATOR_DEFAULTS: Dict[str, Any] = {
     "macd": {"fast": 12, "slow": 26, "signal": 9},
     "rsi": {"period": 14, "overbought": 70, "oversold": 30},
     "atr": {"period": 14, "mult": 1.0},
-    "atr_channels": {"mult_1x": 1.0, "mult_2x": 2.0, "mult_3x": 3.0},
-    "bollinger": {"period": 20, "stddev": 2.0},
+    "atr_channels": {"period": 14, "mult_1x": 1.0, "mult_2x": 2.0, "mult_3x": 3.0},
+    "bollinger": {"period": 20, "mult": 2.0, "source": "close", "stddev": 2.0},
     "volume": {
         "ma_period": 20,
         "cvd_atr_multiplier": 0.75,
@@ -112,7 +117,7 @@ _TIMEFRAME_INDICATOR_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "atr": {"mult": 2.0},
         "atr_channels": {"mult_1x": 2.0, "mult_2x": 4.0, "mult_3x": 6.0},
         "structure": {"lookback": 30},
-        "bollinger": {"period": 20, "stddev": 2.5},
+        "bollinger": {"period": 20, "mult": 2.5, "stddev": 2.5},
     },
 }
 
@@ -126,6 +131,8 @@ _AVAILABLE_TIMEFRAMES = {
     Timeframe.H4.value,
     Timeframe.D1.value,
 }
+
+_MISSING_INDICATOR_DEBUG_LOGGED: set[tuple[str, tuple[str, ...]]] = set()
 
 
 def _normalize_timeframe_key(timeframe: Union[str, Timeframe]) -> str:
@@ -246,6 +253,7 @@ class ParameterSet:
     take_profit_pct: float = 4.0
     max_position_size_pct: float = 0.05
     confirmation_threshold: float = 0.6
+    signal_thresholds: Dict[str, float] = field(default_factory=lambda: deepcopy(DEFAULT_SIGNAL_THRESHOLDS))
     debug_enabled: bool = False
     extras: Dict[str, Any] = field(default_factory=dict)
 
@@ -282,14 +290,18 @@ class ParameterSet:
             )
             user_params = {}
 
+        missing_keys: List[str] = []
         if user_params:
             missing_keys = [key for key in defaults if key not in user_params]
             if missing_keys:
-                logger.warning(
-                    "ParameterSet missing indicator params for timeframe '%s': %s. Applying defaults.",
-                    self.timeframe,
-                    ", ".join(sorted(missing_keys)),
-                )
+                log_key = (self.timeframe, tuple(sorted(missing_keys)))
+                if log_key not in _MISSING_INDICATOR_DEBUG_LOGGED:
+                    logger.debug(
+                        "ParameterSet auto-filled missing indicator params for timeframe '%s': %s",
+                        self.timeframe,
+                        ", ".join(sorted(missing_keys)),
+                    )
+                    _MISSING_INDICATOR_DEBUG_LOGGED.add(log_key)
         unsupported_keys = [key for key in user_params if key not in defaults]
         if unsupported_keys:
             logger.warning(
@@ -305,6 +317,7 @@ class ParameterSet:
                 merged_params[key] = deepcopy(value)
 
         self.indicator_params = merged_params
+        self.signal_thresholds = self._sanitize_signal_thresholds(self.signal_thresholds)
 
     @staticmethod
     def _sanitize_weights(weights: Dict[str, Any], fallback: Dict[str, float]) -> Dict[str, float]:
@@ -324,6 +337,40 @@ class ParameterSet:
             if sum(sanitized.values()) <= 0:
                 sanitized = deepcopy(fallback)
         return sanitized
+
+    @staticmethod
+    def _sanitize_signal_thresholds(thresholds: Dict[str, Any]) -> Dict[str, float]:
+        """Sanitize signal thresholds ensuring buy > sell within [0, 1]."""
+        sanitized: Dict[str, float] = {}
+        if isinstance(thresholds, dict):
+            for key in ("buy", "sell"):
+                value = thresholds.get(key)
+                try:
+                    sanitized[key] = float(value)
+                except (TypeError, ValueError):
+                    continue
+
+        buy = sanitized.get("buy", DEFAULT_SIGNAL_THRESHOLDS["buy"])
+        sell = sanitized.get("sell", DEFAULT_SIGNAL_THRESHOLDS["sell"])
+
+        buy = min(max(buy, 0.0), 1.0)
+        sell = min(max(sell, 0.0), 1.0)
+
+        if buy <= sell:
+            # Attempt to swap if that yields a valid ordering
+            buy, sell = max(buy, sell), min(buy, sell)
+            if buy <= sell:
+                buy = min(1.0, max(sell + 0.01, DEFAULT_SIGNAL_THRESHOLDS["buy"]))
+            if buy > 1.0:
+                buy = 1.0
+            if buy <= sell:
+                sell = max(0.0, min(buy - 0.01, DEFAULT_SIGNAL_THRESHOLDS["sell"]))
+
+        if buy <= sell:
+            buy = DEFAULT_SIGNAL_THRESHOLDS["buy"]
+            sell = DEFAULT_SIGNAL_THRESHOLDS["sell"]
+
+        return {"buy": round(buy, 4), "sell": round(sell, 4)}
 
     @staticmethod
     def _normalize_weight_map(weights: Dict[str, float]) -> Dict[str, float]:
@@ -354,6 +401,7 @@ class ParameterSet:
             "take_profit_pct": self.take_profit_pct,
             "max_position_size_pct": self.max_position_size_pct,
             "confirmation_threshold": self.confirmation_threshold,
+            "signal_thresholds": deepcopy(self.signal_thresholds),
             "debug_enabled": self.debug_enabled,
             "extras": deepcopy(self.extras),
         }
@@ -364,6 +412,7 @@ class ParameterSet:
             "timeframe": self.timeframe,
             "category_weights": self.normalized_category_weights(),
             "indicator_params": self.indicator_params,
+            "signal_thresholds": self.signal_thresholds,
             "debug_enabled": self.debug_enabled,
             "extras": self.extras,
         }
@@ -397,6 +446,7 @@ class ParameterSet:
             take_profit_pct=float(data.get("take_profit_pct", 4.0)),
             max_position_size_pct=float(data.get("max_position_size_pct", 0.05)),
             confirmation_threshold=float(data.get("confirmation_threshold", 0.6)),
+            signal_thresholds=data.get("signal_thresholds", {}),
             debug_enabled=bool(data.get("debug_enabled", False)),
             extras=extras,
         )

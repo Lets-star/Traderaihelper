@@ -757,6 +757,10 @@ def generate_trading_signal(
             indicator_params=indicator_overrides,
             category_weights=dict(base_category_weights),
             timeframe=normalized_timeframe,
+            signal_thresholds={
+                "buy": float(config.buy_threshold),
+                "sell": float(config.sell_threshold),
+            },
         )
 
     resolved_indicator_params = active_parameter_set.indicator_params

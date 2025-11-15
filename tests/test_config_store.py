@@ -83,3 +83,7 @@ def test_build_signal_params_uses_decimal_percentages(store: ConfigStore) -> Non
     params = store.build_signal_params()
     assert math.isclose(params["max_risk_per_trade_pct"], 0.05)
     assert math.isclose(params["max_position_size_pct"], 0.1)
+    thresholds = params.get("signal_thresholds")
+    assert thresholds
+    assert math.isclose(thresholds["buy"], store.signal_settings()["buy_threshold"])
+    assert math.isclose(thresholds["sell"], store.signal_settings()["sell_threshold"])

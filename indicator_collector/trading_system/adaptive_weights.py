@@ -197,8 +197,6 @@ class AdaptiveWeightManager:
     
     def adapt_weights(self) -> AdaptationReport:
         """Perform adaptive weight adjustment."""
-        if not self._backtester:
-            raise RuntimeError("Backtester not set. Call set_backtester() first.")
         
         # Get current weights
         current_weights = {name: perf.current_weight for name, perf in self._weight_performance.items()}

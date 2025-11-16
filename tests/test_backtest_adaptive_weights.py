@@ -598,6 +598,29 @@ class TestAdaptiveWeightManager:
         assert sum(new_weights.values()) == pytest.approx(1.0, rel=1e-9)
         assert "Hybrid adaptation" in reason
     
+    def test_adapt_weights_without_backtester(self):
+        """Adaptive weight adaptation should work without a backtester."""
+        config = AdaptiveWeightConfig(max_weight_per_factor=1.0)
+        manager = AdaptiveWeightManager(config)
+        manager.initialize_weights({"technical": 0.5, "volume": 0.5})
+        
+        assert manager._backtester is None
+        
+        with patch.object(
+            manager,
+            "_adapt_hybrid",
+            return_value=(
+                {"technical": 0.55, "volume": 0.45},
+                "Test adaptation without backtester",
+            ),
+        ):
+            report = manager.adapt_weights()
+        
+        assert isinstance(report, AdaptationReport)
+        assert report.new_weights["technical"] == pytest.approx(0.55)
+        assert report.new_weights["volume"] == pytest.approx(0.45)
+        assert report.adaptation_reason == "Test adaptation without backtester"
+    
     def test_validate_weights_constraints(self):
         """Test weight validation with constraints."""
         config = AdaptiveWeightConfig(

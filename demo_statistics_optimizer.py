@@ -9,8 +9,11 @@ This script shows how to use the stats optimizer to:
 4. Ingest historical data
 """
 
+import argparse
+import json
 import sys
 import os
+from pathlib import Path
 
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -23,13 +26,31 @@ from indicator_collector.trading_system.statistics_optimizer import (
     StatsOptimizerConfig,
     StatisticsOptimizer,
     create_stats_optimizer,
-    create_synthetic_outcomes,
 )
+
+
+def load_outcomes_from_file(file_path: str) -> list[SignalOutcome]:
+    """Load real signal outcomes from a JSON file."""
+    path = Path(file_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Outcome file not found: {path}")
+    with path.open("r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, list):
+        raise ValueError("Outcome file must contain a list of outcome objects")
+    return [SignalOutcome.from_dict(item) for item in data]
 
 
 def main():
     """Demonstrate statistics optimizer functionality."""
-    
+    parser = argparse.ArgumentParser(description="Statistics Optimizer demonstration with real outcomes.")
+    parser.add_argument(
+        "--outcomes",
+        required=True,
+        help="Path to JSON file containing real trading signal outcomes.",
+    )
+    args = parser.parse_args()
+
     print("=" * 60)
     print("STATISTICS OPTIMIZER DEMONSTRATION")
     print("=" * 60)
@@ -47,12 +68,12 @@ def main():
     optimizer = StatisticsOptimizer(config)
     print("✓ Optimizer created with custom targets")
     
-    # 2. Add synthetic signal outcomes
-    print("\n2. Adding synthetic signal outcomes...")
-    outcomes = create_synthetic_outcomes(count=40)
+    # 2. Load real signal outcomes
+    print("\n2. Loading real signal outcomes...")
+    outcomes = load_outcomes_from_file(args.outcomes)
     for outcome in outcomes:
         optimizer.add_signal_outcome(outcome)
-    print(f"✓ Added {len(outcomes)} signal outcomes")
+    print(f"✓ Loaded {len(outcomes)} signal outcomes from {args.outcomes}")
     
     # 3. Calculate current performance KPIs
     print("\n3. Calculating Performance KPIs...")

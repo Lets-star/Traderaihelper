@@ -33,7 +33,6 @@ from .statistics_optimizer import (
     StatsOptimizerConfig,
     StatisticsOptimizer,
     create_stats_optimizer,
-    create_synthetic_outcomes,
 )
 from .technical_analysis import analyze_technical_factors
 from .sentiment_analyzer import analyze_sentiment_factors

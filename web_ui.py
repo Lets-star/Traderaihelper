@@ -3729,32 +3729,39 @@ def main():
                         
                         manager.initialize_weights(initial_weights)
                         
-                        # Create sample signal outcomes (in real implementation, this would be historical data)
-                        import random
-                        
+                        # Load real historical signal outcomes from logged trading data
+                        # Note: This requires actual historical trading logs to be available
                         outcomes = []
-                        base_timestamp = int((dt.datetime.now() - dt.timedelta(days=rolling_window)).timestamp() * 1000)
                         
-                        for i in range(int(min_signals * 2)):  # Generate more than minimum
-                            success = random.random() > 0.4  # 60% win rate
-                            pnl = random.uniform(1.0, 5.0) if success else random.uniform(-3.0, -0.5)
+                        # Try to load historical data from stored results if available
+                        try:
+                            # Check if there are stored signal outcomes in the session state
+                            if "historical_signal_outcomes" in st.session_state:
+                                outcomes = st.session_state["historical_signal_outcomes"]
                             
-                            outcome = {
-                                "signal_type": random.choice(["BUY", "SELL"]),
-                                "entry_price": 50000 + random.uniform(-5000, 5000),
-                                "exit_price": None,
-                                "entry_timestamp": base_timestamp + i * 86400000,
-                                "exit_timestamp": base_timestamp + i * 86400000 + 86400000,
-                                "pnl_pct": pnl,
-                                "holding_bars": random.randint(1, 100),
-                                "success": success,
-                                "factors": [
-                                    {"factor_name": "technical", "score": random.uniform(0.3, 0.9)},
-                                    {"factor_name": "volume", "score": random.uniform(0.3, 0.9)},
-                                    {"factor_name": "sentiment", "score": random.uniform(0.3, 0.9)},
-                                ],
-                            }
-                            outcomes.append(outcome)
+                            # Alternatively, could load from a file or database
+                            # Example: outcomes = load_historical_outcomes_from_file("signal_outcomes.json")
+                        except Exception as e:
+                            st.warning(f"Could not load historical data: {e}")
+                        
+                        # Validate we have enough real data
+                        if len(outcomes) < min_signals:
+                            error_lines = [
+                                "❌ **Insufficient Historical Data**",
+                                "",
+                                f"Adaptive weight analysis requires at least {min_signals} real historical signal outcomes.",
+                                f"Currently available: {len(outcomes)} signals.",
+                                "",
+                                "**To use this feature:**",
+                                "1. Run the trading system with real market data",
+                                "2. Log signal outcomes over time",
+                                "3. Store outcomes in session state or persistent storage",
+                                "4. Return here to perform adaptive weight analysis",
+                                "",
+                                "**Note:** Synthetic or generated data is not permitted for real trading analysis.",
+                            ]
+                            st.error("\n".join(error_lines))
+                            st.stop()
                         
                         # Update manager with outcomes
                         from indicator_collector.trading_system.statistics_optimizer import SignalOutcome

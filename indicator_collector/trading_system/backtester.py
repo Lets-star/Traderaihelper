@@ -884,53 +884,49 @@ class Backtester:
                 # Skip invalid entries
                 continue
         
-        # Simulate position exits (simplified - in practice, you'd use future price data)
+        # Process position exits using real historical price data
+        # Note: This requires actual historical price data to determine exit outcomes
         for pos_id, position in open_positions.items():
-            # Simulate random exit outcomes for demonstration
-            import random
-            random.seed(hash(pos_id))
-            
-            # Simulate exit price based on random walk
             entry_price = position["entry_price"]
             direction = position["direction"]
             
-            # Simulate market movement
-            price_change_pct = random.gauss(0, 2)  # 2% volatility
-            exit_price = entry_price * (1 + price_change_pct / 100)
+            # In a real backtesting scenario, we need actual future price data
+            # to determine when positions exit (via stop loss, take profit, or holding period)
+            # 
+            # This simplified version assumes positions were exited at their entry price
+            # For production use, you must provide:
+            # 1. Historical OHLCV data for the entire backtest period
+            # 2. Logic to check each bar for stop loss or take profit hits
+            # 3. Slippage and fee calculations
             
-            # Check if stop loss or take profit would have been hit
-            if direction == "long":
-                if exit_price <= position["stop_loss"]:
-                    exit_price = position["stop_loss"]
-                elif exit_price >= position["take_profit"]:
-                    exit_price = position["take_profit"]
+            # For now, we only process positions if we have real outcome data
+            # If position has outcome data in metadata, use it
+            position_metadata = position.get("metadata", {})
+            if "exit_price" in position_metadata and "pnl_pct" in position_metadata:
+                exit_price = float(position_metadata["exit_price"])
+                pnl_pct = float(position_metadata["pnl_pct"])
+                exit_timestamp = position_metadata.get("exit_timestamp", position["entry_timestamp"] + 86400000)
+                holding_bars = position_metadata.get("holding_bars", 24)
+                success = pnl_pct > 0
+                
+                outcome = SignalOutcome(
+                    signal_type=position["signal_type"],
+                    entry_price=entry_price,
+                    exit_price=exit_price,
+                    entry_timestamp=position["entry_timestamp"],
+                    exit_timestamp=exit_timestamp,
+                    pnl_pct=pnl_pct,
+                    holding_bars=holding_bars,
+                    success=success,
+                    factors=position["factors"],
+                )
+                
+                outcomes.append(outcome)
             else:
-                if exit_price >= position["stop_loss"]:
-                    exit_price = position["stop_loss"]
-                elif exit_price <= position["take_profit"]:
-                    exit_price = position["take_profit"]
-            
-            # Calculate P&L
-            if direction == "long":
-                pnl_pct = (exit_price - entry_price) / entry_price * 100
-            else:
-                pnl_pct = (entry_price - exit_price) / entry_price * 100
-            
-            success = pnl_pct > 0
-            
-            outcome = SignalOutcome(
-                signal_type=position["signal_type"],
-                entry_price=entry_price,
-                exit_price=exit_price,
-                entry_timestamp=position["entry_timestamp"],
-                exit_timestamp=position["entry_timestamp"] + 86400000,  # 1 day later
-                pnl_pct=pnl_pct,
-                holding_bars=24,  # Assuming 1h timeframe
-                success=success,
-                factors=position["factors"],
-            )
-            
-            outcomes.append(outcome)
+                # Skip positions without real outcome data
+                # Real backtesting requires historical price data to determine outcomes
+                logger.debug(f"Skipping position {pos_id} - no real outcome data available")
+                continue
         
         return outcomes
     

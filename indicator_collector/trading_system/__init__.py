@@ -68,7 +68,6 @@ _MODULE_EXPORTS: Dict[str, Tuple[str, ...]] = {
         "StatsOptimizerConfig",
         "StatisticsOptimizer",
         "create_stats_optimizer",
-        "create_synthetic_outcomes",
     ),
     "indicator_collector.trading_system.trading_system": (
         "MacroBlackoutConfig",

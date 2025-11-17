@@ -3,6 +3,10 @@
 
 This script demonstrates the complete backtesting and adaptive weighting pipeline,
 including parameter optimization, performance tracking, and adaptive weight adjustment.
+
+⚠️ WARNING: This demo uses synthetic data for demonstration purposes only.
+For real trading or production use, you MUST use actual market data from exchanges.
+Synthetic data should NEVER be used for live trading decisions.
 """
 
 import json

@@ -11,8 +11,48 @@ from indicator_collector.trading_system.statistics_optimizer import (
     StatsOptimizerConfig,
     StatisticsOptimizer,
     create_stats_optimizer,
-    create_synthetic_outcomes,
 )
+
+
+def create_synthetic_outcomes(count: int = 100) -> list[SignalOutcome]:
+    """Create synthetic signal outcomes for testing purposes only.
+    
+    Note: This is for unit testing only and should never be used with real trading data.
+    """
+    import random
+    
+    outcomes = []
+    factors = ["technical", "sentiment", "volume", "multitimeframe"]
+    
+    for i in range(count):
+        signal_type = random.choice(["BUY", "SELL", "NEUTRAL"])
+        entry_price = random.uniform(100, 1000)
+        success = random.random() > 0.4
+        pnl_pct = random.uniform(0.5, 5.0) if success else random.uniform(-5.0, -0.5)
+        holding_bars = random.randint(1, 50)
+        
+        signal_factors = []
+        for factor in factors:
+            signal_factors.append({
+                "factor_name": factor,
+                "score": random.uniform(-1, 1),
+                "weight": random.uniform(0.5, 1.5),
+            })
+        
+        outcome = SignalOutcome(
+            signal_type=signal_type,
+            entry_price=entry_price,
+            exit_price=entry_price * (1 + pnl_pct / 100),
+            entry_timestamp=1640995200 + i * 3600,
+            exit_timestamp=1640995200 + i * 3600 + holding_bars * 3600,
+            pnl_pct=pnl_pct,
+            holding_bars=holding_bars,
+            success=success,
+            factors=signal_factors,
+        )
+        outcomes.append(outcome)
+    
+    return outcomes
 
 
 class TestSignalOutcome:

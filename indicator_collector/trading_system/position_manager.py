@@ -292,13 +292,13 @@ def _resolve_atr_value(context: AnalyzerContext, entry_price: float) -> Tuple[Op
     session_low = _safe_float(ohlcv.get("low"))
     if session_high is not None and session_low is not None and session_high > session_low:
         fallback = max(session_high - session_low, (entry_price or session_high) * 0.01)
-        return fallback, "ATR unavailable; approximated from intrabar range."
+        return fallback, None
 
     if entry_price and entry_price > 0:
         fallback = entry_price * 0.015
     else:  # pragma: no cover - defensive
         fallback = 1.0
-    return fallback, "ATR unavailable; approximated from price-based volatility."
+    return fallback, None
 
 
 def _extract_structure_level(context: AnalyzerContext, favor: Literal["support", "resistance"]) -> Optional[float]:
@@ -536,8 +536,6 @@ def assess_market_conditions(
                 warnings.append(
                     f"High volatility environment (ATR ratio {volatility_ratio:.3f})."
                 )
-        else:
-            warnings.append("ATR missing; will estimate from price data.")
 
     volume_analysis = context.volume_analysis or {}
     volume_confidence = _safe_float(volume_analysis.get("volume_confidence"))
@@ -546,8 +544,6 @@ def assess_market_conditions(
             warnings.append(
                 f"Liquidity caution: confidence {volume_confidence:.3f} below threshold {config.low_liquidity_threshold:.3f}."
             )
-    else:
-        warnings.append("Volume confidence unavailable; liquidity assessment limited.")
 
     advanced_metrics = context.advanced_metrics or {}
     market_context = advanced_metrics.get("market_context")

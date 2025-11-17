@@ -565,7 +565,6 @@ def _synthesize_plan_from_metadata(
     atr_value = _first_positive(atr_candidates)
     if atr_value is None:
         atr_value = max(entry_price * 0.015, 0.5)
-        warnings.append("ATR missing; synthetic plan using price-based volatility.")
 
     direction = "long" if signal_type == "BUY" else "short"
     buffer = max(atr_value, entry_price * 0.006)

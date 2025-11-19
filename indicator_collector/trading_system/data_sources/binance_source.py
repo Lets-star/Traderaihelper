@@ -4,13 +4,22 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import random
 import time
 from datetime import datetime, timezone
-from typing import Callable, Dict, Optional, Union
-from urllib.error import HTTPError, URLError
-from urllib.request import urlopen
+from typing import Callable, Dict, List, Optional, Union
 
 import pandas as pd
+import requests
+from requests.adapters import HTTPAdapter
+from requests.exceptions import (
+    ConnectionError,
+    ConnectTimeout,
+    ReadTimeout,
+    RequestException,
+    Timeout,
+)
 
 from ...timeframes import Timeframe
 from .interfaces import HistoricalDataSource
@@ -25,10 +34,24 @@ from .timestamp_utils import (
 
 logger = logging.getLogger(__name__)
 
-BINANCE_BASE_URL = "https://api.binance.com/api/v3/klines"
+DEFAULT_BASE_URLS: List[str] = [
+    "https://api.binance.com",
+    "https://api1.binance.com",
+    "https://api2.binance.com",
+]
+PING_ENDPOINT = "/api/v3/ping"
+SERVER_TIME_ENDPOINT = "/api/v3/time"
+KLINES_ENDPOINT = "/api/v3/klines"
+
 BINANCE_RATE_LIMIT_DELAY = 0.1  # 100ms between requests to respect rate limits
 MAX_RETRIES = 3
 RETRY_BACKOFF = 2  # Exponential backoff multiplier
+DEFAULT_CONNECT_TIMEOUT = 5.0
+DEFAULT_READ_TIMEOUT = 20.0
+DEFAULT_BACKOFF_JITTER = 0.75
+DEFAULT_CIRCUIT_BREAKER_COOLDOWN = 30.0
+DEFAULT_HEALTHCHECK_TTL = 45.0
+DEFAULT_USER_AGENT = "indicator-collector/1.0 (+https://indicator-collector)"
 BINANCE_INTERVAL_TO_MILLISECONDS = {
     "1m": 60 * 1000,
     "5m": 5 * 60 * 1000,
@@ -64,7 +87,16 @@ class BinanceKlinesSource(HistoricalDataSource):
         rate_limit_delay: float = BINANCE_RATE_LIMIT_DELAY,
         max_retries: int = MAX_RETRIES,
         backoff_base: float = 0.5,
+        backoff_jitter: float = DEFAULT_BACKOFF_JITTER,
         sleep_func: Optional[Callable[[float], None]] = None,
+        base_url: Optional[str] = None,
+        fallback_urls: Optional[List[str]] = None,
+        connect_timeout: float = DEFAULT_CONNECT_TIMEOUT,
+        read_timeout: float = DEFAULT_READ_TIMEOUT,
+        user_agent: str = DEFAULT_USER_AGENT,
+        enable_circuit_breaker: bool = True,
+        circuit_breaker_cooldown: float = DEFAULT_CIRCUIT_BREAKER_COOLDOWN,
+        healthcheck_ttl: float = DEFAULT_HEALTHCHECK_TTL,
     ):
         """
         Initialize Binance data source.
@@ -76,18 +108,252 @@ class BinanceKlinesSource(HistoricalDataSource):
             max_retries: Maximum retry attempts for failed requests
             backoff_base: Base delay (seconds) used for exponential backoff between retries
             sleep_func: Optional sleep function override (useful for testing)
+            base_url: Base URL for Binance API (overrides default and env var)
+            fallback_urls: List of fallback URLs (used if base URL fails)
+            connect_timeout: Connection timeout in seconds
+            read_timeout: Read timeout in seconds
+            user_agent: User-Agent header value
+            enable_circuit_breaker: Enable circuit breaker for failed endpoints
+            circuit_breaker_cooldown: Cooldown period after circuit breaker trips (seconds)
+            healthcheck_ttl: Time-to-live for health check cache (seconds)
         """
         if max_retries < 1:
             raise ValueError("max_retries must be at least 1")
         if backoff_base < 0:
             raise ValueError("backoff_base must be non-negative")
+        if backoff_jitter < 0:
+            raise ValueError("backoff_jitter must be non-negative")
 
         self.api_key = api_key
         self.api_secret = api_secret
         self.rate_limit_delay = rate_limit_delay
         self.max_retries = max_retries
         self.backoff_base = backoff_base
+        self.backoff_jitter = backoff_jitter
         self._sleep = sleep_func or time.sleep
+        
+        # URL configuration
+        self.base_url = base_url or os.environ.get("BINANCE_BASE_URL") or DEFAULT_BASE_URLS[0]
+        self.fallback_urls = fallback_urls or DEFAULT_BASE_URLS[1:]
+        
+        # Timeout configuration
+        self.connect_timeout = connect_timeout
+        self.read_timeout = read_timeout
+        
+        # Circuit breaker state
+        self.enable_circuit_breaker = enable_circuit_breaker
+        self.circuit_breaker_cooldown = circuit_breaker_cooldown
+        self._circuit_breaker_tripped_at: Dict[str, float] = {}
+        self._failed_url_count: Dict[str, int] = {}
+        
+        # Health check cache
+        self.healthcheck_ttl = healthcheck_ttl
+        self._last_healthcheck: Dict[str, float] = {}
+        self._healthcheck_status: Dict[str, bool] = {}
+        
+        # Cached data for graceful degradation
+        self._last_successful_data: Dict[str, pd.DataFrame] = {}
+        
+        # HTTP session with custom configuration
+        self.session = requests.Session()
+        self.session.headers.update({"User-Agent": user_agent})
+        
+        # Configure proxy from environment
+        proxies = {}
+        if os.environ.get("HTTP_PROXY"):
+            proxies["http"] = os.environ["HTTP_PROXY"]
+        if os.environ.get("HTTPS_PROXY"):
+            proxies["https"] = os.environ["HTTPS_PROXY"]
+        if proxies:
+            self.session.proxies.update(proxies)
+            logger.info(f"Using proxy configuration: {proxies}")
+        
+        # Retry adapter
+        adapter = HTTPAdapter(max_retries=0)  # We'll handle retries manually
+        self.session.mount("http://", adapter)
+        self.session.mount("https://", adapter)
+
+        # State tracking
+        self._active_base_url: Optional[str] = None
+        self._last_server_time_ms: Optional[int] = None
+        self._server_time_checked_at: Optional[datetime] = None
+        self._last_status: Dict[str, Union[str, int, float, bool, None]] = {}
+
+    # ------------------------------------------------------------------
+    # Helper methods
+    # ------------------------------------------------------------------
+    def _cache_key(self, symbol: str, timeframe: str) -> str:
+        return f"{symbol}:{timeframe}"
+
+    def _candidate_base_urls(self) -> List[str]:
+        urls: List[str] = []
+        env_primary = os.environ.get("BINANCE_API_BASE_URL")
+        env_fallbacks = os.environ.get("BINANCE_API_FALLBACK_URLS")
+
+        candidates = [self.base_url]
+        if env_primary:
+            candidates.insert(0, env_primary)
+
+        if self.fallback_urls:
+            candidates.extend(self.fallback_urls)
+
+        if env_fallbacks:
+            candidates.extend([item.strip() for item in env_fallbacks.split(",") if item.strip()])
+
+        candidates.extend(DEFAULT_BASE_URLS)
+
+        for url in candidates:
+            if not url:
+                continue
+            normalized = url.rstrip("/")
+            if normalized not in urls:
+                urls.append(normalized)
+        return urls
+
+    def _is_circuit_open(self, base_url: str) -> float:
+        if not self.enable_circuit_breaker:
+            return 0.0
+        tripped_at = self._circuit_breaker_tripped_at.get(base_url)
+        if tripped_at is None:
+            return 0.0
+        elapsed = time.monotonic() - tripped_at
+        if elapsed >= self.circuit_breaker_cooldown:
+            self._circuit_breaker_tripped_at.pop(base_url, None)
+            self._failed_url_count[base_url] = 0
+            return 0.0
+        return max(self.circuit_breaker_cooldown - elapsed, 0.0)
+
+    def _record_failure(self, base_url: str, error: Exception, *, retryable: bool) -> None:
+        count = self._failed_url_count.get(base_url, 0) + 1
+        self._failed_url_count[base_url] = count
+        self._healthcheck_status[base_url] = False
+        if retryable and self.enable_circuit_breaker and count >= self.max_retries:
+            self._circuit_breaker_tripped_at[base_url] = time.monotonic()
+        self._last_status = {
+            "status": "failure",
+            "base_url": base_url,
+            "retryable": retryable,
+            "consecutive_failures": count,
+            "error": self._format_request_error(error),
+        }
+
+    def _record_success(self, base_url: str) -> None:
+        self._failed_url_count[base_url] = 0
+        self._healthcheck_status[base_url] = True
+        self._circuit_breaker_tripped_at.pop(base_url, None)
+        self._last_status = {
+            "status": "success",
+            "base_url": base_url,
+        }
+
+    def _format_request_error(self, error: Exception) -> str:
+        message = str(error)
+        lower = message.lower()
+        if "winerror 10061" in lower or "errno 111" in lower or "connection refused" in lower:
+            return (
+                f"Connection refused ({message}). "
+                "Binance API may be blocking direct access. Try setting BINANCE_API_BASE_URL "
+                "or configuring an HTTP(S) proxy.""
+            )
+        return message
+
+    def _run_healthcheck(self, base_url: str) -> Optional[int]:
+        now = time.monotonic()
+        last_check = self._last_healthcheck.get(base_url)
+        if (
+            last_check is not None
+            and (now - last_check) < self.healthcheck_ttl
+            and self._healthcheck_status.get(base_url)
+        ):
+            return self._last_server_time_ms
+
+        ping_url = f"{base_url}{PING_ENDPOINT}"
+        time_url = f"{base_url}{SERVER_TIME_ENDPOINT}"
+        try:
+            ping_response = self.session.get(
+                ping_url,
+                timeout=(self.connect_timeout, min(self.read_timeout, 5.0)),
+            )
+            if ping_response.status_code != 200:
+                self._last_healthcheck[base_url] = now
+                self._healthcheck_status[base_url] = False
+                raise RuntimeError(f"Ping failed with status {ping_response.status_code}")
+        except RequestException as exc:
+            self._last_healthcheck[base_url] = now
+            self._healthcheck_status[base_url] = False
+            raise RuntimeError(self._format_request_error(exc)) from exc
+
+        try:
+            time_response = self.session.get(
+                time_url,
+                timeout=(self.connect_timeout, min(self.read_timeout, 5.0)),
+            )
+            if time_response.status_code != 200:
+                raise RuntimeError(f"Time endpoint failed with status {time_response.status_code}")
+            payload = time_response.json()
+            server_time_ms = int(payload.get("serverTime"))
+        except (ValueError, TypeError, KeyError) as exc:
+            self._last_healthcheck[base_url] = now
+            self._healthcheck_status[base_url] = False
+            raise RuntimeError(f"Invalid server time response: {exc}") from exc
+        except RequestException as exc:
+            self._last_healthcheck[base_url] = now
+            self._healthcheck_status[base_url] = False
+            raise RuntimeError(self._format_request_error(exc)) from exc
+
+        self._last_healthcheck[base_url] = now
+        self._healthcheck_status[base_url] = True
+        self._last_server_time_ms = server_time_ms
+        self._server_time_checked_at = datetime.now(timezone.utc)
+        return server_time_ms
+
+    def _ensure_active_base_url(self) -> str:
+        candidates = self._candidate_base_urls()
+        errors: List[str] = []
+
+        # Prefer current active URL if healthy
+        if self._active_base_url:
+            wait_time = self._is_circuit_open(self._active_base_url)
+            if wait_time == 0.0:
+                try:
+                    self._run_healthcheck(self._active_base_url)
+                    return self._active_base_url
+                except Exception as exc:  # pragma: no cover - defensive logging
+                    errors.append(f"{self._active_base_url}: {exc}")
+
+        for base_url in candidates:
+            wait_time = self._is_circuit_open(base_url)
+            if wait_time > 0:
+                errors.append(f"{base_url}: circuit breaker active ({wait_time:.1f}s remaining)")
+                continue
+            try:
+                self._run_healthcheck(base_url)
+                self._active_base_url = base_url
+                return base_url
+            except Exception as exc:
+                errors.append(f"{base_url}: {exc}")
+
+        raise RuntimeError(
+            "Unable to reach Binance API base URLs. "
+            + " | ".join(errors)
+            + ". Consider setting BINANCE_API_BASE_URL or using a proxy."
+        )
+
+    def _determine_effective_end_ms(self, user_end_ms: int, tolerance_ms: int) -> int:
+        server_time_ms = self._last_server_time_ms
+        if server_time_ms is None:
+            server_time_ms = datetime_to_milliseconds(datetime.now(timezone.utc))
+        allowed = max(server_time_ms - tolerance_ms, 0)
+        return min(user_end_ms, allowed)
+
+    def _store_cache(self, symbol: str, timeframe: str, df: pd.DataFrame) -> None:
+        self._last_successful_data[self._cache_key(symbol, timeframe)] = df.copy(deep=True)
+
+    def _load_cache(self, symbol: str, timeframe: str) -> Optional[pd.DataFrame]:
+        cached = self._last_successful_data.get(self._cache_key(symbol, timeframe))
+        if cached is None:
+            return None
+        return cached.copy(deep=True)
 
     def load_candles(
         self,
@@ -127,19 +393,45 @@ class BinanceKlinesSource(HistoricalDataSource):
         user_end_ms = datetime_to_milliseconds(end_utc)
         tolerance_ms = DEFAULT_FUTURE_TOLERANCE_MS
 
-        server_now_ms = datetime_to_milliseconds(datetime.now(timezone.utc))
-        allowed_server_ms = max(server_now_ms - tolerance_ms, 0)
-        effective_end_ms = min(user_end_ms, allowed_server_ms)
-
         # Determine if 3h aggregation is needed
         is_3h = tf.value == "3h"
         source_timeframe = "1h" if is_3h else tf.value
         binance_interval = self.TIMEFRAME_TO_BINANCE_INTERVAL[source_timeframe]
 
+        # Run health check and get active base URL
+        try:
+            active_url = self._ensure_active_base_url()
+        except Exception as health_exc:
+            logger.error(f"Health check failed: {health_exc}")
+            cached_df = self._load_cache(symbol, tf.value)
+            if cached_df is not None:
+                logger.warning(
+                    f"Using cached data for {symbol} {tf.value} due to health check failure"
+                )
+                return cached_df
+            raise ValueError(
+                f"Cannot reach Binance API and no cached data available for {symbol} {tf.value}: {health_exc}"
+            ) from health_exc
+
+        effective_end_ms = self._determine_effective_end_ms(user_end_ms, tolerance_ms)
+        self._last_status.update(
+            {
+                "status": "fetching",
+                "symbol": symbol,
+                "timeframe": tf.value,
+                "active_base_url": active_url,
+                "effective_end_ms": effective_end_ms,
+            }
+        )
+
         try:
             # Fetch raw candles
             raw_candles = self._fetch_candles_paginated(
-                symbol, binance_interval, start_utc, end_utc
+                symbol,
+                binance_interval,
+                start_utc,
+                end_utc,
+                effective_end_ms=effective_end_ms,
             )
 
             if not raw_candles:
@@ -176,10 +468,38 @@ class BinanceKlinesSource(HistoricalDataSource):
                     "after applying boundaries"
                 )
 
+            status_payload = {
+                "active_base_url": active_url,
+                "used_cache": False,
+                "fetched_at": datetime.now(timezone.utc).isoformat(),
+                "requested_start_ms": user_start_ms,
+                "requested_end_ms": user_end_ms,
+                "effective_end_ms": effective_end_ms,
+            }
+            df.attrs["binance_status"] = status_payload
+            self._store_cache(symbol, tf.value, df)
             return df
 
         except Exception as e:
             logger.error(f"Failed to load candles from Binance: {e}")
+            cached_df = self._load_cache(symbol, tf.value)
+            if cached_df is not None:
+                logger.warning(
+                    "Returning cached Binance candles after failure for %s %s: %s",
+                    symbol,
+                    tf.value,
+                    e,
+                )
+                cached_df.attrs["binance_status"] = {
+                    "active_base_url": self._last_status.get("base_url", active_url),
+                    "used_cache": True,
+                    "error": str(e),
+                    "fetched_at": datetime.now(timezone.utc).isoformat(),
+                    "requested_start_ms": user_start_ms,
+                    "requested_end_ms": user_end_ms,
+                    "effective_end_ms": effective_end_ms,
+                }
+                return cached_df
             raise ValueError(f"Failed to load {symbol} {timeframe} data: {e}") from e
 
     def _fetch_candles_paginated(
@@ -188,6 +508,7 @@ class BinanceKlinesSource(HistoricalDataSource):
         interval: str,
         start: datetime,
         end: datetime,
+        effective_end_ms: Optional[int] = None,
     ) -> list[list]:
         """
         Fetch candles with pagination to handle large date ranges.
@@ -197,6 +518,7 @@ class BinanceKlinesSource(HistoricalDataSource):
             interval: Binance interval (1m, 5m, 15m, 1h, 4h, 1d)
             start: Start datetime
             end: End datetime
+            effective_end_ms: Optional effective end time in milliseconds
 
         Returns:
             List of candle data (each is a list from Binance API)
@@ -207,13 +529,20 @@ class BinanceKlinesSource(HistoricalDataSource):
         all_candles = []
         start_ms = datetime_to_milliseconds(ensure_utc_datetime(start))
         end_ms = datetime_to_milliseconds(ensure_utc_datetime(end))
+        if effective_end_ms is not None:
+            end_ms = min(end_ms, effective_end_ms)
 
         current_start_ms = start_ms
 
         while current_start_ms < end_ms:
             try:
                 # Fetch batch of candles
-                candles = self._fetch_klines_batch(symbol, interval, current_start_ms)
+                candles = self._fetch_klines_batch(
+                    symbol,
+                    interval,
+                    current_start_ms,
+                    end_ms=end_ms,
+                )
 
                 if not candles:
                     break  # No more data available
@@ -234,7 +563,13 @@ class BinanceKlinesSource(HistoricalDataSource):
 
         return all_candles
 
-    def _fetch_klines_batch(self, symbol: str, interval: str, start_ms: int) -> list[list]:
+    def _fetch_klines_batch(
+        self,
+        symbol: str,
+        interval: str,
+        start_ms: int,
+        end_ms: Optional[int] = None,
+    ) -> list[list]:
         """
         Fetch a single batch of klines with retry logic.
 
@@ -249,60 +584,90 @@ class BinanceKlinesSource(HistoricalDataSource):
         Raises:
             RuntimeError: If all retries fail
         """
-        url = (
-            f"{BINANCE_BASE_URL}?"
-            f"symbol={symbol}&"
-            f"interval={interval}&"
-            f"startTime={start_ms}&"
-            f"limit={self.MAX_CANDLES_PER_REQUEST}"
-        )
-
         last_error: Optional[Exception] = None
+        retryable = True
 
         for attempt in range(1, self.max_retries + 1):
+            base_url = self._active_base_url or self._ensure_active_base_url()
+            self._active_base_url = base_url
+            url = (
+                f"{base_url}{KLINES_ENDPOINT}?"
+                f"symbol={symbol}&"
+                f"interval={interval}&"
+                f"startTime={start_ms}&"
+                f"limit={self.MAX_CANDLES_PER_REQUEST}"
+            )
             try:
-                with urlopen(url) as response:
-                    raw_data = response.read()
-
-                return json.loads(raw_data)
-
-            except HTTPError as exc:
-                last_error = exc
-                if exc.code == 429 and attempt < self.max_retries:
-                    backoff_time = self._compute_backoff_delay(attempt)
-                    logger.warning(
-                        "Rate limited while fetching %s %s (attempt %s/%s); backing off %.2fs",
-                        symbol,
-                        interval,
-                        attempt,
-                        self.max_retries,
-                        backoff_time,
-                    )
-                    if backoff_time > 0:
-                        self._sleep(backoff_time)
-                    continue
-
-                reason = exc.reason or getattr(exc, "msg", "")
-                message = (
-                    f"HTTP error {exc.code} while fetching klines for {symbol} "
-                    f"interval={interval} startTime={start_ms}"
+                response = self.session.get(
+                    url,
+                    timeout=(self.connect_timeout, self.read_timeout),
                 )
-                if reason:
-                    message += f": {reason}"
-                logger.error(message)
-                raise RuntimeError(message) from exc
 
-            except URLError as exc:
+                if response.status_code == 429:
+                    last_error = RuntimeError(f"HTTP 429 (Rate Limited): {response.text[:200]}")
+                    if attempt < self.max_retries:
+                        backoff_time = self._compute_backoff_delay(attempt)
+                        logger.warning(
+                            "Rate limited while fetching %s %s (attempt %s/%s); backing off %.2fs",
+                            symbol,
+                            interval,
+                            attempt,
+                            self.max_retries,
+                            backoff_time,
+                        )
+                        if backoff_time > 0:
+                            self._sleep(backoff_time)
+                        continue
+                    retryable = True
+                    break
+
+                if response.status_code >= 500:
+                    last_error = RuntimeError(
+                        f"HTTP {response.status_code} (Server Error): {response.text[:200]}"
+                    )
+                    if attempt < self.max_retries:
+                        backoff_time = self._compute_backoff_delay(attempt)
+                        logger.warning(
+                            "Server error (%s) while fetching %s %s (attempt %s/%s); retrying after %.2fs",
+                            response.status_code,
+                            symbol,
+                            interval,
+                            attempt,
+                            self.max_retries,
+                            backoff_time,
+                        )
+                        if backoff_time > 0:
+                            self._sleep(backoff_time)
+                        continue
+                    retryable = True
+                    break
+
+                if not response.ok:
+                    message = (
+                        f"HTTP {response.status_code} while fetching klines for {symbol} "
+                        f"interval={interval} startTime={start_ms}: {response.text[:200]}"
+                    )
+                    logger.error(message)
+                    retryable = False
+                    raise RuntimeError(message)
+
+                self._record_success(self._active_base_url)
+                return response.json()
+
+            except (ConnectionError, ConnectTimeout) as exc:
                 last_error = exc
+                retryable = True
+                self._record_failure(self._active_base_url, exc, retryable=retryable)
+
                 if attempt < self.max_retries:
                     backoff_time = self._compute_backoff_delay(attempt)
                     logger.warning(
-                        "Network error while fetching %s %s (attempt %s/%s): %s – retrying after %.2fs",
+                        "Connection error while fetching %s %s (attempt %s/%s): %s – retrying after %.2fs",
                         symbol,
                         interval,
                         attempt,
                         self.max_retries,
-                        exc.reason,
+                        self._format_request_error(exc),
                         backoff_time,
                     )
                     if backoff_time > 0:
@@ -310,23 +675,72 @@ class BinanceKlinesSource(HistoricalDataSource):
                     continue
                 break
 
-            except json.JSONDecodeError as exc:
+            except (ReadTimeout, Timeout) as exc:
+                last_error = exc
+                retryable = True
+                self._record_failure(self._active_base_url, exc, retryable=retryable)
+
+                if attempt < self.max_retries:
+                    backoff_time = self._compute_backoff_delay(attempt)
+                    logger.warning(
+                        "Timeout while fetching %s %s (attempt %s/%s): %s – retrying after %.2fs",
+                        symbol,
+                        interval,
+                        attempt,
+                        self.max_retries,
+                        exc,
+                        backoff_time,
+                    )
+                    if backoff_time > 0:
+                        self._sleep(backoff_time)
+                    continue
+                break
+
+            except RequestException as exc:
+                last_error = exc
+                retryable = True
+                self._record_failure(self._active_base_url, exc, retryable=retryable)
+
+                if attempt < self.max_retries:
+                    backoff_time = self._compute_backoff_delay(attempt)
+                    logger.warning(
+                        "Request error while fetching %s %s (attempt %s/%s): %s – retrying after %.2fs",
+                        symbol,
+                        interval,
+                        attempt,
+                        self.max_retries,
+                        self._format_request_error(exc),
+                        backoff_time,
+                    )
+                    if backoff_time > 0:
+                        self._sleep(backoff_time)
+                    continue
+                break
+
+            except (ValueError, json.JSONDecodeError) as exc:
                 message = (
                     f"Failed to decode Binance response for {symbol} interval={interval} "
                     f"startTime={start_ms}: {exc}"
                 )
                 logger.error(message)
+                retryable = False
+                self._record_failure(self._active_base_url, exc, retryable=retryable)
                 raise RuntimeError(message) from exc
+
+        if last_error is not None:
+            self._record_failure(self._active_base_url, last_error, retryable=retryable)
 
         max_retry_message = self._format_max_retry_message(symbol, interval, start_ms, last_error)
         logger.error(max_retry_message)
         raise RuntimeError(max_retry_message) from last_error
 
     def _compute_backoff_delay(self, attempt: int) -> float:
-        """Compute exponential backoff delay for the given attempt."""
+        """Compute exponential backoff delay with jitter for the given attempt."""
         if attempt <= 0 or self.backoff_base == 0:
             return 0.0
-        return self.backoff_base * (RETRY_BACKOFF ** (attempt - 1))
+        base_delay = self.backoff_base * (RETRY_BACKOFF ** (attempt - 1))
+        jitter = base_delay * self.backoff_jitter * random.uniform(0, 1)
+        return base_delay + jitter
 
     def _estimate_end_time(self, start_ms: int, interval: str) -> Optional[int]:
         """Estimate end time for request based on interval and limit."""

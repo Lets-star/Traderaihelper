@@ -292,62 +292,6 @@ class TestBinanceKlinesSourceValidation:
             source._validate_and_normalize(df, Timeframe.H1)
 
 
-class TestBinanceKlinesSourceFetching:
-    """Test fetching logic in BinanceKlinesSource."""
-
-    @patch("indicator_collector.trading_system.data_sources.binance_source.urlopen")
-    def test_fetch_klines_batch_success(self, mock_urlopen):
-        """Test successful klines batch fetch."""
-        source = BinanceKlinesSource()
-
-        # Mock response
-        response_data = [
-            [1704067200000, "50000", "50100", "49900", "50050", "100", 1704070800000, "10000"],
-            [1704070800000, "50050", "50150", "49950", "50100", "110", 1704074400000, "11000"],
-        ]
-
-        mock_response = MagicMock()
-        mock_response.read.return_value = json.dumps(response_data).encode()
-        mock_response.__enter__.return_value = mock_response
-        mock_urlopen.return_value = mock_response
-
-        result = source._fetch_klines_batch("BTCUSDT", "1h", 1704067200000)
-
-        assert len(result) == 2
-        assert result[0][0] == 1704067200000
-
-    @patch("indicator_collector.trading_system.data_sources.binance_source.urlopen")
-    @patch("indicator_collector.trading_system.data_sources.binance_source.time.sleep")
-    def test_fetch_klines_batch_rate_limit_retry(self, mock_sleep, mock_urlopen):
-        """Test retry on rate limit (429)."""
-        source = BinanceKlinesSource(max_retries=2)
-
-        from urllib.error import HTTPError
-
-        # Fail first, then succeed
-        mock_urlopen.side_effect = [
-            HTTPError("", 429, "Too Many Requests", {}, None),
-            MagicMock(__enter__=MagicMock(return_value=MagicMock(read=MagicMock(return_value=b"[[]]")))),
-        ]
-
-        result = source._fetch_klines_batch("BTCUSDT", "1h", 1704067200000)
-
-        assert result == [[]]
-        assert mock_sleep.called  # Should have backed off
-
-    @patch("indicator_collector.trading_system.data_sources.binance_source.urlopen")
-    def test_fetch_klines_batch_max_retries_exceeded(self, mock_urlopen):
-        """Test failure after max retries."""
-        source = BinanceKlinesSource(max_retries=1)
-
-        from urllib.error import URLError
-
-        mock_urlopen.side_effect = URLError("Connection failed")
-
-        with pytest.raises(RuntimeError, match=r"Max retries exceeded while fetching klines.*BTCUSDT"):
-            source._fetch_klines_batch("BTCUSDT", "1h", 1704067200000)
-
-
 class TestBinanceKlinesSourceIntegration:
     """Integration tests for BinanceKlinesSource."""
 

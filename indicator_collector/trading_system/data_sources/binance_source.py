@@ -253,7 +253,7 @@ class BinanceKlinesSource(HistoricalDataSource):
             return (
                 f"Connection refused ({message}). "
                 "Binance API may be blocking direct access. Try setting BINANCE_API_BASE_URL "
-                "or configuring an HTTP(S) proxy.""
+                "or configuring an HTTP(S) proxy."
             )
         return message
 

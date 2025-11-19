@@ -32,6 +32,12 @@ from indicator_collector.trading_system.backtester import (
     indicator_defaults_for,
 )
 from indicator_collector.trading_system.automated_signals import run_automated_signal_flow
+from indicator_collector.trading_system.auto_analyze_worker import (
+    AutoAnalyzeWorker,
+    floor_closed_bar,
+    get_binance_server_time_ms,
+    run_analysis,
+)
 from indicator_collector.trading_system.signal_generator import SignalConfig
 from indicator_collector.trading_system.signal_schema import is_valid_signal_structure
 

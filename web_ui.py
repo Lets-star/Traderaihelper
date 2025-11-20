@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import datetime as dt
+from datetime import datetime, timezone
 import hashlib
 import json
+import logging
 import sys
 from typing import Any, Dict, Optional
 
@@ -40,6 +42,8 @@ from indicator_collector.trading_system.auto_analyze_worker import (
 )
 from indicator_collector.trading_system.signal_generator import SignalConfig
 from indicator_collector.trading_system.signal_schema import is_valid_signal_structure
+
+logger = logging.getLogger(__name__)
 
 
 def format_correlation(value: float) -> str:
@@ -590,6 +594,219 @@ def calculate_better_volume_indicator(
     volume_sma = volume.rolling(length, min_periods=1).mean()
 
     return volume_sma, final_color.tolist()
+
+
+def _compute_rsi(series: pd.Series, period: int = 14) -> pd.Series:
+    delta = series.diff()
+    gain = delta.clip(lower=0)
+    loss = (-delta).clip(lower=0)
+    avg_gain = gain.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
+    avg_loss = loss.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+    rsi = 100 - (100 / (1 + rs))
+    rsi = rsi.fillna(50.0)
+    return rsi.clip(0, 100)
+
+
+def _compute_macd(
+    series: pd.Series,
+    fast: int = 12,
+    slow: int = 26,
+    signal: int = 9,
+) -> tuple[pd.Series, pd.Series, pd.Series]:
+    ema_fast = series.ewm(span=fast, adjust=False).mean()
+    ema_slow = series.ewm(span=slow, adjust=False).mean()
+    macd_line = ema_fast - ema_slow
+    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+    histogram = macd_line - signal_line
+    return macd_line, signal_line, histogram
+
+
+def _compute_bollinger_bands(
+    series: pd.Series,
+    period: int = 20,
+    std_dev: float = 2.0,
+) -> tuple[pd.Series, pd.Series, pd.Series]:
+    middle = series.rolling(window=period, min_periods=1).mean()
+    deviation = series.rolling(window=period, min_periods=1).std(ddof=0)
+    upper = middle + std_dev * deviation
+    lower = middle - std_dev * deviation
+    return middle, upper, lower
+
+
+def create_realtime_candlestick_chart(
+    df: pd.DataFrame,
+    *,
+    show_bvi: bool = True,
+    bvi_length: int = 8,
+) -> go.Figure:
+    if df.empty:
+        raise ValueError("Realtime chart dataframe is empty")
+
+    plot_df = df.copy().sort_values("ts").reset_index(drop=True)
+    if "timestamp" not in plot_df.columns:
+        plot_df["timestamp"] = pd.to_datetime(plot_df["ts"], unit="ms", utc=True)
+
+    timestamps = plot_df["timestamp"]
+
+    rsi_values = _compute_rsi(plot_df["close"])
+    macd_line, macd_signal, macd_hist = _compute_macd(plot_df["close"])
+    bb_middle, bb_upper, bb_lower = _compute_bollinger_bands(plot_df["close"])
+
+    if show_bvi:
+        bvi_input = plot_df[["open", "high", "low", "close", "volume"]].copy()
+        volume_sma, volume_colors = calculate_better_volume_indicator(
+            bvi_input,
+            length=bvi_length,
+            use_two_bars=True,
+        )
+    else:
+        volume_sma = plot_df["volume"].rolling(window=20, min_periods=1).mean()
+        volume_colors = [
+            "#16a34a" if close >= open_ else "#dc2626"
+            for close, open_ in zip(plot_df["close"], plot_df["open"])
+        ]
+
+    volume_sma_plot = volume_sma.where(volume_sma.notna(), None).tolist()
+
+    fig = make_subplots(
+        rows=4,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.03,
+        row_heights=[0.5, 0.15, 0.15, 0.20],
+        subplot_titles=("Price & Indicators", "RSI", "MACD", "Volume"),
+    )
+
+    fig.add_trace(
+        go.Candlestick(
+            x=timestamps,
+            open=plot_df["open"],
+            high=plot_df["high"],
+            low=plot_df["low"],
+            close=plot_df["close"],
+            name="Price",
+            increasing_line_color="green",
+            decreasing_line_color="red",
+        ),
+        row=1,
+        col=1,
+    )
+
+    fig.add_trace(
+        go.Scatter(
+            x=timestamps,
+            y=bb_upper,
+            name="BB Upper",
+            line=dict(color="rgba(173, 216, 230, 0.5)", width=1),
+        ),
+        row=1,
+        col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=timestamps,
+            y=bb_middle,
+            name="BB Middle",
+            line=dict(color="rgba(255, 255, 255, 0.5)", width=1, dash="dash"),
+        ),
+        row=1,
+        col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=timestamps,
+            y=bb_lower,
+            name="BB Lower",
+            line=dict(color="rgba(173, 216, 230, 0.5)", width=1),
+            fill="tonexty",
+            fillcolor="rgba(173, 216, 230, 0.1)",
+        ),
+        row=1,
+        col=1,
+    )
+
+    fig.add_trace(
+        go.Scatter(
+            x=timestamps,
+            y=rsi_values,
+            name="RSI",
+            line=dict(color="purple", width=2),
+        ),
+        row=2,
+        col=1,
+    )
+    fig.add_hline(y=70, line_dash="dash", line_color="red", opacity=0.5, row=2, col=1)
+    fig.add_hline(y=30, line_dash="dash", line_color="green", opacity=0.5, row=2, col=1)
+    fig.add_hline(y=50, line_dash="dot", line_color="gray", opacity=0.3, row=2, col=1)
+
+    fig.add_trace(
+        go.Scatter(
+            x=timestamps,
+            y=macd_line,
+            name="MACD",
+            line=dict(color="blue", width=2),
+        ),
+        row=3,
+        col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=timestamps,
+            y=macd_signal,
+            name="Signal",
+            line=dict(color="orange", width=2),
+        ),
+        row=3,
+        col=1,
+    )
+    fig.add_trace(
+        go.Bar(
+            x=timestamps,
+            y=macd_hist,
+            name="Histogram",
+            marker_color=["green" if val >= 0 else "red" for val in macd_hist],
+        ),
+        row=3,
+        col=1,
+    )
+
+    fig.add_trace(
+        go.Bar(
+            x=timestamps,
+            y=plot_df["volume"],
+            name="Volume" if not show_bvi else "Better Volume",
+            marker_color=volume_colors if volume_colors else "#00FFFF",
+        ),
+        row=4,
+        col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=timestamps,
+            y=volume_sma_plot,
+            name=f"Volume SMA ({bvi_length})",
+            line=dict(color="orange", width=2),
+        ),
+        row=4,
+        col=1,
+    )
+
+    fig.update_layout(
+        height=1000,
+        showlegend=True,
+        xaxis_rangeslider_visible=False,
+        hovermode="x unified",
+        template="plotly_dark",
+    )
+
+    fig.update_yaxes(title_text="Price", row=1, col=1)
+    fig.update_yaxes(title_text="RSI", range=[0, 100], row=2, col=1)
+    fig.update_yaxes(title_text="MACD", row=3, col=1)
+    fig.update_yaxes(title_text="Volume" if not show_bvi else "Better Volume Indicator", row=4, col=1)
+    fig.update_xaxes(title_text="Time", row=4, col=1)
+
+    return fig
 
 
 def create_candlestick_chart(summary: SimulationSummary, main_series: TimeframeSeries):
@@ -1405,6 +1622,26 @@ def main():
     st.markdown("---")
     config_store = ConfigStore.load()
     
+    # Initialize Charts tab session state
+    if "chart_symbol" not in st.session_state:
+        st.session_state.chart_symbol = None
+    if "chart_timeframe" not in st.session_state:
+        st.session_state.chart_timeframe = None
+    if "chart_df" not in st.session_state:
+        st.session_state.chart_df = None
+    if "last_closed_ts" not in st.session_state:
+        st.session_state.last_closed_ts = 0
+    if "analysis_updated" not in st.session_state:
+        st.session_state.analysis_updated = False
+    if "worker_running" not in st.session_state:
+        st.session_state.worker_running = False
+    if "chart_worker" not in st.session_state:
+        st.session_state.chart_worker = None
+    if "auto_refresh_enabled" not in st.session_state:
+        st.session_state.auto_refresh_enabled = False
+    if "bvi_enabled" not in st.session_state:
+        st.session_state.bvi_enabled = True
+    
     with st.sidebar:
         st.header("⚙️ Configuration")
 
@@ -1550,9 +1787,124 @@ def main():
     ])
     
     with chart_tab:
+        from chart_auto_refresh import (
+            ChartAutoRefreshWorker,
+            fetch_closed_candles,
+            invalidate_cache,
+        )
+        
         st.subheader(f"Price Chart with Indicators - {selected_token}")
-        fig = create_candlestick_chart(summary, main_series)
-        st.plotly_chart(fig, width="stretch")
+        
+        # Controls row
+        ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([1, 1, 2])
+        with ctrl_col1:
+            auto_refresh = st.checkbox(
+                "🔄 Auto-refresh on new bars",
+                value=st.session_state.auto_refresh_enabled,
+                key="charts_auto_refresh_toggle",
+            )
+        with ctrl_col2:
+            bvi_enabled = st.checkbox(
+                "📊 Better Volume Indicator",
+                value=st.session_state.bvi_enabled,
+                key="charts_bvi_toggle",
+            )
+            st.session_state.bvi_enabled = bvi_enabled
+        with ctrl_col3:
+            if st.session_state.worker_running:
+                st.info(f"🟢 Live: Monitoring {selected_token} {selected_timeframe}")
+            else:
+                st.caption("Auto-refresh disabled")
+        
+        # Check if symbol or timeframe changed
+        symbol_changed = st.session_state.chart_symbol != selected_token
+        timeframe_changed = st.session_state.chart_timeframe != selected_timeframe
+        
+        # Stop existing worker if symbol/timeframe changed or auto-refresh disabled
+        if (symbol_changed or timeframe_changed or not auto_refresh) and st.session_state.chart_worker is not None:
+            try:
+                st.session_state.chart_worker.stop()
+                st.session_state.chart_worker = None
+                st.session_state.worker_running = False
+            except Exception as e:
+                logger.warning(f"Failed to stop chart worker: {e}")
+        
+        # Update session state tracking
+        st.session_state.auto_refresh_enabled = auto_refresh
+        
+        # Handle symbol/timeframe change: reset state and invalidate cache
+        if symbol_changed or timeframe_changed:
+            st.session_state.chart_symbol = selected_token
+            st.session_state.chart_timeframe = selected_timeframe
+            st.session_state.chart_df = None
+            st.session_state.last_closed_ts = 0
+            st.session_state.analysis_updated = False
+            
+            # Invalidate cache
+            try:
+                invalidate_cache(selected_token, selected_timeframe)
+            except Exception as e:
+                logger.warning(f"Failed to invalidate cache: {e}")
+            
+            # Fetch initial data synchronously
+            with st.spinner(f"Loading chart data for {selected_token} {selected_timeframe}..."):
+                try:
+                    df, last_closed_ts = fetch_closed_candles(
+                        symbol=selected_token,
+                        timeframe=selected_timeframe,
+                        num_bars=selected_period,
+                        use_cache=False,
+                    )
+                    st.session_state.chart_df = df
+                    st.session_state.last_closed_ts = last_closed_ts
+                    st.session_state.analysis_updated = True
+                except Exception as e:
+                    st.error(f"❌ Failed to load chart data: {str(e)}")
+                    st.session_state.chart_df = None
+        
+        # Start worker if auto-refresh is enabled and not already running
+        if auto_refresh and st.session_state.chart_worker is None:
+            try:
+                worker = ChartAutoRefreshWorker(
+                    symbol=selected_token,
+                    timeframe=selected_timeframe,
+                    num_bars=selected_period,
+                    session_state=st.session_state,
+                )
+                worker.start()
+                st.session_state.chart_worker = worker
+            except Exception as e:
+                st.error(f"❌ Failed to start auto-refresh worker: {str(e)}")
+        
+        # Display chart
+        if st.session_state.chart_df is not None and not st.session_state.chart_df.empty and auto_refresh:
+            # Build chart from DataFrame when using auto-refresh
+            df = st.session_state.chart_df
+            
+            # Display status
+            last_ts = st.session_state.last_closed_ts
+            if last_ts > 0:
+                last_dt = datetime.fromtimestamp(last_ts / 1000, tz=timezone.utc)
+                st.caption(f"📅 Last closed bar: {last_dt.strftime('%Y-%m-%d %H:%M:%S UTC')} | Bars: {len(df)}")
+            
+            # Build realtime chart from DataFrame
+            try:
+                fig = create_realtime_candlestick_chart(df, show_bvi=bvi_enabled)
+                st.plotly_chart(fig, use_container_width=True)
+            except Exception as e:
+                st.error(f"Failed to render realtime chart: {str(e)}")
+                # Fallback to original
+                fig = create_candlestick_chart(summary, main_series)
+                st.plotly_chart(fig, use_container_width=True)
+            
+            # Reset analysis_updated flag
+            if st.session_state.analysis_updated:
+                st.session_state.analysis_updated = False
+                st.rerun()
+        else:
+            # Fallback to original chart
+            fig = create_candlestick_chart(summary, main_series)
+            st.plotly_chart(fig, use_container_width=True)
     
     with multi_tab:
         st.subheader("Multi-Timeframe Analysis")

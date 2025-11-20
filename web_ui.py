@@ -639,6 +639,10 @@ def create_realtime_candlestick_chart(
     *,
     show_bvi: bool = True,
     bvi_length: int = 8,
+    atr_channels: Optional[Dict[str, Any]] = None,
+    order_blocks: Optional[list] = None,
+    show_atr_channels: bool = True,
+    show_order_blocks: bool = True,
 ) -> go.Figure:
     if df.empty:
         raise ValueError("Realtime chart dataframe is empty")
@@ -678,6 +682,9 @@ def create_realtime_candlestick_chart(
         subplot_titles=("Price & Indicators", "RSI", "MACD", "Volume"),
     )
 
+    atr_channels = atr_channels or {}
+    order_blocks = order_blocks or []
+
     fig.add_trace(
         go.Candlestick(
             x=timestamps,
@@ -692,6 +699,61 @@ def create_realtime_candlestick_chart(
         row=1,
         col=1,
     )
+
+    atr_color_map = {
+        "atr_trend_1x": "#6366F1",
+        "atr_trend_3x": "#22C55E",
+        "atr_trend_8x": "#F59E0B",
+        "atr_trend_21x": "#EF4444",
+    }
+
+    if show_atr_channels and atr_channels:
+        for key in sorted(atr_channels.keys()):
+            channel = atr_channels.get(key) or {}
+            color = atr_color_map.get(key, "rgba(255, 255, 255, 0.6)")
+            label_base = key.replace("atr_trend_", "").upper()
+            upper_series = channel.get("upper")
+            lower_series = channel.get("lower")
+
+            if isinstance(upper_series, pd.Series):
+                upper_values = upper_series.where(upper_series.notna(), None).tolist()
+            elif isinstance(upper_series, (list, tuple, np.ndarray)):
+                upper_values = [value if value == value else None for value in upper_series]
+            else:
+                upper_values = []
+
+            if isinstance(lower_series, pd.Series):
+                lower_values = lower_series.where(lower_series.notna(), None).tolist()
+            elif isinstance(lower_series, (list, tuple, np.ndarray)):
+                lower_values = [value if value == value else None for value in lower_series]
+            else:
+                lower_values = []
+
+            if upper_values:
+                fig.add_trace(
+                    go.Scatter(
+                        x=timestamps,
+                        y=upper_values,
+                        name=f"ATR {label_base}Upper",
+                        line=dict(color=color, width=1.5),
+                        mode="lines",
+                    ),
+                    row=1,
+                    col=1,
+                )
+
+            if lower_values:
+                fig.add_trace(
+                    go.Scatter(
+                        x=timestamps,
+                        y=lower_values,
+                        name=f"ATR {label_base}Lower",
+                        line=dict(color=color, width=1.5, dash="dot"),
+                        mode="lines",
+                    ),
+                    row=1,
+                    col=1,
+                )
 
     fig.add_trace(
         go.Scatter(
@@ -725,6 +787,34 @@ def create_realtime_candlestick_chart(
         row=1,
         col=1,
     )
+
+    if show_order_blocks and order_blocks:
+        for zone in order_blocks:
+            zone_type = zone.get("zone_type")
+            created_idx = int(zone.get("created_index", 0))
+            created_idx = max(0, min(created_idx, len(plot_df) - 1))
+            start_time = timestamps.iloc[created_idx]
+            end_time = timestamps.iloc[-1]
+            top = zone.get("top")
+            bottom = zone.get("bottom")
+
+            if top is None or bottom is None:
+                continue
+
+            color = "rgba(34,197,94,0.18)" if str(zone_type).startswith("Bull") else "rgba(251,146,60,0.18)"
+            border = "rgba(34,197,94,0.45)" if str(zone_type).startswith("Bull") else "rgba(251,146,60,0.45)"
+
+            fig.add_shape(
+                type="rect",
+                x0=start_time,
+                x1=end_time,
+                y0=min(top, bottom),
+                y1=max(top, bottom),
+                fillcolor=color,
+                line=dict(color=border, width=1),
+                row=1,
+                col=1,
+            )
 
     fig.add_trace(
         go.Scatter(
@@ -1629,6 +1719,8 @@ def main():
         st.session_state.chart_timeframe = None
     if "chart_df" not in st.session_state:
         st.session_state.chart_df = None
+    if "chart_indicators" not in st.session_state:
+        st.session_state.chart_indicators = None
     if "last_closed_ts" not in st.session_state:
         st.session_state.last_closed_ts = 0
     if "analysis_updated" not in st.session_state:
@@ -1641,6 +1733,10 @@ def main():
         st.session_state.auto_refresh_enabled = False
     if "bvi_enabled" not in st.session_state:
         st.session_state.bvi_enabled = True
+    if "atr_channels_enabled" not in st.session_state:
+        st.session_state.atr_channels_enabled = True
+    if "order_blocks_enabled" not in st.session_state:
+        st.session_state.order_blocks_enabled = True
     
     with st.sidebar:
         st.header("⚙️ Configuration")
@@ -1789,32 +1885,54 @@ def main():
     with chart_tab:
         from chart_auto_refresh import (
             ChartAutoRefreshWorker,
+            compute_chart_indicators,
             fetch_closed_candles,
             invalidate_cache,
+            read_chart_state,
+            update_chart_state,
         )
         
         st.subheader(f"Price Chart with Indicators - {selected_token}")
         
         # Controls row
-        ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([1, 1, 2])
+        ctrl_col1, ctrl_col2, ctrl_col3, ctrl_col4 = st.columns([1, 1, 1, 1])
         with ctrl_col1:
             auto_refresh = st.checkbox(
-                "🔄 Auto-refresh on new bars",
+                "🔄 Auto-refresh",
                 value=st.session_state.auto_refresh_enabled,
                 key="charts_auto_refresh_toggle",
             )
         with ctrl_col2:
             bvi_enabled = st.checkbox(
-                "📊 Better Volume Indicator",
+                "📊 Better Volume",
                 value=st.session_state.bvi_enabled,
                 key="charts_bvi_toggle",
             )
             st.session_state.bvi_enabled = bvi_enabled
         with ctrl_col3:
-            if st.session_state.worker_running:
-                st.info(f"🟢 Live: Monitoring {selected_token} {selected_timeframe}")
-            else:
-                st.caption("Auto-refresh disabled")
+            atr_channels_enabled = st.checkbox(
+                "📈 ATR Channels",
+                value=st.session_state.atr_channels_enabled,
+                key="charts_atr_channels_toggle",
+            )
+            st.session_state.atr_channels_enabled = atr_channels_enabled
+        with ctrl_col4:
+            order_blocks_enabled = st.checkbox(
+                "🟦 Order Blocks",
+                value=st.session_state.order_blocks_enabled,
+                key="charts_order_blocks_toggle",
+            )
+            st.session_state.order_blocks_enabled = order_blocks_enabled
+        
+        # Status indicator
+        if st.session_state.worker_running:
+            st.info(f"🟢 Live: Monitoring {selected_token} {selected_timeframe}")
+        elif auto_refresh:
+            st.caption("Initializing auto-refresh...")
+        else:
+            st.caption("Auto-refresh disabled")
+
+        chart_container = st.empty()
         
         # Check if symbol or timeframe changed
         symbol_changed = st.session_state.chart_symbol != selected_token
@@ -1837,6 +1955,7 @@ def main():
             st.session_state.chart_symbol = selected_token
             st.session_state.chart_timeframe = selected_timeframe
             st.session_state.chart_df = None
+            st.session_state.chart_indicators = None
             st.session_state.last_closed_ts = 0
             st.session_state.analysis_updated = False
             
@@ -1855,12 +1974,15 @@ def main():
                         num_bars=selected_period,
                         use_cache=False,
                     )
-                    st.session_state.chart_df = df
-                    st.session_state.last_closed_ts = last_closed_ts
-                    st.session_state.analysis_updated = True
+                    # Compute indicators
+                    indicators = compute_chart_indicators(df)
+                    # Update state atomically
+                    update_chart_state(st.session_state, df, indicators, last_closed_ts)
+                    st.session_state.analysis_updated = False
                 except Exception as e:
                     st.error(f"❌ Failed to load chart data: {str(e)}")
                     st.session_state.chart_df = None
+                    st.session_state.chart_indicators = None
         
         # Start worker if auto-refresh is enabled and not already running
         if auto_refresh and st.session_state.chart_worker is None:
@@ -1878,33 +2000,47 @@ def main():
         
         # Display chart
         if st.session_state.chart_df is not None and not st.session_state.chart_df.empty and auto_refresh:
-            # Build chart from DataFrame when using auto-refresh
-            df = st.session_state.chart_df
+            # Read chart state safely
+            df, indicators, last_ts = read_chart_state(st.session_state)
             
-            # Display status
-            last_ts = st.session_state.last_closed_ts
-            if last_ts > 0:
-                last_dt = datetime.fromtimestamp(last_ts / 1000, tz=timezone.utc)
-                st.caption(f"📅 Last closed bar: {last_dt.strftime('%Y-%m-%d %H:%M:%S UTC')} | Bars: {len(df)}")
-            
-            # Build realtime chart from DataFrame
-            try:
-                fig = create_realtime_candlestick_chart(df, show_bvi=bvi_enabled)
-                st.plotly_chart(fig, use_container_width=True)
-            except Exception as e:
-                st.error(f"Failed to render realtime chart: {str(e)}")
-                # Fallback to original
-                fig = create_candlestick_chart(summary, main_series)
-                st.plotly_chart(fig, use_container_width=True)
-            
-            # Reset analysis_updated flag
-            if st.session_state.analysis_updated:
-                st.session_state.analysis_updated = False
-                st.rerun()
+            if df is not None and not df.empty:
+                # Display status
+                if last_ts > 0:
+                    last_dt = datetime.fromtimestamp(last_ts / 1000, tz=timezone.utc)
+                    st.caption(f"📅 Last closed bar: {last_dt.strftime('%Y-%m-%d %H:%M:%S UTC')} | Bars: {len(df)}")
+                
+                # Build realtime chart from DataFrame with indicators
+                try:
+                    atr_channels_data = indicators.get("atr_channels", {}) if indicators else {}
+                    order_blocks_data = indicators.get("order_blocks", []) if indicators else []
+                    
+                    fig = create_realtime_candlestick_chart(
+                        df,
+                        show_bvi=bvi_enabled,
+                        atr_channels=atr_channels_data,
+                        order_blocks=order_blocks_data,
+                        show_atr_channels=atr_channels_enabled,
+                        show_order_blocks=order_blocks_enabled,
+                    )
+                    chart_container.plotly_chart(fig, use_container_width=True, key="realtime_chart")
+                except Exception as e:
+                    st.error(f"Failed to render realtime chart: {str(e)}")
+                    logger.exception("Chart rendering error")
+                    # Fallback to original
+                    fig = create_candlestick_chart(summary, main_series)
+                    chart_container.plotly_chart(fig, use_container_width=True, key="fallback_chart")
+                
+                # Reset analysis_updated flag and rerun if needed
+                if st.session_state.analysis_updated:
+                    st.session_state.analysis_updated = False
+                    st.rerun()
+            else:
+                # No data available
+                st.warning("Waiting for chart data...")
         else:
             # Fallback to original chart
             fig = create_candlestick_chart(summary, main_series)
-            st.plotly_chart(fig, use_container_width=True)
+            chart_container.plotly_chart(fig, use_container_width=True, key="original_chart")
     
     with multi_tab:
         st.subheader("Multi-Timeframe Analysis")

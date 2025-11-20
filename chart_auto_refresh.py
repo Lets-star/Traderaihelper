@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 import threading
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
+import numpy as np
 import pandas as pd
 
 from indicator_collector.trading_system.auto_analyze_worker import get_binance_server_time_ms
@@ -36,6 +38,130 @@ TIMEFRAME_TO_MS: Dict[str, int] = {
 
 _CANDLE_CACHE: Dict[tuple[str, str, int, int], pd.DataFrame] = {}
 _CACHE_LOCK = threading.Lock()
+_CHART_DATA_LOCK = threading.Lock()
+
+
+def compute_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    """Compute Average True Range (ATR) indicator."""
+    if df.empty or len(df) < period:
+        return pd.Series(dtype=float)
+    
+    high = df["high"].astype(float)
+    low = df["low"].astype(float)
+    close = df["close"].astype(float)
+    
+    # True Range calculation
+    hl = high - low
+    hc = (high - close.shift(1)).abs()
+    lc = (low - close.shift(1)).abs()
+    
+    tr = pd.concat([hl, hc, lc], axis=1).max(axis=1, skipna=True)
+    
+    # RMA (Running Moving Average) for ATR
+    atr_values = tr.ewm(alpha=1.0/period, adjust=False).mean()
+    return atr_values
+
+
+def compute_atr_channels(df: pd.DataFrame, atr_period: int = 14) -> Dict[str, pd.Series]:
+    """Compute ATR channel overlays with multiple multipliers."""
+    if df.empty:
+        return {}
+    
+    atr_values = compute_atr(df, period=atr_period)
+    close = df["close"].astype(float)
+    
+    channels: Dict[str, Dict[str, pd.Series]] = {}
+    multipliers = [1, 3, 8, 21]
+    
+    for mult in multipliers:
+        key = f"atr_trend_{mult}x"
+        upper = close + (atr_values * mult)
+        lower = close - (atr_values * mult)
+        channels[key] = {
+            "upper": upper,
+            "lower": lower,
+        }
+    
+    return channels
+
+
+def detect_order_blocks(df: pd.DataFrame, lookback: int = 20) -> list[Dict[str, Any]]:
+    """Detect bullish and bearish order blocks (simplified version for charts)."""
+    if df.empty or len(df) < lookback:
+        return []
+    
+    order_blocks = []
+    
+    high = df["high"].to_numpy()
+    low = df["low"].to_numpy()
+    close = df["close"].to_numpy()
+    open_ = df["open"].to_numpy()
+    volume = df["volume"].to_numpy()
+    
+    for i in range(lookback, len(df)):
+        # Look for strong momentum candles with high volume
+        body_size = abs(close[i] - open_[i])
+        avg_body = np.mean([abs(close[j] - open_[j]) for j in range(max(0, i-10), i)])
+        
+        if body_size > avg_body * 1.5 and volume[i] > np.mean(volume[max(0, i-10):i]) * 1.5:
+            # Bullish order block
+            if close[i] > open_[i]:
+                order_blocks.append({
+                    "zone_type": "BullOB",
+                    "top": high[i],
+                    "bottom": low[i],
+                    "created_index": i,
+                })
+            # Bearish order block
+            elif close[i] < open_[i]:
+                order_blocks.append({
+                    "zone_type": "BearOB",
+                    "top": high[i],
+                    "bottom": low[i],
+                    "created_index": i,
+                })
+    
+    # Keep only the most recent order blocks
+    return order_blocks[-10:] if len(order_blocks) > 10 else order_blocks
+
+
+def compute_chart_indicators(df: pd.DataFrame) -> Dict[str, Any]:
+    """Compute all chart indicators (ATR channels, order blocks) for overlay rendering."""
+    if df.empty:
+        return {"atr_channels": {}, "order_blocks": []}
+    
+    return {
+        "atr_channels": compute_atr_channels(df),
+        "order_blocks": detect_order_blocks(df),
+    }
+
+
+def read_chart_state(session_state: Any) -> Tuple[Optional[pd.DataFrame], Dict[str, Any], int]:
+    """Safely read chart DataFrame and indicators from session state."""
+    with _CHART_DATA_LOCK:
+        df = getattr(session_state, "chart_df", None)
+        df_copy: Optional[pd.DataFrame]
+        if df is not None and isinstance(df, pd.DataFrame):
+            df_copy = df.copy(deep=True)
+        else:
+            df_copy = None
+        indicators = copy.deepcopy(getattr(session_state, "chart_indicators", {}))
+        last_closed_ts = getattr(session_state, "last_closed_ts", 0)
+    return df_copy, indicators, last_closed_ts
+
+
+def update_chart_state(
+    session_state: Any,
+    df: pd.DataFrame,
+    indicators: Dict[str, Any],
+    last_closed_ts: int,
+) -> None:
+    """Safely update chart data and indicators in session state."""
+    with _CHART_DATA_LOCK:
+        session_state.chart_df = df
+        session_state.chart_indicators = indicators
+        session_state.last_closed_ts = last_closed_ts
+        session_state.analysis_updated = True
 
 
 def floor_closed_bar_local(now_ms: int, tf_ms: int, tol_ms: int = 60_000) -> int:
@@ -235,10 +361,16 @@ class ChartAutoRefreshWorker:
                             data_source=self.data_source,
                         )
                         
-                        # Update session state
-                        self.session_state.chart_df = df
-                        self.session_state.last_closed_ts = actual_last_closed
-                        self.session_state.analysis_updated = True
+                        # Compute indicators for overlays
+                        indicators = compute_chart_indicators(df)
+                        
+                        # Update session state atomically with helper function
+                        update_chart_state(
+                            self.session_state,
+                            df,
+                            indicators,
+                            actual_last_closed,
+                        )
                         
                         logger.info(f"Chart data updated successfully for closed bar {actual_last_closed}")
                         last_closed = actual_last_closed

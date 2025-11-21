@@ -1641,6 +1641,8 @@ def main():
         st.session_state.auto_refresh_enabled = False
     if "bvi_enabled" not in st.session_state:
         st.session_state.bvi_enabled = True
+    if "chart_period" not in st.session_state:
+        st.session_state.chart_period = None
     
     with st.sidebar:
         st.header("⚙️ Configuration")
@@ -1816,12 +1818,27 @@ def main():
             else:
                 st.caption("Auto-refresh disabled")
         
-        # Check if symbol or timeframe changed
+        # Create stable containers for chart and status output
+        if "chart_box_placeholder" not in st.session_state:
+            st.session_state.chart_box_placeholder = st.empty()
+        if "chart_status_placeholder" not in st.session_state:
+            st.session_state.chart_status_placeholder = st.empty()
+        chart_box = st.session_state.chart_box_placeholder
+        status_box = st.session_state.chart_status_placeholder
+        
+        def update_status(message: Optional[str]) -> None:
+            if message:
+                status_box.caption(message)
+            else:
+                status_box.empty()
+        
+        # Check if symbol, timeframe, or period changed
         symbol_changed = st.session_state.chart_symbol != selected_token
         timeframe_changed = st.session_state.chart_timeframe != selected_timeframe
+        period_changed = st.session_state.chart_period != selected_period
         
-        # Stop existing worker if symbol/timeframe changed or auto-refresh disabled
-        if (symbol_changed or timeframe_changed or not auto_refresh) and st.session_state.chart_worker is not None:
+        # Stop existing worker if symbol/timeframe/period changed or auto-refresh disabled
+        if (symbol_changed or timeframe_changed or period_changed or not auto_refresh) and st.session_state.chart_worker is not None:
             try:
                 st.session_state.chart_worker.stop()
                 st.session_state.chart_worker = None
@@ -1876,35 +1893,42 @@ def main():
             except Exception as e:
                 st.error(f"❌ Failed to start auto-refresh worker: {str(e)}")
         
-        # Display chart
-        if st.session_state.chart_df is not None and not st.session_state.chart_df.empty and auto_refresh:
-            # Build chart from DataFrame when using auto-refresh
-            df = st.session_state.chart_df
-            
-            # Display status
-            last_ts = st.session_state.last_closed_ts
-            if last_ts > 0:
-                last_dt = datetime.fromtimestamp(last_ts / 1000, tz=timezone.utc)
-                st.caption(f"📅 Last closed bar: {last_dt.strftime('%Y-%m-%d %H:%M:%S UTC')} | Bars: {len(df)}")
-            
-            # Build realtime chart from DataFrame
+        # Build chart using available data
+        chart_df = st.session_state.chart_df
+        last_ts = st.session_state.last_closed_ts
+        status_text: Optional[str] = None
+        chart_rendered = False
+        
+        if chart_df is not None and not chart_df.empty:
             try:
-                fig = create_realtime_candlestick_chart(df, show_bvi=bvi_enabled)
-                st.plotly_chart(fig, use_container_width=True)
+                fig = create_realtime_candlestick_chart(chart_df, show_bvi=bvi_enabled)
+                chart_box.plotly_chart(fig, use_container_width=True)
+                chart_rendered = True
+                if last_ts > 0:
+                    last_dt = datetime.fromtimestamp(last_ts / 1000, tz=timezone.utc)
+                    status_text = (
+                        f"📅 Last closed bar: {last_dt.strftime('%Y-%m-%d %H:%M:%S UTC')}"
+                        f" • Bars loaded: {len(chart_df)}"
+                    )
+                    if auto_refresh:
+                        status_text += " • Auto-refresh ON"
+                    else:
+                        status_text += " • Auto-refresh OFF"
             except Exception as e:
-                st.error(f"Failed to render realtime chart: {str(e)}")
-                # Fallback to original
-                fig = create_candlestick_chart(summary, main_series)
-                st.plotly_chart(fig, use_container_width=True)
-            
-            # Reset analysis_updated flag
-            if st.session_state.analysis_updated:
-                st.session_state.analysis_updated = False
-                st.rerun()
-        else:
-            # Fallback to original chart
+                logger.error(f"Failed to render realtime chart: {e}")
+                status_text = f"⚠️ Unable to render realtime chart: {e}"
+        
+        if not chart_rendered:
             fig = create_candlestick_chart(summary, main_series)
-            st.plotly_chart(fig, use_container_width=True)
+            chart_box.plotly_chart(fig, use_container_width=True)
+            if status_text is None:
+                status_text = "Showing analysis snapshot from latest run."
+        
+        update_status(status_text)
+        
+        # Reset analysis updated flag once chart has been rendered
+        if st.session_state.analysis_updated:
+            st.session_state.analysis_updated = False
     
     with multi_tab:
         st.subheader("Multi-Timeframe Analysis")

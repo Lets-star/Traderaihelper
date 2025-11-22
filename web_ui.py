@@ -2043,13 +2043,13 @@ def main():
                         show_atr_channels=atr_channels_enabled,
                         show_order_blocks=order_blocks_enabled,
                     )
-                    chart_container.plotly_chart(fig, use_container_width=True, key="realtime_chart")
+                    chart_container.plotly_chart(fig, width="stretch", key="realtime_chart")
                 except Exception as e:
                     st.error(f"Failed to render realtime chart: {str(e)}")
                     logger.exception("Chart rendering error")
                     # Fallback to original
                     fig = create_candlestick_chart(summary, main_series)
-                    chart_container.plotly_chart(fig, use_container_width=True, key="fallback_chart")
+                    chart_container.plotly_chart(fig, width="stretch", key="fallback_chart")
                 
                 # Reset analysis_updated flag and rerun if needed
                 if st.session_state.analysis_updated:
@@ -2061,7 +2061,7 @@ def main():
         else:
             # Fallback to original chart
             fig = create_candlestick_chart(summary, main_series)
-            chart_container.plotly_chart(fig, use_container_width=True, key="original_chart")
+            chart_container.plotly_chart(fig, width="stretch", key="original_chart")
     
     with multi_tab:
         st.subheader("Multi-Timeframe Analysis")
@@ -3380,6 +3380,9 @@ def main():
         if previous_identity and previous_identity != cache_identity:
             cached_run_automated_signals.clear()
             state["end_time_user_set"] = False
+            state.pop("auto_end_timestamp", None)
+            auto_toggle_key = ui_key("automated_signals", "auto_advance_end")
+            st.session_state.pop(auto_toggle_key, None)
         state["cache_identity"] = cache_identity
 
         st.caption(
@@ -3394,31 +3397,64 @@ def main():
         with st.expander("Risk & Signal Settings", expanded=False):
             render_signal_risk_controls(config_store)
 
+        # Auto-advance toggle for End time
+        auto_advance_key = ui_key("automated_signals", "auto_advance_end")
+        if auto_advance_key not in st.session_state:
+            st.session_state[auto_advance_key] = not state.get("end_time_user_set", False)
+        auto_advance_end = st.checkbox(
+            "🔄 Auto-advance End time to latest TF boundary",
+            value=st.session_state[auto_advance_key],
+            key=auto_advance_key,
+            help=f"When enabled, End time automatically updates to the latest closed {config_store.timeframe.upper()} bar boundary",
+        )
+        
+        # Update end_time_user_set based on checkbox
+        state["end_time_user_set"] = not auto_advance_end
+        
+        # Widget keys for date/time controls
+        end_date_key = ui_key("automated_signals", "end_date")
+        end_time_key = ui_key("automated_signals", "end_time")
+        
         date_cols = st.columns(2)
         start_dt = config_store.start_datetime
         
-        # Initialize end_time_user_set flag
-        if "end_time_user_set" not in state:
-            state["end_time_user_set"] = False
-        
-        # Check if we should auto-set end time
+        # Check if we should auto-set end time to latest TF boundary
         if not state["end_time_user_set"]:
             try:
                 # Get server time from Binance
                 from indicator_collector.trading_system.data_sources.binance_source import BinanceKlinesSource
+                from chart_auto_refresh import TIMEFRAME_TO_MS, floor_closed_bar_local
+                
                 data_source = BinanceKlinesSource()
                 server_time_ms = get_binance_server_time_ms(data_source)
                 # Normalize to UTC milliseconds
                 server_time_ms = normalize_timestamp(server_time_ms)
-                # Align to minute precision
-                server_time_aligned_ms = (server_time_ms // 60000) * 60000
-                # Clamp to not exceed now (with 60s tolerance)
-                max_allowed_ms = server_time_ms - 60000
-                server_time_aligned_ms = min(server_time_aligned_ms, max_allowed_ms)
+                
+                # Get timeframe in milliseconds
+                tf_ms = TIMEFRAME_TO_MS.get(config_store.timeframe, 3_600_000)
+                
+                # Calculate last closed bar boundary (close_time) using TF-aligned logic
+                # Use 60s tolerance to avoid fetching incomplete bars
+                tol_ms = 60_000
+                last_closed_close_ms = floor_closed_bar_local(server_time_ms, tf_ms, tol_ms=tol_ms)
+                
                 # Convert to datetime
-                auto_end_dt = dt.datetime.fromtimestamp(server_time_aligned_ms / 1000, tz=dt.timezone.utc)
+                auto_end_dt = dt.datetime.fromtimestamp(last_closed_close_ms / 1000, tz=dt.timezone.utc)
                 end_dt = auto_end_dt
-                logger.info(f"Auto-set end time to {end_dt} (server time: {server_time_ms})")
+                
+                # Update widgets and cached timestamp when auto-advance is enabled
+                auto_end_date = end_dt.date()
+                auto_end_time = end_dt.time().replace(microsecond=0)
+                if st.session_state.get(end_date_key) != auto_end_date:
+                    st.session_state[end_date_key] = auto_end_date
+                if st.session_state.get(end_time_key) != auto_end_time:
+                    st.session_state[end_time_key] = auto_end_time
+                state["auto_end_timestamp"] = last_closed_close_ms
+                
+                logger.info(
+                    f"Auto-set end time to {end_dt} (TF: {config_store.timeframe}, "
+                    f"last_closed_close_ms: {last_closed_close_ms}, server time: {server_time_ms})"
+                )
             except Exception as e:
                 logger.warning(f"Failed to auto-set end time from Binance server: {e}")
                 end_dt = config_store.end_datetime
@@ -3452,10 +3488,13 @@ def main():
         updated_start = dt.datetime.combine(start_date, start_time, tzinfo=dt.timezone.utc)
         updated_end = dt.datetime.combine(end_date, end_time, tzinfo=dt.timezone.utc)
         
-        # Detect if user explicitly changed end time
-        if updated_end != end_dt:
+        # Detect if user explicitly changed end time (only when auto-advance is enabled)
+        # If auto-advance is disabled, the user already has control, so no need to override
+        if auto_advance_end and updated_end != end_dt:
+            # User modified the time even though auto-advance was on - disable auto-advance
             state["end_time_user_set"] = True
-            logger.info(f"User explicitly set end time to {updated_end}")
+            st.session_state[auto_advance_key] = False
+            logger.info(f"User explicitly set end time to {updated_end}, disabling auto-advance")
 
         if updated_end <= updated_start:
             state["result"] = None

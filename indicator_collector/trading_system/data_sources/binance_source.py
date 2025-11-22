@@ -177,6 +177,7 @@ class BinanceKlinesSource(HistoricalDataSource):
         self._active_base_url: Optional[str] = None
         self._last_server_time_ms: Optional[int] = None
         self._server_time_checked_at: Optional[datetime] = None
+        self._server_time_checked_monotonic: Optional[float] = None
         self._last_status: Dict[str, Union[str, int, float, bool, None]] = {}
 
     # ------------------------------------------------------------------
@@ -354,6 +355,120 @@ class BinanceKlinesSource(HistoricalDataSource):
         if cached is None:
             return None
         return cached.copy(deep=True)
+
+    def get_server_time(self) -> Optional[int]:
+        """
+        Get Binance server time in milliseconds using /api/v3/time endpoint.
+        Caches result for 1 second to avoid excessive API calls.
+        
+        Returns:
+            Server time in milliseconds, or None if the request fails
+        """
+        now_mono = time.monotonic()
+        
+        # Check if we have a recent cached value (within 1 second)
+        if (
+            self._last_server_time_ms is not None
+            and self._server_time_checked_monotonic is not None
+            and (now_mono - self._server_time_checked_monotonic) < 1.0
+        ):
+            # Extrapolate from cached value
+            elapsed_ms = int((now_mono - self._server_time_checked_monotonic) * 1000)
+            return self._last_server_time_ms + elapsed_ms
+        
+        last_error: Optional[Exception] = None
+        
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                base_url = self._active_base_url or self._ensure_active_base_url()
+                self._active_base_url = base_url
+                url = f"{base_url}{SERVER_TIME_ENDPOINT}"
+                
+                response = self.session.get(
+                    url,
+                    timeout=(self.connect_timeout, min(self.read_timeout, 5.0)),
+                )
+                
+                if response.status_code != 200:
+                    raise RuntimeError(f"Server time endpoint returned status {response.status_code}")
+                
+                payload = response.json()
+                server_time_ms = int(payload.get("serverTime"))
+                
+                # Cache the server time
+                self._last_server_time_ms = server_time_ms
+                self._server_time_checked_at = datetime.now(timezone.utc)
+                self._server_time_checked_monotonic = time.monotonic()
+                self._record_success(base_url)
+                
+                return server_time_ms
+                
+            except (ValueError, TypeError, KeyError) as exc:
+                last_error = exc
+                logger.warning(
+                    "Invalid server time response (attempt %s/%s): %s",
+                    attempt,
+                    self.max_retries,
+                    exc,
+                )
+                if base_url:
+                    self._record_failure(base_url, exc, retryable=False)
+                self._active_base_url = None
+                if attempt < self.max_retries:
+                    backoff = self.backoff_base * (RETRY_BACKOFF ** (attempt - 1))
+                    jitter = random.uniform(0, self.backoff_jitter * backoff) if backoff > 0 else 0.0
+                    self._sleep(max(backoff + jitter, 0.0))
+            except (ConnectionError, ConnectTimeout, ReadTimeout, Timeout) as exc:
+                last_error = exc
+                logger.warning(
+                    "Network error fetching server time (attempt %s/%s): %s",
+                    attempt,
+                    self.max_retries,
+                    self._format_request_error(exc),
+                )
+                if base_url:
+                    self._record_failure(base_url, exc, retryable=True)
+                self._active_base_url = None
+                if attempt < self.max_retries:
+                    backoff = self.backoff_base * (RETRY_BACKOFF ** (attempt - 1))
+                    jitter = random.uniform(0, self.backoff_jitter * backoff) if backoff > 0 else 0.0
+                    self._sleep(max(backoff + jitter, 0.0))
+            except RequestException as exc:
+                last_error = exc
+                logger.warning(
+                    "Request error fetching server time (attempt %s/%s): %s",
+                    attempt,
+                    self.max_retries,
+                    self._format_request_error(exc),
+                )
+                if base_url:
+                    self._record_failure(base_url, exc, retryable=True)
+                self._active_base_url = None
+                if attempt < self.max_retries:
+                    backoff = self.backoff_base * (RETRY_BACKOFF ** (attempt - 1))
+                    jitter = random.uniform(0, self.backoff_jitter * backoff) if backoff > 0 else 0.0
+                    self._sleep(max(backoff + jitter, 0.0))
+            except Exception as exc:
+                last_error = exc
+                logger.error(
+                    "Unexpected error fetching server time (attempt %s/%s): %s",
+                    attempt,
+                    self.max_retries,
+                    exc,
+                )
+                if base_url:
+                    self._record_failure(base_url, exc, retryable=False)
+                self._active_base_url = None
+                if attempt < self.max_retries:
+                    backoff = self.backoff_base * (RETRY_BACKOFF ** (attempt - 1))
+                    jitter = random.uniform(0, self.backoff_jitter * backoff) if backoff > 0 else 0.0
+                    self._sleep(max(backoff + jitter, 0.0))
+        
+        # All retries exhausted
+        if last_error:
+            logger.error(f"Failed to get server time after {self.max_retries} attempts: {last_error}")
+        
+        return None
 
     def load_candles(
         self,

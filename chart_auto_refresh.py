@@ -12,8 +12,13 @@ from typing import Any, Dict, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+from requests.exceptions import RequestException
+
 from indicator_collector.trading_system.auto_analyze_worker import get_binance_server_time_ms
-from indicator_collector.trading_system.data_sources.binance_source import BinanceKlinesSource
+from indicator_collector.trading_system.data_sources.binance_source import (
+    BinanceKlinesSource,
+    KLINES_ENDPOINT,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,8 +46,8 @@ _CACHE_LOCK = threading.Lock()
 _CHART_DATA_LOCK = threading.Lock()
 
 STATE_LAST_CLOSED_KEY = "last_closed_ts_per_tf"
-DEFAULT_TOLERANCE_MS = 60_000
-OVERLAP_BARS = 1
+DEFAULT_TOLERANCE_MS = 1_500
+OVERLAP_BARS = 3
 
 
 def _state_map_key(symbol: str, timeframe: str) -> str:
@@ -174,10 +179,16 @@ def read_chart_state(
 ) -> Tuple[Optional[pd.DataFrame], Dict[str, Any], int]:
     """Safely read chart DataFrame and indicators from session state."""
     with _CHART_DATA_LOCK:
-        df = getattr(session_state, "chart_df", None)
-        df_copy: Optional[pd.DataFrame]
-        if df is not None and isinstance(df, pd.DataFrame):
-            df_copy = df.copy(deep=True)
+        prefer_forming = getattr(session_state, "show_forming_bar", False)
+        df_source = None
+        if prefer_forming:
+            forming_df = getattr(session_state, "chart_df_with_forming", None)
+            if isinstance(forming_df, pd.DataFrame) and not forming_df.empty:
+                df_source = forming_df
+        if df_source is None:
+            df_source = getattr(session_state, "chart_df", None)
+        if df_source is not None and isinstance(df_source, pd.DataFrame):
+            df_copy: Optional[pd.DataFrame] = df_source.copy(deep=True)
         else:
             df_copy = None
         indicators = copy.deepcopy(getattr(session_state, "chart_indicators", {}))
@@ -225,6 +236,24 @@ def update_chart_state(
         session_state.analysis_updated = True
 
 
+def get_poll_interval(timeframe: str) -> float:
+    """
+    Get poll interval in seconds based on timeframe (TradingView-like).
+    
+    Args:
+        timeframe: Timeframe string (e.g., "1m", "5m", "1h")
+        
+    Returns:
+        Poll interval in seconds
+    """
+    tf_ms = TIMEFRAME_TO_MS.get(timeframe, 3_600_000)
+    
+    if tf_ms <= 900_000:
+        return 1.0
+    else:
+        return 5.0
+
+
 def floor_closed_bar_local(now_ms: int, tf_ms: int, tol_ms: int = 60_000) -> int:
     """
     Calculate the timestamp of the last closed bar boundary.
@@ -240,26 +269,8 @@ def floor_closed_bar_local(now_ms: int, tf_ms: int, tol_ms: int = 60_000) -> int
     if tf_ms <= 0:
         return now_ms
     
-    # For 3h, we need to align to 00:00, 03:00, 06:00, etc.
-    if tf_ms == 10_800_000:  # 3h in milliseconds
-        # Align to midnight UTC
-        day_start_ms = (now_ms // 86_400_000) * 86_400_000
-        # Calculate which 3h boundary we're in
-        elapsed_from_day_start = now_ms - day_start_ms
-        current_3h_index = elapsed_from_day_start // tf_ms
-        current_bar_start = day_start_ms + (current_3h_index * tf_ms)
-    else:
-        # Floor to the current bar start
-        current_bar_start = (now_ms // tf_ms) * tf_ms
-    
-    # Last closed bar is the bar before the current one
-    last_closed = current_bar_start - tf_ms
-    
-    # Ensure we're not too close to the boundary (within tolerance)
-    if (now_ms - current_bar_start) < tol_ms:
-        # We're too close to the current bar start, use the previous bar
-        last_closed = current_bar_start - tf_ms
-    
+    effective_now = max(now_ms - tol_ms, 0)
+    last_closed = (effective_now // tf_ms) * tf_ms
     return last_closed
 
 
@@ -301,11 +312,13 @@ def fetch_closed_candles(
     # Get timeframe in milliseconds
     tf_ms = TIMEFRAME_TO_MS.get(timeframe, 3_600_000)
     
-    # Calculate last closed bar timestamp
-    last_closed_ts = floor_closed_bar_local(server_time_ms, tf_ms, tol_ms=60_000)
+    # Calculate last closed bar timestamp using tight tolerance
+    tol_ms = DEFAULT_TOLERANCE_MS
+    last_closed_ts = floor_closed_bar_local(server_time_ms, tf_ms, tol_ms=tol_ms)
     
-    # Calculate start time (go back num_bars from last closed)
-    start_ms = max(0, last_closed_ts - (tf_ms * num_bars))
+    # Calculate start time (go back num_bars plus overlap)
+    bars_to_fetch = max(num_bars + OVERLAP_BARS, num_bars)
+    start_ms = max(0, last_closed_ts - (tf_ms * bars_to_fetch))
     
     # Check cache
     cache_key = (symbol, timeframe, start_ms, last_closed_ts)
@@ -370,8 +383,8 @@ def fetch_delta_candles(
     # Get timeframe in milliseconds
     tf_ms = TIMEFRAME_TO_MS.get(timeframe, 3_600_000)
     
-    # Calculate effective end (last closed bar boundary)
-    tol_ms = 60_000
+    # Calculate effective end (last closed bar boundary) using tight tolerance
+    tol_ms = DEFAULT_TOLERANCE_MS
     effective_end_ms = floor_closed_bar_local(server_time_ms, tf_ms, tol_ms=tol_ms)
     
     # Check if there are new closed bars
@@ -379,8 +392,8 @@ def fetch_delta_candles(
         logger.debug(f"No new closed bars for {symbol} {timeframe}")
         return pd.DataFrame(), last_closed_ts
     
-    # Fetch with small overlap to ensure continuity (fetch from last_closed_ts - 1 bar)
-    start_ms = max(0, last_closed_ts - tf_ms)
+    # Fetch with overlap to ensure continuity and avoid gaps
+    start_ms = max(0, last_closed_ts - (tf_ms * OVERLAP_BARS))
     
     # Convert to datetime
     start_dt = datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc)
@@ -408,6 +421,149 @@ def fetch_delta_candles(
         logger.error(f"Failed to fetch delta candles for {symbol} {timeframe}: {e}")
         # On failure, return empty dataframe with unchanged last_closed_ts
         return pd.DataFrame(), last_closed_ts
+
+
+def fetch_forming_bar(
+    symbol: str,
+    timeframe: str,
+    data_source: Optional[BinanceKlinesSource] = None,
+) -> Optional[pd.DataFrame]:
+    """
+    Fetch the current forming bar (if available).
+    
+    Args:
+        symbol: Trading symbol (e.g., "BTCUSDT")
+        timeframe: Timeframe string (e.g., "1h", "3h")
+        data_source: Optional BinanceKlinesSource instance
+        
+    Returns:
+        DataFrame with a single row for the forming bar, or None if not available
+    """
+    if data_source is None:
+        data_source = BinanceKlinesSource()
+    
+    # Get Binance server time
+    server_time_ms = get_binance_server_time_ms(data_source)
+    
+    # Get timeframe in milliseconds
+    tf_ms = TIMEFRAME_TO_MS.get(timeframe, 3_600_000)
+    
+    # Calculate current bar start
+    if tf_ms == 10_800_000:
+        day_start_ms = (server_time_ms // 86_400_000) * 86_400_000
+        elapsed_from_day_start = server_time_ms - day_start_ms
+        current_3h_index = elapsed_from_day_start // tf_ms
+        open_ms = day_start_ms + (current_3h_index * tf_ms)
+    else:
+        open_ms = (server_time_ms // tf_ms) * tf_ms
+    
+    # For 3h, we need to aggregate from 1h candles
+    if timeframe == "3h":
+        try:
+            clean_symbol = symbol
+            if clean_symbol.startswith("BINANCE:"):
+                clean_symbol = clean_symbol[8:]
+            
+            # Fetch 1h candles for the current 3h period
+            start_dt = datetime.fromtimestamp(open_ms / 1000, tz=timezone.utc)
+            end_dt = datetime.fromtimestamp(server_time_ms / 1000, tz=timezone.utc)
+            
+            df_1h = data_source.load_candles(
+                symbol=clean_symbol,
+                timeframe="1h",
+                start=start_dt,
+                end=end_dt,
+            )
+            
+            if df_1h.empty:
+                return None
+            
+            # Filter to current 3h period
+            df_1h = df_1h[df_1h["ts"] >= open_ms].copy()
+            
+            if df_1h.empty:
+                return None
+            
+            # Aggregate to forming 3h bar
+            forming_bar = pd.DataFrame([{
+                "ts": open_ms,
+                "open": df_1h.iloc[0]["open"],
+                "high": df_1h["high"].max(),
+                "low": df_1h["low"].min(),
+                "close": df_1h.iloc[-1]["close"],
+                "volume": df_1h["volume"].sum(),
+            }])
+            
+            return forming_bar
+            
+        except Exception as e:
+            logger.error(f"Failed to fetch forming 3h bar for {symbol}: {e}")
+            return None
+    else:
+        # For other timeframes, fetch the current bar directly via klines endpoint
+        base_url: Optional[str] = None
+        try:
+            clean_symbol = symbol
+            if clean_symbol.startswith("BINANCE:"):
+                clean_symbol = clean_symbol[8:]
+            
+            interval = data_source.TIMEFRAME_TO_BINANCE_INTERVAL.get(timeframe, timeframe)
+            base_url = data_source._active_base_url or data_source._ensure_active_base_url()
+            data_source._active_base_url = base_url
+            params = {
+                "symbol": clean_symbol,
+                "interval": interval,
+                "limit": 2,
+            }
+            response = data_source.session.get(
+                f"{base_url}{KLINES_ENDPOINT}",
+                params=params,
+                timeout=(data_source.connect_timeout, min(data_source.read_timeout, 5.0)),
+            )
+            if response.status_code != 200:
+                raise RuntimeError(
+                    f"Failed to fetch forming bar klines ({response.status_code}): {response.text[:200]}"
+                )
+            payload = response.json()
+            if not payload:
+                return None
+            target = None
+            for entry in reversed(payload):
+                if int(entry[0]) == open_ms:
+                    target = entry
+                    break
+            if target is None:
+                target = payload[-1]
+                if int(target[0]) != open_ms:
+                    return None
+            close_time_ms = int(target[6])
+            if close_time_ms <= server_time_ms:
+                # Kline already closed; nothing to preview
+                return None
+            forming_bar = pd.DataFrame([
+                {
+                    "ts": int(target[0]),
+                    "open": float(target[1]),
+                    "high": float(target[2]),
+                    "low": float(target[3]),
+                    "close": float(target[4]),
+                    "volume": float(target[5]),
+                }
+            ])
+            if data_source.rate_limit_delay > 0:
+                data_source._sleep(data_source.rate_limit_delay)
+            data_source._record_success(base_url)
+            return forming_bar
+        except RequestException as exc:
+            if base_url:
+                data_source._record_failure(base_url, exc, retryable=True)
+            logger.debug("Request error while fetching forming bar: %s", data_source._format_request_error(exc))
+            return None
+        except Exception as e:
+            if base_url:
+                data_source._record_failure(base_url, e, retryable=False)
+            logger.debug(f"Failed to fetch forming bar for {symbol} {timeframe}: {e}", exc_info=True)
+            return None
 
 
 class ChartAutoRefreshWorker:
@@ -462,31 +618,28 @@ class ChartAutoRefreshWorker:
         logger.info(f"Chart auto-refresh worker stopped for {self.symbol} {self.timeframe}")
     
     def _run_loop(self) -> None:
-        """Main worker loop that checks for new closed bars."""
+        """Main worker loop that checks for new closed bars with TradingView-like behavior."""
+        poll_interval = get_poll_interval(self.timeframe)
+        
         while not self._stop_event.is_set():
             try:
-                # Get Binance server time
                 now_ms = get_binance_server_time_ms(self.data_source)
+                last_closed = floor_closed_bar_local(now_ms, self.tf_ms, tol_ms=DEFAULT_TOLERANCE_MS)
                 
-                # Calculate last closed bar
-                last_closed = floor_closed_bar_local(now_ms, self.tf_ms)
-                
-                # Get current last_closed_ts from session state (per-tf keyed)
                 current_last_closed_ts = get_last_closed_from_state(
                     self.session_state,
                     self.symbol,
                     self.timeframe,
                 )
                 
-                # Check if we have a new closed bar
                 if last_closed > current_last_closed_ts:
                     logger.info(
-                        f"New closed bar detected: {last_closed} (previous: {current_last_closed_ts})"
+                        f"[{self.symbol} {self.timeframe}] New closed bar boundary: "
+                        f"last_closed_ms={last_closed}, previous={current_last_closed_ts}"
                     )
                     
                     try:
                         if current_last_closed_ts == 0:
-                            # Initial fetch: load full dataset
                             logger.info(f"Initial fetch for {self.symbol} {self.timeframe}")
                             df_new, actual_last_closed = fetch_closed_candles(
                                 symbol=self.symbol,
@@ -502,9 +655,20 @@ class ChartAutoRefreshWorker:
                                 actual_last_closed,
                                 append=False,
                             )
+                            with _CHART_DATA_LOCK:
+                                stored_df = getattr(self.session_state, "chart_df", None)
+                                final_len = len(stored_df) if isinstance(stored_df, pd.DataFrame) else 0
+                            deduped = max(len(df_new) - final_len, 0)
+                            logger.info(
+                                "[%s %s] Boundary update (initial): last_closed_ms=%s, fetched=%s, appended=%s, deduped=%s",
+                                self.symbol,
+                                self.timeframe,
+                                actual_last_closed,
+                                len(df_new),
+                                final_len,
+                                deduped,
+                            )
                         else:
-                            # Delta fetch: only new bars
-                            logger.info(f"Delta fetch for {self.symbol} {self.timeframe}")
                             df_new, actual_last_closed = fetch_delta_candles(
                                 symbol=self.symbol,
                                 timeframe=self.timeframe,
@@ -512,59 +676,87 @@ class ChartAutoRefreshWorker:
                                 data_source=self.data_source,
                             )
                             
-                            # Read current df from session state
-                            current_df, _, _ = read_chart_state(
-                                self.session_state,
-                                self.symbol,
-                                self.timeframe,
-                            )
-                            
                             if df_new.empty and actual_last_closed <= current_last_closed_ts:
-                                # No new bars, keep waiting
                                 logger.debug(f"No new closed bars yet for {self.symbol} {self.timeframe}")
-                                last_closed = current_last_closed_ts
-                                # Sleep and continue
-                                next_boundary = last_closed + self.tf_ms
-                                sleep_ms = max(5_000, next_boundary - now_ms)
-                                sleep_seconds = sleep_ms / 1000.0
-                                while not self._stop_event.is_set() and sleep_seconds > 0:
-                                    sleep_chunk = min(1.0, sleep_seconds)
-                                    time.sleep(sleep_chunk)
-                                    sleep_seconds -= sleep_chunk
-                                continue
-                            
-                            append_mode = current_df is not None and not current_df.empty
-                            update_chart_state(
-                                self.session_state,
-                                self.symbol,
-                                self.timeframe,
-                                df_new,
-                                actual_last_closed,
-                                append=append_mode,
-                            )
-                            logger.info(
-                                f"Chart data updated with {len(df_new)} new bars; append mode: {append_mode}"
-                            )
-                        
-                        logger.info(f"Chart data updated successfully for closed bar {actual_last_closed}")
-                        last_closed = actual_last_closed
+                            else:
+                                current_df, _, _ = read_chart_state(
+                                    self.session_state,
+                                    self.symbol,
+                                    self.timeframe,
+                                )
+                                
+                                append_mode = current_df is not None and not current_df.empty
+                                before_len = len(current_df) if append_mode else 0
+                                update_chart_state(
+                                    self.session_state,
+                                    self.symbol,
+                                    self.timeframe,
+                                    df_new,
+                                    actual_last_closed,
+                                    append=append_mode,
+                                )
+                                with _CHART_DATA_LOCK:
+                                    stored_df = getattr(self.session_state, "chart_df", None)
+                                    after_len = len(stored_df) if isinstance(stored_df, pd.DataFrame) else before_len
+                                appended = max(after_len - before_len, 0)
+                                deduped = max(len(df_new) - appended, 0)
+                                logger.info(
+                                    "[%s %s] Boundary update: last_closed_ms=%s, fetched=%s, appended=%s, deduped=%s",
+                                    self.symbol,
+                                    self.timeframe,
+                                    actual_last_closed,
+                                    len(df_new),
+                                    appended,
+                                    deduped,
+                                )
                     
                     except Exception as exc:
                         logger.error(f"Failed to update chart data: {exc}", exc_info=True)
-                        # Keep previous data on failure
-                        logger.warning(f"Keeping previous chart data due to error")
                 
-                # Calculate sleep time until next boundary
-                next_boundary = last_closed + self.tf_ms
-                sleep_ms = max(5_000, next_boundary - now_ms)  # At least 5 seconds
-                sleep_seconds = sleep_ms / 1000.0
+                # Check if forming bar is enabled
+                show_forming_bar = getattr(self.session_state, "show_forming_bar", False)
                 
-                # Sleep in small intervals to allow quick stop
+                if show_forming_bar:
+                    try:
+                        forming_bar_df = fetch_forming_bar(
+                            self.symbol,
+                            self.timeframe,
+                            self.data_source,
+                        )
+                        
+                        if forming_bar_df is not None and not forming_bar_df.empty:
+                            with _CHART_DATA_LOCK:
+                                current_df = getattr(self.session_state, "chart_df", None)
+                                if current_df is not None and not current_df.empty:
+                                    closed_bars = current_df.copy(deep=True)
+                                    combined = pd.concat([closed_bars, forming_bar_df], ignore_index=True)
+                                    combined = (
+                                        combined.drop_duplicates(subset="ts", keep="last")
+                                        .sort_values("ts")
+                                        .reset_index(drop=True)
+                                    )
+                                    indicators = compute_chart_indicators(combined)
+                                    self.session_state.chart_df_with_forming = combined
+                                    self.session_state.chart_indicators = indicators
+                                    self.session_state.analysis_updated = True
+                    except Exception as exc:
+                        logger.debug(f"Failed to fetch forming bar: {exc}")
+                else:
+                    with _CHART_DATA_LOCK:
+                        if getattr(self.session_state, "chart_df_with_forming", None) is not None:
+                            self.session_state.chart_df_with_forming = None
+                            closed_df = getattr(self.session_state, "chart_df", None)
+                            if isinstance(closed_df, pd.DataFrame) and not closed_df.empty:
+                                self.session_state.chart_indicators = compute_chart_indicators(closed_df)
+                                self.session_state.analysis_updated = True
+
+                # Adaptive poll interval: sleep poll_interval seconds
+                sleep_seconds = poll_interval
                 while not self._stop_event.is_set() and sleep_seconds > 0:
-                    sleep_chunk = min(1.0, sleep_seconds)
+                    sleep_chunk = min(0.5, sleep_seconds)
                     time.sleep(sleep_chunk)
                     sleep_seconds -= sleep_chunk
             
             except Exception as exc:
                 logger.error(f"Error in chart worker loop: {exc}", exc_info=True)
-                time.sleep(5.0)  # Wait before retrying
+                time.sleep(5.0)

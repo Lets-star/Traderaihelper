@@ -40,6 +40,7 @@ from indicator_collector.trading_system.auto_analyze_worker import (
     get_binance_server_time_ms,
     run_analysis,
 )
+from indicator_collector.trading_system.data_sources.timestamp_utils import normalize_timestamp
 from indicator_collector.trading_system.signal_generator import SignalConfig
 from indicator_collector.trading_system.signal_schema import is_valid_signal_structure
 
@@ -1723,6 +1724,8 @@ def main():
         st.session_state.chart_indicators = None
     if "last_closed_ts" not in st.session_state:
         st.session_state.last_closed_ts = 0
+    if "last_closed_ts_per_tf" not in st.session_state:
+        st.session_state.last_closed_ts_per_tf = {}
     if "analysis_updated" not in st.session_state:
         st.session_state.analysis_updated = False
     if "worker_running" not in st.session_state:
@@ -1956,7 +1959,11 @@ def main():
             st.session_state.chart_timeframe = selected_timeframe
             st.session_state.chart_df = None
             st.session_state.chart_indicators = None
+            # Reset last_closed_ts for backward compatibility, but per-tf tracking is used internally
             st.session_state.last_closed_ts = 0
+            last_map = st.session_state.get("last_closed_ts_per_tf", {}) or {}
+            last_map.pop(f"{selected_token}|{selected_timeframe}", None)
+            st.session_state.last_closed_ts_per_tf = last_map
             st.session_state.analysis_updated = False
             
             # Invalidate cache
@@ -1974,10 +1981,15 @@ def main():
                         num_bars=selected_period,
                         use_cache=False,
                     )
-                    # Compute indicators
-                    indicators = compute_chart_indicators(df)
-                    # Update state atomically
-                    update_chart_state(st.session_state, df, indicators, last_closed_ts)
+                    # Update state atomically (indicators computed within update_chart_state)
+                    update_chart_state(
+                        st.session_state,
+                        selected_token,
+                        selected_timeframe,
+                        df,
+                        last_closed_ts,
+                        append=False,
+                    )
                     st.session_state.analysis_updated = False
                 except Exception as e:
                     st.error(f"❌ Failed to load chart data: {str(e)}")
@@ -2001,7 +2013,7 @@ def main():
         # Display chart
         if st.session_state.chart_df is not None and not st.session_state.chart_df.empty and auto_refresh:
             # Read chart state safely
-            df, indicators, last_ts = read_chart_state(st.session_state)
+            df, indicators, last_ts = read_chart_state(st.session_state, selected_token, selected_timeframe)
             
             if df is not None and not df.empty:
                 # Display status
@@ -3358,6 +3370,7 @@ def main():
         previous_identity = state.get("cache_identity")
         if previous_identity and previous_identity != cache_identity:
             cached_run_automated_signals.clear()
+            state["end_time_user_set"] = False
         state["cache_identity"] = cache_identity
 
         st.caption(
@@ -3374,7 +3387,34 @@ def main():
 
         date_cols = st.columns(2)
         start_dt = config_store.start_datetime
-        end_dt = config_store.end_datetime
+        
+        # Initialize end_time_user_set flag
+        if "end_time_user_set" not in state:
+            state["end_time_user_set"] = False
+        
+        # Check if we should auto-set end time
+        if not state["end_time_user_set"]:
+            try:
+                # Get server time from Binance
+                from indicator_collector.trading_system.data_sources.binance_source import BinanceKlinesSource
+                data_source = BinanceKlinesSource()
+                server_time_ms = get_binance_server_time_ms(data_source)
+                # Normalize to UTC milliseconds
+                server_time_ms = normalize_timestamp(server_time_ms)
+                # Align to minute precision
+                server_time_aligned_ms = (server_time_ms // 60000) * 60000
+                # Clamp to not exceed now (with 60s tolerance)
+                max_allowed_ms = server_time_ms - 60000
+                server_time_aligned_ms = min(server_time_aligned_ms, max_allowed_ms)
+                # Convert to datetime
+                auto_end_dt = dt.datetime.fromtimestamp(server_time_aligned_ms / 1000, tz=dt.timezone.utc)
+                end_dt = auto_end_dt
+                logger.info(f"Auto-set end time to {end_dt} (server time: {server_time_ms})")
+            except Exception as e:
+                logger.warning(f"Failed to auto-set end time from Binance server: {e}")
+                end_dt = config_store.end_datetime
+        else:
+            end_dt = config_store.end_datetime
 
         with date_cols[0]:
             start_date = st.date_input(
@@ -3402,6 +3442,11 @@ def main():
 
         updated_start = dt.datetime.combine(start_date, start_time, tzinfo=dt.timezone.utc)
         updated_end = dt.datetime.combine(end_date, end_time, tzinfo=dt.timezone.utc)
+        
+        # Detect if user explicitly changed end time
+        if updated_end != end_dt:
+            state["end_time_user_set"] = True
+            logger.info(f"User explicitly set end time to {updated_end}")
 
         if updated_end <= updated_start:
             state["result"] = None

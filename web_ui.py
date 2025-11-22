@@ -2021,13 +2021,14 @@ def main():
         # Display chart
         if st.session_state.chart_df is not None and not st.session_state.chart_df.empty and auto_refresh:
             # Read chart state safely
-            df, indicators, last_ts = read_chart_state(st.session_state, selected_token, selected_timeframe)
+            df, indicators, last_closed_close_ms = read_chart_state(st.session_state, selected_token, selected_timeframe)
             
             if df is not None and not df.empty:
-                # Display status
-                if last_ts > 0:
-                    last_dt = datetime.fromtimestamp(last_ts / 1000, tz=timezone.utc)
-                    st.caption(f"📅 Last closed bar: {last_dt.strftime('%Y-%m-%d %H:%M:%S UTC')} | Bars: {len(df)}")
+                # Display status with UTC timestamp
+                if last_closed_close_ms > 0:
+                    # last_closed_close_ms is the close_time of the last closed bar
+                    last_closed_dt = datetime.fromtimestamp(last_closed_close_ms / 1000, tz=timezone.utc)
+                    st.caption(f"📅 Last closed bar (close time): {last_closed_dt.strftime('%Y-%m-%d %H:%M:%S')} UTC | Bars: {len(df)}")
                 
                 # Build realtime chart from DataFrame with indicators
                 try:

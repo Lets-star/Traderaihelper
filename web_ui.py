@@ -33,6 +33,7 @@ from indicator_collector.trading_system.backtester import (
     DEFAULT_SIGNAL_THRESHOLDS,
     indicator_defaults_for,
 )
+from automated_signals_worker import AutomatedSignalsWorker
 from indicator_collector.trading_system.automated_signals import run_automated_signal_flow
 from indicator_collector.trading_system.auto_analyze_worker import (
     AutoAnalyzeWorker,
@@ -3381,9 +3382,32 @@ def main():
             cached_run_automated_signals.clear()
             state["end_time_user_set"] = False
             state.pop("auto_end_timestamp", None)
+            state.pop("auto_end_time_ms", None)
+            state.pop("analysis_updated", None)
             auto_toggle_key = ui_key("automated_signals", "auto_advance_end")
             st.session_state.pop(auto_toggle_key, None)
+            
+            # Stop existing worker if any
+            existing_worker = getattr(st.session_state, "automated_signals_worker", None)
+            if existing_worker is not None:
+                try:
+                    existing_worker.stop()
+                except Exception as e:
+                    logger.warning(f"Failed to stop existing worker: {e}")
+                st.session_state.automated_signals_worker = None
+                st.session_state.automated_signals_worker_running = False
         state["cache_identity"] = cache_identity
+
+        # Initialize core state flags
+        state.setdefault("end_time_user_set", False)
+        state.setdefault("fetch_needed", False)
+        state.setdefault("analysis_updated", False)
+        state.setdefault("error", None)
+        state.setdefault("result", None)
+
+        # Initialize auto end-time if not yet set
+        if "auto_end_time_ms" not in state:
+            state["auto_end_time_ms"] = int(config_store.end_datetime.timestamp() * 1000)
 
         st.caption(
             f"Symbol: **{config_store.symbol.upper()}** · Timeframe: **{config_store.timeframe.upper()}**"
@@ -3402,14 +3426,32 @@ def main():
         if auto_advance_key not in st.session_state:
             st.session_state[auto_advance_key] = not state.get("end_time_user_set", False)
         auto_advance_end = st.checkbox(
-            "🔄 Auto-advance End time to latest TF boundary",
+            "🔄 Auto-advance End time to latest TF boundary (with auto-refresh)",
             value=st.session_state[auto_advance_key],
             key=auto_advance_key,
-            help=f"When enabled, End time automatically updates to the latest closed {config_store.timeframe.upper()} bar boundary",
+            help=f"When enabled, End time automatically updates to the latest closed {config_store.timeframe.upper()} bar boundary and signals refresh automatically without user action",
         )
         
         # Update end_time_user_set based on checkbox
+        prev_end_time_user_set = state.get("end_time_user_set", False)
         state["end_time_user_set"] = not auto_advance_end
+        
+        # Start or stop worker based on auto-advance state
+        worker = getattr(st.session_state, "automated_signals_worker", None)
+        if auto_advance_end and not prev_end_time_user_set:
+            # Just enabled auto-advance - start worker if not running
+            if worker is None or not getattr(st.session_state, "automated_signals_worker_running", False):
+                # We'll start the worker after we have all config ready (below)
+                pass
+        elif not auto_advance_end and prev_end_time_user_set:
+            # Just disabled auto-advance - stop worker
+            if worker is not None:
+                try:
+                    worker.stop()
+                    logger.info("Stopped automated signals worker (user disabled auto-advance)")
+                except Exception as e:
+                    logger.warning(f"Failed to stop worker: {e}")
+                st.session_state.automated_signals_worker = None
         
         # Widget keys for date/time controls
         end_date_key = ui_key("automated_signals", "end_date")
@@ -3418,46 +3460,19 @@ def main():
         date_cols = st.columns(2)
         start_dt = config_store.start_datetime
         
-        # Check if we should auto-set end time to latest TF boundary
-        if not state["end_time_user_set"]:
-            try:
-                # Get server time from Binance
-                from indicator_collector.trading_system.data_sources.binance_source import BinanceKlinesSource
-                from chart_auto_refresh import TIMEFRAME_TO_MS, floor_closed_bar_local
-                
-                data_source = BinanceKlinesSource()
-                server_time_ms = get_binance_server_time_ms(data_source)
-                # Normalize to UTC milliseconds
-                server_time_ms = normalize_timestamp(server_time_ms)
-                
-                # Get timeframe in milliseconds
-                tf_ms = TIMEFRAME_TO_MS.get(config_store.timeframe, 3_600_000)
-                
-                # Calculate last closed bar boundary (close_time) using TF-aligned logic
-                # Use 60s tolerance to avoid fetching incomplete bars
-                tol_ms = 60_000
-                last_closed_close_ms = floor_closed_bar_local(server_time_ms, tf_ms, tol_ms=tol_ms)
-                
-                # Convert to datetime
-                auto_end_dt = dt.datetime.fromtimestamp(last_closed_close_ms / 1000, tz=dt.timezone.utc)
-                end_dt = auto_end_dt
-                
-                # Update widgets and cached timestamp when auto-advance is enabled
-                auto_end_date = end_dt.date()
-                auto_end_time = end_dt.time().replace(microsecond=0)
-                if st.session_state.get(end_date_key) != auto_end_date:
-                    st.session_state[end_date_key] = auto_end_date
-                if st.session_state.get(end_time_key) != auto_end_time:
-                    st.session_state[end_time_key] = auto_end_time
-                state["auto_end_timestamp"] = last_closed_close_ms
-                
-                logger.info(
-                    f"Auto-set end time to {end_dt} (TF: {config_store.timeframe}, "
-                    f"last_closed_close_ms: {last_closed_close_ms}, server time: {server_time_ms})"
-                )
-            except Exception as e:
-                logger.warning(f"Failed to auto-set end time from Binance server: {e}")
+        # Determine the effective end datetime based on auto-advance state
+        if auto_advance_end:
+            auto_end_ms = state.get("auto_end_time_ms") or 0
+            if auto_end_ms > 0:
+                end_dt = dt.datetime.fromtimestamp(auto_end_ms / 1000, tz=dt.timezone.utc)
+            else:
                 end_dt = config_store.end_datetime
+            auto_end_date = end_dt.date()
+            auto_end_time = end_dt.time().replace(microsecond=0)
+            if st.session_state.get(end_date_key) != auto_end_date:
+                st.session_state[end_date_key] = auto_end_date
+            if st.session_state.get(end_time_key) != auto_end_time:
+                st.session_state[end_time_key] = auto_end_time
         else:
             end_dt = config_store.end_datetime
 
@@ -3495,6 +3510,14 @@ def main():
             state["end_time_user_set"] = True
             st.session_state[auto_advance_key] = False
             logger.info(f"User explicitly set end time to {updated_end}, disabling auto-advance")
+            # Stop worker since auto-advance was disabled
+            worker = getattr(st.session_state, "automated_signals_worker", None)
+            if worker is not None:
+                try:
+                    worker.stop()
+                except Exception as e:
+                    logger.warning(f"Failed to stop worker: {e}")
+                st.session_state.automated_signals_worker = None
 
         if updated_end <= updated_start:
             state["result"] = None
@@ -3522,59 +3545,130 @@ def main():
                 "min_confidence": signal_config.min_confidence,
             }
 
-            try:
-                with st.spinner(
-                    f"Fetching Binance candles for {config_store.symbol.upper()} on {config_store.timeframe.upper()}..."
-                ):
-                    params_hash = stable_hash(indicator_params)
-                    weights_hash = stable_hash(signal_config_payload.get("weights", {}))
-                    result_dict = cached_run_automated_signals(
-                        config_store.symbol,
-                        config_store.timeframe,
-                        config_store.start_iso(),
-                        config_store.end_iso(),
-                        params_hash,
-                        weights_hash,
-                        CACHE_VERSION,
-                        json.dumps(signal_config_payload, sort_keys=True),
-                        json.dumps(indicator_params, sort_keys=True),
-                        json.dumps(signal_params, sort_keys=True),
+            # Store latest config in state for worker reuse
+            state["weights"] = normalized_weights
+            state["signal_params"] = signal_params
+            state["signal_config"] = signal_config_payload
+            state["indicator_params"] = indicator_params
+
+            # Prepare timestamps and hashes for refresh decisions
+            start_iso = config_store.start_iso()
+            end_iso = config_store.end_iso()
+            state["start_datetime_iso"] = start_iso
+            params_hash = stable_hash(indicator_params)
+            weights_hash = stable_hash(signal_config_payload.get("weights", {}))
+
+            # Determine if we need a manual refresh (initial load or config changes)
+            prev_params_hash = state.get("params_hash")
+            prev_weights_hash = state.get("weights_hash")
+            prev_start_iso = state.get("cached_start_iso")
+            prev_end_iso = state.get("cached_end_iso")
+            needs_manual_refresh = (
+                state.get("result") is None
+                or not auto_advance_end
+                or prev_params_hash != params_hash
+                or prev_weights_hash != weights_hash
+                or prev_start_iso != start_iso
+                or (not auto_advance_end and prev_end_iso != end_iso)
+            )
+
+            if needs_manual_refresh:
+                # Fetch manually (initial fetch or manual mode or config change)
+                try:
+                    with st.spinner(
+                        f"Fetching Binance candles for {config_store.symbol.upper()} on {config_store.timeframe.upper()}..."
+                    ):
+                        result_dict = cached_run_automated_signals(
+                            config_store.symbol,
+                            config_store.timeframe,
+                            start_iso,
+                            end_iso,
+                            params_hash,
+                            weights_hash,
+                            CACHE_VERSION,
+                            json.dumps(signal_config_payload, sort_keys=True),
+                            json.dumps(indicator_params, sort_keys=True),
+                            json.dumps(signal_params, sort_keys=True),
+                        )
+
+                    if not is_valid_signal_structure(result_dict["explicit_signal"]):
+                        raise ValueError("Generated signal does not match required schema")
+
+                    final_indicator_params = (
+                        result_dict.get("explicit_signal", {})
+                        .get("metadata", {})
+                        .get("indicator_params")
+                        or result_dict.get("processed_payload", {})
+                        .get("metadata", {})
+                        .get("indicator_params")
+                        or indicator_params
                     )
 
-                if not is_valid_signal_structure(result_dict["explicit_signal"]):
-                    raise ValueError("Generated signal does not match required schema")
+                    state.update(
+                        {
+                            "result": result_dict,
+                            "error": None,
+                            "candles": result_dict.get("candles", []),
+                            "processed_payload": result_dict.get("processed_payload"),
+                            "explicit_signal": result_dict.get("explicit_signal"),
+                            "params_hash": params_hash,
+                            "weights_hash": weights_hash,
+                        }
+                    )
+                    # Store final indicator params separately
+                    state["indicator_params"] = final_indicator_params
+                    state["cached_start_iso"] = start_iso
+                    state["cached_end_iso"] = end_iso
+                    
+                    # Initialize auto_end_time_ms from result
+                    if auto_advance_end:
+                        candles = result_dict.get("candles", [])
+                        if candles:
+                            last_ts = candles[-1].get("ts")
+                            from chart_auto_refresh import TIMEFRAME_TO_MS
+                            tf_ms = TIMEFRAME_TO_MS.get(config_store.timeframe, 3_600_000)
+                            # Calculate close_time of last candle
+                            state["auto_end_time_ms"] = int(last_ts) + tf_ms
+                except DataValidationError as exc:
+                    state["result"] = None
+                    state["error"] = f"Data validation failed: {exc}"
+                except Exception as exc:
+                    state["result"] = None
+                    state["error"] = str(exc)
 
-                final_indicator_params = (
-                    result_dict.get("explicit_signal", {})
-                    .get("metadata", {})
-                    .get("indicator_params")
-                    or result_dict.get("processed_payload", {})
-                    .get("metadata", {})
-                    .get("indicator_params")
-                    or indicator_params
-                )
+            # Start worker if auto-advance is enabled and worker is not running
+            if auto_advance_end and state.get("result") is not None:
+                worker = getattr(st.session_state, "automated_signals_worker", None)
+                if worker is None or not getattr(st.session_state, "automated_signals_worker_running", False):
+                    try:
+                        worker = AutomatedSignalsWorker(
+                            symbol=config_store.symbol,
+                            timeframe=config_store.timeframe,
+                            session_state=st.session_state,
+                            signal_config_payload=signal_config_payload,
+                            indicator_params=indicator_params,
+                            signal_params=signal_params,
+                        )
+                        worker.start()
+                        st.session_state.automated_signals_worker = worker
+                        logger.info(f"Started automated signals worker for {config_store.symbol} {config_store.timeframe}")
+                    except Exception as e:
+                        logger.error(f"Failed to start automated signals worker: {e}", exc_info=True)
+                        state["error"] = f"Failed to start auto-refresh worker: {e}"
+                else:
+                    # Update existing worker config
+                    try:
+                        worker.update_config(signal_config_payload, indicator_params, signal_params)
+                    except Exception as e:
+                        logger.warning(f"Failed to update worker config: {e}")
 
-                state.update(
-                    {
-                        "result": result_dict,
-                        "error": None,
-                        "candles": result_dict.get("candles", []),
-                        "processed_payload": result_dict.get("processed_payload"),
-                        "explicit_signal": result_dict.get("explicit_signal"),
-                        "weights": normalized_weights,
-                        "indicator_params": final_indicator_params,
-                        "signal_params": signal_params,
-                        "signal_config": signal_config_payload,
-                        "params_hash": params_hash,
-                        "weights_hash": weights_hash,
-                    }
-                )
-            except DataValidationError as exc:
-                state["result"] = None
-                state["error"] = f"Data validation failed: {exc}"
-            except Exception as exc:
-                state["result"] = None
-                state["error"] = str(exc)
+        # Consume analysis_updated flag and trigger rerun if needed
+        if auto_advance_end and state.get("analysis_updated", False):
+            state["analysis_updated"] = False
+            logger.info("Analysis updated via worker - triggering UI refresh")
+            st.rerun()
+        else:
+            state["analysis_updated"] = False
 
         error_message = state.get("error")
         result = state.get("result")

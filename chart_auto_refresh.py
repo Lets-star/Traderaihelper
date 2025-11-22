@@ -1,4 +1,22 @@
-"""Chart auto-refresh worker for the Charts tab."""
+"""
+Chart auto-refresh worker for the Charts tab.
+
+TIMESTAMP SEMANTICS:
+-------------------
+All internal timestamps are in UTC milliseconds.
+
+- DataFrame 'ts' column: open_time (from Binance API's openTime field)
+- last_closed_close_ms: close_time of the last closed bar (stored in session state)
+- Relationship: close_time = open_time + tf_ms
+
+For example, a 1h candle:
+  - open_time:  1700000000000 (2023-11-14 22:00:00 UTC)
+  - close_time: 1700003600000 (2023-11-14 23:00:00 UTC)
+
+The next candle's open_time equals the previous candle's close_time.
+
+floor_closed_bar_local(now_ms, tf_ms) returns the close_time of the last closed bar.
+"""
 
 from __future__ import annotations
 
@@ -48,6 +66,187 @@ _CHART_DATA_LOCK = threading.Lock()
 STATE_LAST_CLOSED_KEY = "last_closed_ts_per_tf"
 DEFAULT_TOLERANCE_MS = 1_500
 OVERLAP_BARS = 3
+STORE_STATE_KEY = "_chart_data_store"
+
+
+class ChartDataStore:
+    """Thread-safe storage for chart data shared between UI and worker threads."""
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._closed_df = pd.DataFrame()
+        self._with_forming_df: Optional[pd.DataFrame] = None
+        self._forming_raw_df: Optional[pd.DataFrame] = None
+        self._closed_indicators: Dict[str, Any] = {}
+        self._with_forming_indicators: Optional[Dict[str, Any]] = None
+        self._last_closed_close_ms: int = 0
+        self._analysis_pending: bool = False
+        self._show_forming_bar: bool = False
+
+    def reset(self) -> None:
+        """Clear all stored data (used when symbol/timeframe changes)."""
+        with self._lock:
+            self._closed_df = pd.DataFrame()
+            self._with_forming_df = None
+            self._forming_raw_df = None
+            self._closed_indicators = {}
+            self._with_forming_indicators = None
+            self._last_closed_close_ms = 0
+            self._analysis_pending = True
+
+    @staticmethod
+    def _dedupe_sort(df: pd.DataFrame) -> pd.DataFrame:
+        if df is None or df.empty:
+            return pd.DataFrame()
+        return (
+            df.drop_duplicates(subset="ts", keep="last")
+            .sort_values("ts")
+            .reset_index(drop=True)
+        )
+
+    def _rebuild_with_forming_locked(self) -> None:
+        if self._forming_raw_df is None or self._forming_raw_df.empty:
+            self._with_forming_df = None
+            self._with_forming_indicators = None
+            return
+
+        frames = []
+        if self._closed_df is not None and not self._closed_df.empty:
+            frames.append(self._closed_df.copy(deep=True))
+        frames.append(self._forming_raw_df.copy(deep=True))
+        combined = pd.concat(frames, ignore_index=True)
+        combined = self._dedupe_sort(combined)
+        self._with_forming_df = combined
+        self._with_forming_indicators = compute_chart_indicators(combined)
+
+    def update_closed(
+        self,
+        df: Optional[pd.DataFrame],
+        last_closed_close_ms: int,
+        *,
+        append: bool,
+    ) -> tuple[int, int, int]:
+        """Update closed-bar dataset; returns (appended, deduped, total_rows)."""
+        df_copy = pd.DataFrame() if df is None else df.copy(deep=True)
+        with self._lock:
+            previous_len = 0 if self._closed_df is None else len(self._closed_df)
+
+            if append and previous_len > 0:
+                if not df_copy.empty:
+                    combined = pd.concat(
+                        [self._closed_df.copy(deep=True), df_copy],
+                        ignore_index=True,
+                    )
+                else:
+                    combined = self._closed_df.copy(deep=True)
+            else:
+                combined = df_copy
+
+            if combined.empty:
+                self._closed_df = pd.DataFrame()
+                self._closed_indicators = {}
+                self._last_closed_close_ms = int(last_closed_close_ms)
+                self._analysis_pending = True
+                self._rebuild_with_forming_locked()
+                return 0, 0, 0
+
+            combined = self._dedupe_sort(combined)
+
+            if append and previous_len > 0:
+                appended = max(len(combined) - previous_len, 0)
+                deduped = max(len(df_copy) - appended, 0)
+            else:
+                appended = len(combined)
+                deduped = 0
+
+            self._closed_df = combined
+            self._closed_indicators = compute_chart_indicators(combined)
+            self._last_closed_close_ms = int(last_closed_close_ms)
+            self._analysis_pending = True
+            self._rebuild_with_forming_locked()
+            return appended, deduped, len(combined)
+
+    def set_forming_bar(self, forming_df: Optional[pd.DataFrame]) -> None:
+        forming_copy = None if forming_df is None else forming_df.copy(deep=True)
+        with self._lock:
+            previous_exists = self._forming_raw_df is not None and not self._forming_raw_df.empty
+            incoming_exists = forming_copy is not None and not forming_copy.empty
+
+            if not incoming_exists:
+                if previous_exists:
+                    self._forming_raw_df = None
+                    self._with_forming_df = None
+                    self._with_forming_indicators = None
+                    self._analysis_pending = True
+                return
+
+            self._forming_raw_df = forming_copy
+            self._analysis_pending = True
+            self._rebuild_with_forming_locked()
+
+    def clear_forming_bar(self) -> None:
+        self.set_forming_bar(None)
+
+    def set_show_forming_bar(self, value: bool) -> bool:
+        value = bool(value)
+        with self._lock:
+            if self._show_forming_bar == value:
+                return False
+            self._show_forming_bar = value
+            self._analysis_pending = True
+            return True
+
+    def get_show_forming_bar(self) -> bool:
+        with self._lock:
+            return bool(self._show_forming_bar)
+
+    def snapshot(
+        self,
+        *,
+        include_forming: bool,
+    ) -> tuple[Optional[pd.DataFrame], Dict[str, Any], int]:
+        with self._lock:
+            if include_forming and self._with_forming_df is not None and not self._with_forming_df.empty:
+                df_source = self._with_forming_df
+                indicators = self._with_forming_indicators or {}
+            else:
+                if self._closed_df is None or self._closed_df.empty:
+                    return None, {}, self._last_closed_close_ms
+                df_source = self._closed_df
+                indicators = self._closed_indicators or {}
+
+            df_copy = df_source.copy(deep=True)
+            return df_copy, copy.deepcopy(indicators), self._last_closed_close_ms
+
+    def has_closed_data(self) -> bool:
+        with self._lock:
+            return self._closed_df is not None and not self._closed_df.empty
+
+    def closed_len(self) -> int:
+        with self._lock:
+            return 0 if self._closed_df is None else len(self._closed_df)
+
+    def get_last_closed_close_ms(self) -> int:
+        with self._lock:
+            return int(self._last_closed_close_ms)
+
+    def has_pending_update(self) -> bool:
+        with self._lock:
+            return bool(self._analysis_pending)
+
+    def consume_pending_update(self) -> bool:
+        with self._lock:
+            flag = bool(self._analysis_pending)
+            self._analysis_pending = False
+            return flag
+
+
+def ensure_chart_store(session_state: Any) -> ChartDataStore:
+    store = getattr(session_state, STORE_STATE_KEY, None)
+    if not isinstance(store, ChartDataStore):
+        store = ChartDataStore()
+        setattr(session_state, STORE_STATE_KEY, store)
+    return store
 
 
 def _state_map_key(symbol: str, timeframe: str) -> str:
@@ -204,11 +403,26 @@ def update_chart_state(
     symbol: str,
     timeframe: str,
     df: pd.DataFrame,
-    last_closed_ts: int,
+    last_closed_close_ms: int,
     *,
     append: bool = False,
 ) -> None:
-    """Safely update chart data and indicators in session state."""
+    """
+    Safely update chart data and indicators in session state.
+    
+    Args:
+        session_state: Streamlit session state
+        symbol: Trading symbol
+        timeframe: Timeframe string
+        df: DataFrame with candles (ts column = open_time in UTC ms)
+        last_closed_close_ms: Close time of the last closed bar in UTC ms
+        append: If True, append to existing data; if False, replace
+        
+    Note:
+        - df['ts'] contains open_time (UTC milliseconds)
+        - last_closed_close_ms is the close_time of the last closed bar
+        - For a bar with open_time T and timeframe tf_ms: close_time = T + tf_ms
+    """
     if df is None:
         df = pd.DataFrame()
     with _CHART_DATA_LOCK:
@@ -232,7 +446,7 @@ def update_chart_state(
         indicators = compute_chart_indicators(combined)
         session_state.chart_df = combined
         session_state.chart_indicators = indicators
-        set_last_closed_in_state(session_state, symbol, timeframe, last_closed_ts)
+        set_last_closed_in_state(session_state, symbol, timeframe, last_closed_close_ms)
         session_state.analysis_updated = True
 
 
@@ -256,22 +470,25 @@ def get_poll_interval(timeframe: str) -> float:
 
 def floor_closed_bar_local(now_ms: int, tf_ms: int, tol_ms: int = 60_000) -> int:
     """
-    Calculate the timestamp of the last closed bar boundary.
+    Calculate the close_time of the last closed bar boundary.
+    
+    This returns the close_time (not open_time) of the last closed candle.
+    For a candle with open_time T, its close_time is T + tf_ms.
     
     Args:
-        now_ms: Current time in milliseconds
+        now_ms: Current time in milliseconds (UTC)
         tf_ms: Timeframe interval in milliseconds
         tol_ms: Tolerance in milliseconds (default 60s)
         
     Returns:
-        Timestamp of the last closed bar boundary in milliseconds
+        close_time of the last closed bar in milliseconds (UTC)
     """
     if tf_ms <= 0:
         return now_ms
     
     effective_now = max(now_ms - tol_ms, 0)
-    last_closed = (effective_now // tf_ms) * tf_ms
-    return last_closed
+    last_closed_close_ms = (effective_now // tf_ms) * tf_ms
+    return last_closed_close_ms
 
 
 def invalidate_cache(symbol: str, timeframe: str) -> None:
@@ -359,20 +576,26 @@ def fetch_closed_candles(
 def fetch_delta_candles(
     symbol: str,
     timeframe: str,
-    last_closed_ts: int,
+    last_closed_close_ms: int,
     data_source: Optional[BinanceKlinesSource] = None,
 ) -> tuple[pd.DataFrame, int]:
     """
-    Fetch new CLOSED bars since last_closed_ts using delta/incremental update.
+    Fetch new CLOSED bars since last_closed_close_ms using delta/incremental update.
     
     Args:
         symbol: Trading symbol (e.g., "BTCUSDT")
         timeframe: Timeframe string (e.g., "1h", "3h")
-        last_closed_ts: Last closed timestamp we already have
+        last_closed_close_ms: Close time of the last closed bar we already have (UTC ms)
         data_source: Optional BinanceKlinesSource instance
         
     Returns:
-        Tuple of (DataFrame with new bars, new_last_closed_ts)
+        Tuple of (DataFrame with new bars, new_last_closed_close_ms)
+        
+    Note:
+        - last_closed_close_ms is the close_time of the last bar we have
+        - DataFrame 'ts' column contains open_time (close_time - tf_ms)
+        - To get new bars, we filter by: open_time >= last_closed_close_ms
+          (since the next bar's open_time equals the previous bar's close_time)
     """
     if data_source is None:
         data_source = BinanceKlinesSource()
@@ -383,21 +606,22 @@ def fetch_delta_candles(
     # Get timeframe in milliseconds
     tf_ms = TIMEFRAME_TO_MS.get(timeframe, 3_600_000)
     
-    # Calculate effective end (last closed bar boundary) using tight tolerance
+    # Calculate new last closed bar close_time using tight tolerance
     tol_ms = DEFAULT_TOLERANCE_MS
-    effective_end_ms = floor_closed_bar_local(server_time_ms, tf_ms, tol_ms=tol_ms)
+    new_last_closed_close_ms = floor_closed_bar_local(server_time_ms, tf_ms, tol_ms=tol_ms)
     
     # Check if there are new closed bars
-    if effective_end_ms <= last_closed_ts:
+    if new_last_closed_close_ms <= last_closed_close_ms:
         logger.debug(f"No new closed bars for {symbol} {timeframe}")
-        return pd.DataFrame(), last_closed_ts
+        return pd.DataFrame(), last_closed_close_ms
     
     # Fetch with overlap to ensure continuity and avoid gaps
-    start_ms = max(0, last_closed_ts - (tf_ms * OVERLAP_BARS))
+    # Start from (OVERLAP_BARS) bars before the last closed bar
+    start_open_ms = max(0, last_closed_close_ms - (tf_ms * OVERLAP_BARS))
     
     # Convert to datetime
-    start_dt = datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc)
-    end_dt = datetime.fromtimestamp(effective_end_ms / 1000, tz=timezone.utc)
+    start_dt = datetime.fromtimestamp(start_open_ms / 1000, tz=timezone.utc)
+    end_dt = datetime.fromtimestamp(new_last_closed_close_ms / 1000, tz=timezone.utc)
     
     # Strip BINANCE: prefix if present
     clean_symbol = symbol
@@ -412,15 +636,16 @@ def fetch_delta_candles(
             end=end_dt,
         )
         
-        # Filter to bars newer than last_closed_ts
+        # Filter to NEW bars only: bars with open_time >= last_closed_close_ms
+        # (next bar's open_time equals previous bar's close_time)
         if not df.empty:
-            df = df[df["ts"] > last_closed_ts].copy()
+            df = df[df["ts"] >= last_closed_close_ms].copy()
         
-        return df, effective_end_ms
+        return df, new_last_closed_close_ms
     except Exception as e:
         logger.error(f"Failed to fetch delta candles for {symbol} {timeframe}: {e}")
-        # On failure, return empty dataframe with unchanged last_closed_ts
-        return pd.DataFrame(), last_closed_ts
+        # On failure, return empty dataframe with unchanged last_closed_close_ms
+        return pd.DataFrame(), last_closed_close_ms
 
 
 def fetch_forming_bar(
@@ -624,24 +849,24 @@ class ChartAutoRefreshWorker:
         while not self._stop_event.is_set():
             try:
                 now_ms = get_binance_server_time_ms(self.data_source)
-                last_closed = floor_closed_bar_local(now_ms, self.tf_ms, tol_ms=DEFAULT_TOLERANCE_MS)
+                new_last_closed_close_ms = floor_closed_bar_local(now_ms, self.tf_ms, tol_ms=DEFAULT_TOLERANCE_MS)
                 
-                current_last_closed_ts = get_last_closed_from_state(
+                current_last_closed_close_ms = get_last_closed_from_state(
                     self.session_state,
                     self.symbol,
                     self.timeframe,
                 )
                 
-                if last_closed > current_last_closed_ts:
+                if new_last_closed_close_ms > current_last_closed_close_ms:
                     logger.info(
                         f"[{self.symbol} {self.timeframe}] New closed bar boundary: "
-                        f"last_closed_ms={last_closed}, previous={current_last_closed_ts}"
+                        f"last_closed_close_ms={new_last_closed_close_ms}, previous={current_last_closed_close_ms}"
                     )
                     
                     try:
-                        if current_last_closed_ts == 0:
+                        if current_last_closed_close_ms == 0:
                             logger.info(f"Initial fetch for {self.symbol} {self.timeframe}")
-                            df_new, actual_last_closed = fetch_closed_candles(
+                            df_new, actual_last_closed_close_ms = fetch_closed_candles(
                                 symbol=self.symbol,
                                 timeframe=self.timeframe,
                                 num_bars=self.num_bars,
@@ -652,7 +877,7 @@ class ChartAutoRefreshWorker:
                                 self.symbol,
                                 self.timeframe,
                                 df_new,
-                                actual_last_closed,
+                                actual_last_closed_close_ms,
                                 append=False,
                             )
                             with _CHART_DATA_LOCK:
@@ -660,23 +885,23 @@ class ChartAutoRefreshWorker:
                                 final_len = len(stored_df) if isinstance(stored_df, pd.DataFrame) else 0
                             deduped = max(len(df_new) - final_len, 0)
                             logger.info(
-                                "[%s %s] Boundary update (initial): last_closed_ms=%s, fetched=%s, appended=%s, deduped=%s",
+                                "[%s %s] Boundary update (initial): last_closed_close_ms=%s, fetched=%s, appended=%s, deduped=%s",
                                 self.symbol,
                                 self.timeframe,
-                                actual_last_closed,
+                                actual_last_closed_close_ms,
                                 len(df_new),
                                 final_len,
                                 deduped,
                             )
                         else:
-                            df_new, actual_last_closed = fetch_delta_candles(
+                            df_new, actual_last_closed_close_ms = fetch_delta_candles(
                                 symbol=self.symbol,
                                 timeframe=self.timeframe,
-                                last_closed_ts=current_last_closed_ts,
+                                last_closed_close_ms=current_last_closed_close_ms,
                                 data_source=self.data_source,
                             )
                             
-                            if df_new.empty and actual_last_closed <= current_last_closed_ts:
+                            if df_new.empty and actual_last_closed_close_ms <= current_last_closed_close_ms:
                                 logger.debug(f"No new closed bars yet for {self.symbol} {self.timeframe}")
                             else:
                                 current_df, _, _ = read_chart_state(
@@ -692,7 +917,7 @@ class ChartAutoRefreshWorker:
                                     self.symbol,
                                     self.timeframe,
                                     df_new,
-                                    actual_last_closed,
+                                    actual_last_closed_close_ms,
                                     append=append_mode,
                                 )
                                 with _CHART_DATA_LOCK:
@@ -701,10 +926,10 @@ class ChartAutoRefreshWorker:
                                 appended = max(after_len - before_len, 0)
                                 deduped = max(len(df_new) - appended, 0)
                                 logger.info(
-                                    "[%s %s] Boundary update: last_closed_ms=%s, fetched=%s, appended=%s, deduped=%s",
+                                    "[%s %s] Boundary update: last_closed_close_ms=%s, fetched=%s, appended=%s, deduped=%s",
                                     self.symbol,
                                     self.timeframe,
-                                    actual_last_closed,
+                                    actual_last_closed_close_ms,
                                     len(df_new),
                                     appended,
                                     deduped,

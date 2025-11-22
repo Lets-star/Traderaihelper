@@ -1898,7 +1898,7 @@ def main():
         st.subheader(f"Price Chart with Indicators - {selected_token}")
         
         # Controls row
-        ctrl_col1, ctrl_col2, ctrl_col3, ctrl_col4 = st.columns([1, 1, 1, 1])
+        ctrl_col1, ctrl_col2, ctrl_col3, ctrl_col4, ctrl_col5 = st.columns([1, 1, 1, 1, 1])
         with ctrl_col1:
             auto_refresh = st.checkbox(
                 "🔄 Auto-refresh",
@@ -1906,20 +1906,28 @@ def main():
                 key="charts_auto_refresh_toggle",
             )
         with ctrl_col2:
+            show_forming_bar = st.checkbox(
+                "📊 Forming Bar",
+                value=st.session_state.get("show_forming_bar", False),
+                key="charts_forming_bar_toggle",
+                help="Show the currently forming candle (not yet closed)",
+            )
+            st.session_state.show_forming_bar = show_forming_bar
+        with ctrl_col3:
             bvi_enabled = st.checkbox(
                 "📊 Better Volume",
                 value=st.session_state.bvi_enabled,
                 key="charts_bvi_toggle",
             )
             st.session_state.bvi_enabled = bvi_enabled
-        with ctrl_col3:
+        with ctrl_col4:
             atr_channels_enabled = st.checkbox(
                 "📈 ATR Channels",
                 value=st.session_state.atr_channels_enabled,
                 key="charts_atr_channels_toggle",
             )
             st.session_state.atr_channels_enabled = atr_channels_enabled
-        with ctrl_col4:
+        with ctrl_col5:
             order_blocks_enabled = st.checkbox(
                 "🟦 Order Blocks",
                 value=st.session_state.order_blocks_enabled,

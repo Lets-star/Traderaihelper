@@ -26,6 +26,8 @@ TIMEFRAME_TO_MS: Dict[str, int] = {
     "1d": 86_400_000,
 }
 
+_SERVER_TIME_FALLBACK_WARNED = False
+
 
 def floor_closed_bar(now_ms: int, tf_ms: int, tol_ms: int = 60_000) -> int:
     """
@@ -66,6 +68,8 @@ def get_binance_server_time_ms(source: Optional[BinanceKlinesSource] = None) -> 
     Returns:
         Server time in milliseconds
     """
+    global _SERVER_TIME_FALLBACK_WARNED
+    
     if source is None:
         source = BinanceKlinesSource()
     
@@ -74,10 +78,19 @@ def get_binance_server_time_ms(source: Optional[BinanceKlinesSource] = None) -> 
         if server_time is not None:
             return server_time
     except Exception as exc:
-        logger.warning(f"Failed to get Binance server time: {exc}, falling back to system time")
+        logger.debug("Error while fetching Binance server time", exc_info=True)
+        last_error = exc
+    else:
+        last_error = RuntimeError("get_server_time() returned None")
     
-    # Fallback to system time
-    return int(datetime.now(timezone.utc).timestamp() * 1000)
+    if not _SERVER_TIME_FALLBACK_WARNED:
+        _SERVER_TIME_FALLBACK_WARNED = True
+        logger.warning(
+            "Falling back to system clock for Binance server time: %s", last_error
+        )
+    
+    fallback_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    return fallback_ms
 
 
 def run_analysis(

@@ -44,6 +44,8 @@ from indicator_collector.trading_system.auto_analyze_worker import (
 from indicator_collector.trading_system.data_sources.timestamp_utils import normalize_timestamp
 from indicator_collector.trading_system.signal_generator import SignalConfig
 from indicator_collector.trading_system.signal_schema import is_valid_signal_structure
+from update_bus import UpdateBus
+from worker_manager import ChartWorkerManager, SignalsWorkerManager
 
 logger = logging.getLogger(__name__)
 
@@ -1733,6 +1735,8 @@ def main():
         st.session_state.worker_running = False
     if "chart_worker" not in st.session_state:
         st.session_state.chart_worker = None
+    if "chart_manager_started" not in st.session_state:
+        st.session_state.chart_manager_started = False
     if "auto_refresh_enabled" not in st.session_state:
         st.session_state.auto_refresh_enabled = False
     if "bvi_enabled" not in st.session_state:
@@ -1741,6 +1745,22 @@ def main():
         st.session_state.atr_channels_enabled = True
     if "order_blocks_enabled" not in st.session_state:
         st.session_state.order_blocks_enabled = True
+    
+    # Initialize WebSocket and UpdateBus support
+    if "use_websocket" not in st.session_state:
+        st.session_state.use_websocket = True
+    if "chart_update_bus" not in st.session_state:
+        from update_bus import UpdateBus
+        st.session_state.chart_update_bus = UpdateBus()
+    if "signals_update_bus" not in st.session_state:
+        from update_bus import UpdateBus
+        st.session_state.signals_update_bus = UpdateBus()
+    if "chart_worker_manager" not in st.session_state:
+        from worker_manager import ChartWorkerManager
+        st.session_state.chart_worker_manager = ChartWorkerManager()
+    if "signals_worker_manager" not in st.session_state:
+        from worker_manager import SignalsWorkerManager
+        st.session_state.signals_worker_manager = SignalsWorkerManager()
     
     with st.sidebar:
         st.header("⚙️ Configuration")
@@ -1799,8 +1819,17 @@ def main():
         )
         st.session_state[ui_key("sidebar", "analysis_period_value")] = analysis_period
 
+        st.subheader("Realtime Settings")
+        use_ws_checkbox = st.checkbox(
+            "Use WebSocket streaming",
+            value=st.session_state.use_websocket,
+            key=ui_key("sidebar", "use_websocket"),
+            help="Enable Binance WebSocket streaming for realtime klines and automated signals.",
+        )
+        st.session_state.use_websocket = use_ws_checkbox
+
         st.subheader("Export Options")
-        export_default = st.session_state.get("export_token", "export-session-001")
+
         export_token = st.text_input(
             "Export Token/ID",
             value=export_default,
@@ -1951,13 +1980,21 @@ def main():
         timeframe_changed = st.session_state.chart_timeframe != selected_timeframe
         
         # Stop existing worker if symbol/timeframe changed or auto-refresh disabled
-        if (symbol_changed or timeframe_changed or not auto_refresh) and st.session_state.chart_worker is not None:
+        if (symbol_changed or timeframe_changed or not auto_refresh):
+            # Stop old worker
+            if st.session_state.chart_worker is not None:
+                try:
+                    st.session_state.chart_worker.stop()
+                    st.session_state.chart_worker = None
+                    st.session_state.worker_running = False
+                except Exception as e:
+                    logger.warning(f"Failed to stop chart worker: {e}")
+            
+            # Stop WorkerManager
             try:
-                st.session_state.chart_worker.stop()
-                st.session_state.chart_worker = None
-                st.session_state.worker_running = False
+                st.session_state.chart_worker_manager.stop()
             except Exception as e:
-                logger.warning(f"Failed to stop chart worker: {e}")
+                logger.warning(f"Failed to stop chart worker manager: {e}")
         
         # Update session state tracking
         st.session_state.auto_refresh_enabled = auto_refresh
@@ -2006,18 +2043,53 @@ def main():
                     st.session_state.chart_indicators = None
         
         # Start worker if auto-refresh is enabled and not already running
-        if auto_refresh and st.session_state.chart_worker is None:
+        if auto_refresh:
+            use_websocket = st.session_state.use_websocket
+            manager = st.session_state.chart_worker_manager
+            
+            # Check if we need to start a new worker
+            if not manager.is_running() and st.session_state.chart_worker is None:
+                try:
+                    # Try WorkerManager with WebSocket
+                    if use_websocket:
+                        success = manager.start_new(
+                            symbol=selected_token,
+                            timeframe=selected_timeframe,
+                            update_bus=st.session_state.chart_update_bus,
+                            use_websocket=True,
+                            session_state=st.session_state,
+                            num_bars=selected_period,
+                        )
+                        if success:
+                            st.session_state.worker_running = True
+                            logger.info(f"Started WebSocket chart worker for {selected_token} {selected_timeframe}")
+                        else:
+                            # Fallback to REST polling already handled by manager
+                            st.session_state.worker_running = True
+                    else:
+                        # Use REST polling
+                        worker = ChartAutoRefreshWorker(
+                            symbol=selected_token,
+                            timeframe=selected_timeframe,
+                            num_bars=selected_period,
+                            session_state=st.session_state,
+                        )
+                        worker.start()
+                        st.session_state.chart_worker = worker
+                        st.session_state.worker_running = True
+                except Exception as e:
+                    logger.error(f"Failed to start chart worker: {e}", exc_info=True)
+                    st.error(f"❌ Failed to start auto-refresh worker: {str(e)}")
+        
+        # Poll for updates from WorkerManager and apply to session state
+        if auto_refresh and st.session_state.use_websocket:
+            manager = st.session_state.chart_worker_manager
             try:
-                worker = ChartAutoRefreshWorker(
-                    symbol=selected_token,
-                    timeframe=selected_timeframe,
-                    num_bars=selected_period,
-                    session_state=st.session_state,
-                )
-                worker.start()
-                st.session_state.chart_worker = worker
+                updates_applied = manager.poll_and_apply(st.session_state)
+                if updates_applied:
+                    st.session_state.analysis_updated = True
             except Exception as e:
-                st.error(f"❌ Failed to start auto-refresh worker: {str(e)}")
+                logger.error(f"Error polling chart worker manager: {e}", exc_info=True)
         
         # Display chart
         if st.session_state.chart_df is not None and not st.session_state.chart_df.empty and auto_refresh:
@@ -3638,20 +3710,39 @@ def main():
 
             # Start worker if auto-advance is enabled and worker is not running
             if auto_advance_end and state.get("result") is not None:
+                use_websocket = st.session_state.use_websocket
+                manager = st.session_state.signals_worker_manager
+
                 worker = getattr(st.session_state, "automated_signals_worker", None)
                 if worker is None or not getattr(st.session_state, "automated_signals_worker_running", False):
                     try:
-                        worker = AutomatedSignalsWorker(
-                            symbol=config_store.symbol,
-                            timeframe=config_store.timeframe,
-                            session_state=st.session_state,
-                            signal_config_payload=signal_config_payload,
-                            indicator_params=indicator_params,
-                            signal_params=signal_params,
-                        )
-                        worker.start()
-                        st.session_state.automated_signals_worker = worker
-                        logger.info(f"Started automated signals worker for {config_store.symbol} {config_store.timeframe}")
+                        if use_websocket and not manager.is_running():
+                            # Try WorkerManager with WebSocket
+                            success = manager.start_new(
+                                symbol=config_store.symbol,
+                                timeframe=config_store.timeframe,
+                                update_bus=st.session_state.signals_update_bus,
+                                signal_config_payload=signal_config_payload,
+                                indicator_params=indicator_params,
+                                signal_params=signal_params,
+                                use_websocket=True,
+                                session_state=st.session_state,
+                            )
+                            if success:
+                                logger.info(f"Started WebSocket signals worker for {config_store.symbol} {config_store.timeframe}")
+                        else:
+                            # Use REST polling
+                            worker = AutomatedSignalsWorker(
+                                symbol=config_store.symbol,
+                                timeframe=config_store.timeframe,
+                                session_state=st.session_state,
+                                signal_config_payload=signal_config_payload,
+                                indicator_params=indicator_params,
+                                signal_params=signal_params,
+                            )
+                            worker.start()
+                            st.session_state.automated_signals_worker = worker
+                            logger.info(f"Started REST polling signals worker for {config_store.symbol} {config_store.timeframe}")
                     except Exception as e:
                         logger.error(f"Failed to start automated signals worker: {e}", exc_info=True)
                         state["error"] = f"Failed to start auto-refresh worker: {e}"
@@ -3662,47 +3753,57 @@ def main():
                     except Exception as e:
                         logger.warning(f"Failed to update worker config: {e}")
 
-        # Consume analysis_updated flag and trigger rerun if needed
-        if auto_advance_end and state.get("analysis_updated", False):
-            state["analysis_updated"] = False
-            logger.info("Analysis updated via worker - triggering UI refresh")
-            st.rerun()
-        else:
-            state["analysis_updated"] = False
-
-        error_message = state.get("error")
-        result = state.get("result")
-
-        if error_message:
-            st.error(error_message)
-        elif result:
-            candles = result.get("candles", [])
-            if candles:
-                first_ts = candles[0].get("ts")
-                last_ts = candles[-1].get("ts")
+            # Poll for updates from WorkerManager and apply to session state
+            if auto_advance_end and st.session_state.use_websocket:
+                manager = st.session_state.signals_worker_manager
                 try:
-                    result_start = dt.datetime.fromtimestamp(float(first_ts) / 1000.0, tz=dt.timezone.utc)
-                except (TypeError, ValueError):
-                    result_start = config_store.start_datetime
-                try:
-                    result_end = dt.datetime.fromtimestamp(float(last_ts) / 1000.0, tz=dt.timezone.utc)
-                except (TypeError, ValueError):
-                    result_end = config_store.end_datetime
+                    updates_applied = manager.poll_and_apply(st.session_state)
+                    if updates_applied:
+                        state["analysis_updated"] = True
+                except Exception as e:
+                    logger.error(f"Error polling signals worker manager: {e}", exc_info=True)
+
+            # Consume analysis_updated flag and trigger rerun if needed
+            if auto_advance_end and state.get("analysis_updated", False):
+                state["analysis_updated"] = False
+                logger.info("Analysis updated via worker - triggering UI refresh")
+                st.rerun()
             else:
-                result_start = config_store.start_datetime
-                result_end = config_store.end_datetime
+                state["analysis_updated"] = False
 
-            st.caption(
-                f"Source: Binance | {config_store.symbol.upper()} {config_store.timeframe.upper()} | {len(candles)} candles "
-                f"from {result_start.strftime('%Y-%m-%d %H:%M UTC')} to {result_end.strftime('%Y-%m-%d %H:%M UTC')}"
-            )
+            error_message = state.get("error")
+            result = state.get("result")
 
-            signal_data = result["explicit_signal"]
-            processed_signal = result["processed_payload"]
+            if error_message:
+                st.error(error_message)
+            elif result:
+                candles = result.get("candles", [])
+                if candles:
+                    first_ts = candles[0].get("ts")
+                    last_ts = candles[-1].get("ts")
+                    try:
+                        result_start = dt.datetime.fromtimestamp(float(first_ts) / 1000.0, tz=dt.timezone.utc)
+                    except (TypeError, ValueError):
+                        result_start = config_store.start_datetime
+                    try:
+                        result_end = dt.datetime.fromtimestamp(float(last_ts) / 1000.0, tz=dt.timezone.utc)
+                    except (TypeError, ValueError):
+                        result_end = config_store.end_datetime
+                else:
+                    result_start = config_store.start_datetime
+                    result_end = config_store.end_datetime
 
-            raw_weight_data = signal_data.get("weights") or state.get("weights")
-            normalized_weights_map, raw_weights_map = normalize_category_weights(raw_weight_data)
-            has_weight_data = any(raw_weights_map.get(category, 0.0) > 0 for category in FACTOR_CATEGORY_ORDER)
+                st.caption(
+                    f"Source: Binance | {config_store.symbol.upper()} {config_store.timeframe.upper()} | {len(candles)} candles "
+                    f"from {result_start.strftime('%Y-%m-%d %H:%M UTC')} to {result_end.strftime('%Y-%m-%d %H:%M UTC')}"
+                )
+
+                signal_data = result["explicit_signal"]
+                processed_signal = result["processed_payload"]
+
+                raw_weight_data = signal_data.get("weights") or state.get("weights")
+                normalized_weights_map, raw_weights_map = normalize_category_weights(raw_weight_data)
+                has_weight_data = any(raw_weights_map.get(category, 0.0) > 0 for category in FACTOR_CATEGORY_ORDER)
             if not has_weight_data:
                 has_weight_data = any(normalized_weights_map.get(category, 0.0) > 0 for category in FACTOR_CATEGORY_ORDER)
 

@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import logging
+import os
 import sys
 from typing import Any, Dict, Optional
 
@@ -44,6 +45,7 @@ from indicator_collector.trading_system.auto_analyze_worker import (
 from indicator_collector.trading_system.data_sources.timestamp_utils import normalize_timestamp
 from indicator_collector.trading_system.signal_generator import SignalConfig
 from indicator_collector.trading_system.signal_schema import is_valid_signal_structure
+from signal_executor import SignalExecutor
 from update_bus import UpdateBus
 from worker_manager import ChartWorkerManager, SignalsWorkerManager
 
@@ -3447,6 +3449,10 @@ def main():
     with automated_signals_tab:
         st.subheader("🤖 Automated Signals")
         state = st.session_state.setdefault(AUTOMATED_SIGNALS_STATE_KEY, {})
+        
+        if "signal_executor" not in st.session_state:
+            st.session_state.signal_executor = SignalExecutor(update_bus=getattr(st.session_state, "signals_update_bus", None))
+        executor = st.session_state.signal_executor
 
         cache_identity = f"{config_store.symbol}|{config_store.timeframe}"
         previous_identity = state.get("cache_identity")
@@ -3492,6 +3498,39 @@ def main():
 
         with st.expander("Risk & Signal Settings", expanded=False):
             render_signal_risk_controls(config_store)
+
+        with st.expander("ByBit Execution", expanded=False):
+            st.warning("⚠️ Testnet only recommended. Use at your own risk.")
+            
+            exec_enabled = st.toggle("Enable ByBit Execution", value=executor.enabled, key="bybit_enabled")
+            
+            c1, c2 = st.columns(2)
+            with c1:
+                api_key = st.text_input("API Key", value=executor.api_key, type="password", key="bybit_key")
+                is_testnet = st.selectbox("Network", ["Testnet", "Mainnet"], index=0 if executor.testnet else 1, key="bybit_net") == "Testnet"
+                dry_run = st.checkbox("Dry Run (Log only)", value=executor.dry_run, key="bybit_dry")
+            with c2:
+                api_secret = st.text_input("API Secret", value=executor.api_secret, type="password", key="bybit_secret")
+                leverage = st.number_input("Default Leverage", min_value=1, max_value=125, value=executor.default_leverage, key="bybit_lev")
+                pos_mult = st.number_input("Pos Size Multiplier", min_value=0.1, max_value=10.0, value=executor.pos_size_multiplier, step=0.1, key="bybit_pos")
+
+            executor.configure(exec_enabled, api_key, api_secret, is_testnet, int(leverage), float(pos_mult), dry_run)
+
+            st.markdown("### Recent Executions")
+            if os.path.exists(SignalExecutor.LOG_FILE):
+                try:
+                    logs = pd.read_csv(SignalExecutor.LOG_FILE)
+                    if not logs.empty and "latency_ms" in logs.columns:
+                        logs["latency_ms"] = pd.to_numeric(logs["latency_ms"], errors='coerce')
+                        avg_lat = logs["latency_ms"].mean()
+                        p95 = logs["latency_ms"].quantile(0.95)
+                        col_lat1, col_lat2 = st.columns(2)
+                        col_lat1.metric("Avg Latency", f"{avg_lat:.0f} ms")
+                        col_lat2.metric("95th % Latency", f"{p95:.0f} ms")
+                    
+                    st.dataframe(logs.tail(10).sort_values("timestamp", ascending=False), use_container_width=True, hide_index=True)
+                except Exception:
+                    st.info("No execution logs found.")
 
         # Auto-advance toggle for End time
         auto_advance_key = ui_key("automated_signals", "auto_advance_end")

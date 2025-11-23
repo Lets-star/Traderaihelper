@@ -281,6 +281,40 @@ class AutomatedSignalsWorker:
             )
             setattr(self.session_state, "automated_signals_state", state)
         
+        # Trigger ByBit execution if configured
+        try:
+            executor = getattr(self.session_state, "signal_executor", None)
+            if executor and executor.enabled:
+                explicit_signal = result_dict.get("explicit_signal", {})
+                signal_type = explicit_signal.get("signal", "HOLD")
+                
+                if signal_type in ["BUY", "SELL"]:
+                    entries = explicit_signal.get("entries", [])
+                    entry_price = float(entries[0]) if entries else 0.0
+                    
+                    take_profits = explicit_signal.get("take_profits", {})
+                    tp_price = 0.0
+                    if isinstance(take_profits, dict) and take_profits:
+                        tp_price = float(list(take_profits.values())[0])
+                    
+                    stop_loss = float(explicit_signal.get("stop_loss", 0.0))
+                    
+                    payload = {
+                        "signal_id": f"{self.symbol}_{end_time_ms}",
+                        "symbol": self.symbol,
+                        "direction": "LONG" if signal_type == "BUY" else "SHORT",
+                        "entry_price": entry_price,
+                        "take_profit": tp_price,
+                        "stop_loss": stop_loss,
+                        "leverage": 5,
+                        "quantity": 0.001,
+                        "generated_at": end_time_ms
+                    }
+                    
+                    executor.execute_signal(payload)
+        except Exception as exc:
+             logger.error(f"Failed to execute signal: {exc}", exc_info=True)
+        
         logger.info(
             f"Signal refresh complete for {self.symbol} {self.timeframe}: "
             f"{len(result.candles)} candles, signal={result.explicit_signal.get('signal', 'UNKNOWN')}"

@@ -499,6 +499,10 @@ class SignalsWorkerManager:
                 self._trigger_signal_refresh(session_state, update)
                 applied = True
             
+            elif update_type == "EXECUTION_UPDATE":
+                # Execution occurred, trigger UI refresh
+                applied = True
+            
             elif update_type == "signals_result":
                 # Apply signal result
                 self._apply_signal_result(session_state, update)

@@ -3843,448 +3843,448 @@ def main():
                 raw_weight_data = signal_data.get("weights") or state.get("weights")
                 normalized_weights_map, raw_weights_map = normalize_category_weights(raw_weight_data)
                 has_weight_data = any(raw_weights_map.get(category, 0.0) > 0 for category in FACTOR_CATEGORY_ORDER)
-            if not has_weight_data:
-                has_weight_data = any(normalized_weights_map.get(category, 0.0) > 0 for category in FACTOR_CATEGORY_ORDER)
+                if not has_weight_data:
+                    has_weight_data = any(normalized_weights_map.get(category, 0.0) > 0 for category in FACTOR_CATEGORY_ORDER)
 
-            col1, col2, col3 = st.columns([2, 1, 1])
+                col1, col2, col3 = st.columns([2, 1, 1])
 
-            with col1:
-                signal_type = signal_data.get("signal", "HOLD")
-                if signal_type == "BUY":
-                    st.success("## 🟢 BUY SIGNAL")
-                elif signal_type == "SELL":
-                    st.error("## 🔴 SELL SIGNAL")
-                else:
-                    st.info("## ⚪ HOLD")
-
-            with col2:
-                confidence = signal_data.get("confidence", 5)
-                if confidence >= 8:
-                    st.metric("Confidence", f"{confidence}/10", "🟢 High")
-                elif confidence >= 5:
-                    st.metric("Confidence", f"{confidence}/10", "🟡 Medium")
-                else:
-                    st.metric("Confidence", f"{confidence}/10", "⚪ Low")
-
-            with col3:
-                timeframe_value = str(signal_data.get("timeframe") or config_store.timeframe).upper()
-                holding_period = str(signal_data.get("holding_period", "medium")).title()
-                st.metric("Timeframe", timeframe_value)
-                st.metric("Holding Period", holding_period)
-
-            st.markdown("---")
-
-            actionable = signal_data.get("signal") in {"BUY", "SELL"}
-
-            detail_left, detail_right = st.columns(2)
-
-            with detail_left:
-                if actionable:
-                    st.markdown("### 📈 Entry & Exit Levels")
-
-                    entries = signal_data.get("entries") or []
-                    metadata_summary = signal_data.get("metadata", {})
-                    entry_zone: Dict[str, Any] = {}
-                    if isinstance(metadata_summary, dict):
-                        entry_zone = metadata_summary.get("entry_zone", {}) or {}
-
-                    if entries:
-                        st.write("**Entry Levels:**")
-                        for i, entry in enumerate(entries[:3], 1):
-                            st.write(f"  Entry {i}: ${entry:.4f}")
+                with col1:
+                    signal_type = signal_data.get("signal", "HOLD")
+                    if signal_type == "BUY":
+                        st.success("## 🟢 BUY SIGNAL")
+                    elif signal_type == "SELL":
+                        st.error("## 🔴 SELL SIGNAL")
                     else:
-                        st.warning("Entry levels were not provided by the analyzers.")
+                        st.info("## ⚪ HOLD")
 
-                    if entry_zone:
-                        lower = entry_zone.get("lower")
-                        upper = entry_zone.get("upper")
-                        if lower is not None and upper is not None:
-                            st.write(f"**Entry Confluence Zone:** ${lower:.4f} - ${upper:.4f}")
-
-                    stop_loss = signal_data.get("stop_loss")
-                    if stop_loss is not None:
-                        st.write(f"**Stop Loss:** ${stop_loss:.4f}")
-
-                    take_profits = signal_data.get("take_profits", {}) or {}
-                    if take_profits:
-                        st.write("**Take Profits:**")
-                        for tp_key, tp_price in take_profits.items():
-                            st.write(f"  {tp_key.upper()}: ${tp_price:.4f}")
-                else:
-                    st.markdown("### 🤔 Hold Rationale")
-                    hold_reasons = signal_data.get("cancellation_reasons") or signal_data.get("rationale") or []
-                    if hold_reasons:
-                        for idx, reason in enumerate(hold_reasons, 1):
-                            st.write(f"{idx}. {reason}")
+                with col2:
+                    confidence = signal_data.get("confidence", 5)
+                    if confidence >= 8:
+                        st.metric("Confidence", f"{confidence}/10", "🟢 High")
+                    elif confidence >= 5:
+                        st.metric("Confidence", f"{confidence}/10", "🟡 Medium")
                     else:
-                        st.info("Signal is currently on HOLD while the composite score remains neutral.")
+                        st.metric("Confidence", f"{confidence}/10", "⚪ Low")
 
-            with detail_right:
-                if actionable:
-                    st.markdown("### 📊 Position & Risk")
+                with col3:
+                    timeframe_value = str(signal_data.get("timeframe") or config_store.timeframe).upper()
+                    holding_period = str(signal_data.get("holding_period", "medium")).title()
+                    st.metric("Timeframe", timeframe_value)
+                    st.metric("Holding Period", holding_period)
 
-                    position_size = signal_data.get("position_size_pct")
-                    if position_size is not None:
-                        st.write(f"**Position Size:** {position_size:.1f}%")
+                st.markdown("---")
 
-                    if has_weight_data:
-                        st.write("**Component Weights:**")
-                        for category in FACTOR_CATEGORY_ORDER:
-                            weight_value = normalized_weights_map.get(category, 0.0)
-                            if weight_value <= 0:
-                                continue
-                            st.write(f"  {format_category_label(category)}: {weight_value:.2f}")
-                else:
-                    st.markdown("### 📊 Component Weights")
-                    if has_weight_data:
-                        for category in FACTOR_CATEGORY_ORDER:
-                            weight_value = normalized_weights_map.get(category, 0.0)
-                            if weight_value <= 0:
-                                continue
-                            st.write(f"• {format_category_label(category)}: {weight_value:.2f}")
+                actionable = signal_data.get("signal") in {"BUY", "SELL"}
+
+                detail_left, detail_right = st.columns(2)
+
+                with detail_left:
+                    if actionable:
+                        st.markdown("### 📈 Entry & Exit Levels")
+
+                        entries = signal_data.get("entries") or []
+                        metadata_summary = signal_data.get("metadata", {})
+                        entry_zone: Dict[str, Any] = {}
+                        if isinstance(metadata_summary, dict):
+                            entry_zone = metadata_summary.get("entry_zone", {}) or {}
+
+                        if entries:
+                            st.write("**Entry Levels:**")
+                            for i, entry in enumerate(entries[:3], 1):
+                                st.write(f"  Entry {i}: ${entry:.4f}")
+                        else:
+                            st.warning("Entry levels were not provided by the analyzers.")
+
+                        if entry_zone:
+                            lower = entry_zone.get("lower")
+                            upper = entry_zone.get("upper")
+                            if lower is not None and upper is not None:
+                                st.write(f"**Entry Confluence Zone:** ${lower:.4f} - ${upper:.4f}")
+
+                        stop_loss = signal_data.get("stop_loss")
+                        if stop_loss is not None:
+                            st.write(f"**Stop Loss:** ${stop_loss:.4f}")
+
+                        take_profits = signal_data.get("take_profits", {}) or {}
+                        if take_profits:
+                            st.write("**Take Profits:**")
+                            for tp_key, tp_price in take_profits.items():
+                                st.write(f"  {tp_key.upper()}: ${tp_price:.4f}")
                     else:
-                        st.write("No component weights available.")
+                        st.markdown("### 🤔 Hold Rationale")
+                        hold_reasons = signal_data.get("cancellation_reasons") or signal_data.get("rationale") or []
+                        if hold_reasons:
+                            for idx, reason in enumerate(hold_reasons, 1):
+                                st.write(f"{idx}. {reason}")
+                        else:
+                            st.info("Signal is currently on HOLD while the composite score remains neutral.")
 
-            composite_meta = signal_data.get("metadata", {}) or {}
-            composite_score = composite_meta.get("composite_score")
-            if composite_score is not None:
-                st.markdown("### 🧩 Composite Breakdown")
-                st.metric("Composite Score", f"{composite_score:.2f}")
-                st.caption(
-                    f"Buy ≥ {composite_meta.get('buy_threshold', DEFAULT_SIGNAL_THRESHOLDS['buy']):.2f} · "
-                    f"Sell ≤ {composite_meta.get('sell_threshold', DEFAULT_SIGNAL_THRESHOLDS['sell']):.2f}"
-                )
+                with detail_right:
+                    if actionable:
+                        st.markdown("### 📊 Position & Risk")
 
-                top_contributors = composite_meta.get("top_contributors") or []
-                if top_contributors:
-                    readable = [
-                        f"{item.get('category', '').replace('_', ' ').title()}: {item.get('contribution', 0.0):.3f}"
-                        for item in top_contributors
-                    ]
-                    st.markdown("**Top Drivers:** " + ", ".join(readable))
+                        position_size = signal_data.get("position_size_pct")
+                        if position_size is not None:
+                            st.write(f"**Position Size:** {position_size:.1f}%")
 
-                weights = composite_meta.get("composite_weights") or {}
-                scores = composite_meta.get("category_scores") or {}
-                contributions = composite_meta.get("category_contributions") or {}
-                st.markdown("**Category Detail**")
-                for category in ["technical", "market_structure", "volume", "sentiment", "multitimeframe"]:
-                    weight = weights.get(category)
-                    score = scores.get(category)
-                    contribution = contributions.get(category)
-                    parts = []
-                    if weight is not None:
-                        parts.append(f"weight {weight:.2f}")
-                    if score is not None:
-                        parts.append(f"score {score:.2f}")
-                    if contribution is not None:
-                        parts.append(f"contribution {contribution:.3f}")
-                    if parts:
-                        st.write(f"• {category.replace('_', ' ').title()}: " + ", ".join(parts))
+                        if has_weight_data:
+                            st.write("**Component Weights:**")
+                            for category in FACTOR_CATEGORY_ORDER:
+                                weight_value = normalized_weights_map.get(category, 0.0)
+                                if weight_value <= 0:
+                                    continue
+                                st.write(f"  {format_category_label(category)}: {weight_value:.2f}")
+                    else:
+                        st.markdown("### 📊 Component Weights")
+                        if has_weight_data:
+                            for category in FACTOR_CATEGORY_ORDER:
+                                weight_value = normalized_weights_map.get(category, 0.0)
+                                if weight_value <= 0:
+                                    continue
+                                st.write(f"• {format_category_label(category)}: {weight_value:.2f}")
+                        else:
+                            st.write("No component weights available.")
 
-                missing_categories = composite_meta.get("missing_categories") or []
-                if missing_categories:
-                    st.warning(
-                        "Composite weights falling back for missing categories: "
-                        + ", ".join(cat.replace("_", " ").title() for cat in missing_categories)
+                composite_meta = signal_data.get("metadata", {}) or {}
+                composite_score = composite_meta.get("composite_score")
+                if composite_score is not None:
+                    st.markdown("### 🧩 Composite Breakdown")
+                    st.metric("Composite Score", f"{composite_score:.2f}")
+                    st.caption(
+                        f"Buy ≥ {composite_meta.get('buy_threshold', DEFAULT_SIGNAL_THRESHOLDS['buy']):.2f} · "
+                        f"Sell ≤ {composite_meta.get('sell_threshold', DEFAULT_SIGNAL_THRESHOLDS['sell']):.2f}"
                     )
 
-            mt_meta = (processed_signal.get("multi_timeframe") or {}).get("metadata", {}) if processed_signal else {}
-            mt_note = mt_meta.get("note") or mt_meta.get("notes")
-            if mt_note:
-                st.info(f"Multi-timeframe analysis: {mt_note}")
-            mt_missing = mt_meta.get("missing_timeframes") or []
-            if mt_missing:
-                st.caption(
-                    "Missing timeframe data: "
-                    + ", ".join(tf.upper() for tf in mt_missing)
-                )
+                    top_contributors = composite_meta.get("top_contributors") or []
+                    if top_contributors:
+                        readable = [
+                            f"{item.get('category', '').replace('_', ' ').title()}: {item.get('contribution', 0.0):.3f}"
+                            for item in top_contributors
+                        ]
+                        st.markdown("**Top Drivers:** " + ", ".join(readable))
 
-            st.markdown("---")
+                    weights = composite_meta.get("composite_weights") or {}
+                    scores = composite_meta.get("category_scores") or {}
+                    contributions = composite_meta.get("category_contributions") or {}
+                    st.markdown("**Category Detail**")
+                    for category in ["technical", "market_structure", "volume", "sentiment", "multitimeframe"]:
+                        weight = weights.get(category)
+                        score = scores.get(category)
+                        contribution = contributions.get(category)
+                        parts = []
+                        if weight is not None:
+                            parts.append(f"weight {weight:.2f}")
+                        if score is not None:
+                            parts.append(f"score {score:.2f}")
+                        if contribution is not None:
+                            parts.append(f"contribution {contribution:.3f}")
+                        if parts:
+                            st.write(f"• {category.replace('_', ' ').title()}: " + ", ".join(parts))
 
-            rationale = signal_data.get("rationale", [])
-            if rationale:
-                st.markdown("### 💡 Signal Rationale")
-                for i, point in enumerate(rationale, 1):
-                    st.write(f"{i}. {point}")
+                    missing_categories = composite_meta.get("missing_categories") or []
+                    if missing_categories:
+                        st.warning(
+                            "Composite weights falling back for missing categories: "
+                            + ", ".join(cat.replace("_", " ").title() for cat in missing_categories)
+                        )
 
-            cancel_conditions = signal_data.get("cancel_conditions", [])
-            if cancel_conditions:
-                st.markdown("### ⚠️ Cancel Conditions")
-                for condition in cancel_conditions:
-                    st.write(f"• {condition}")
+                mt_meta = (processed_signal.get("multi_timeframe") or {}).get("metadata", {}) if processed_signal else {}
+                mt_note = mt_meta.get("note") or mt_meta.get("notes")
+                if mt_note:
+                    st.info(f"Multi-timeframe analysis: {mt_note}")
+                mt_missing = mt_meta.get("missing_timeframes") or []
+                if mt_missing:
+                    st.caption(
+                        "Missing timeframe data: "
+                        + ", ".join(tf.upper() for tf in mt_missing)
+                    )
 
-            with st.expander("🔧 Processing Information", expanded=False):
-                processing_info = processed_signal.get("metadata", {})
-                st.write(f"**Processor:** {processing_info.get('payload_processor', 'Unknown')}")
-                st.write(f"**Timeframe Used:** {processing_info.get('timeframe_used', 'Unknown')}")
-                st.write(f"**Real Data Validated:** {processing_info.get('real_data_validated', False)}")
-                st.write(f"**Source Data Quality:** {processing_info.get('source_data_quality', 'Unknown')}")
-                st.write("**Signal Format:** Explicit JSON Schema v1.0")
+                st.markdown("---")
 
-                debug_payload = signal_data.get("debug")
-                if debug_payload:
-                    st.write("**Debug Details:**")
-                    st.json(debug_payload, expanded=False)
+                rationale = signal_data.get("rationale", [])
+                if rationale:
+                    st.markdown("### 💡 Signal Rationale")
+                    for i, point in enumerate(rationale, 1):
+                        st.write(f"{i}. {point}")
 
-            analyzer_indicator_params = signal_data.get("metadata", {}).get("indicator_params") or processed_signal.get("metadata", {}).get("indicator_params")
-            with st.expander("🛠 Analyzer Inputs", expanded=False):
-                st.write("**Category Weights**")
-                if raw_weight_data or has_weight_data:
-                    weight_rows = []
-                    for category in FACTOR_CATEGORY_ORDER:
-                        normalized_value = normalized_weights_map.get(category, 0.0)
-                        raw_value = raw_weights_map.get(category, 0.0)
+                cancel_conditions = signal_data.get("cancel_conditions", [])
+                if cancel_conditions:
+                    st.markdown("### ⚠️ Cancel Conditions")
+                    for condition in cancel_conditions:
+                        st.write(f"• {condition}")
+
+                with st.expander("🔧 Processing Information", expanded=False):
+                    processing_info = processed_signal.get("metadata", {})
+                    st.write(f"**Processor:** {processing_info.get('payload_processor', 'Unknown')}")
+                    st.write(f"**Timeframe Used:** {processing_info.get('timeframe_used', 'Unknown')}")
+                    st.write(f"**Real Data Validated:** {processing_info.get('real_data_validated', False)}")
+                    st.write(f"**Source Data Quality:** {processing_info.get('source_data_quality', 'Unknown')}")
+                    st.write("**Signal Format:** Explicit JSON Schema v1.0")
+
+                    debug_payload = signal_data.get("debug")
+                    if debug_payload:
+                        st.write("**Debug Details:**")
+                        st.json(debug_payload, expanded=False)
+
+                analyzer_indicator_params = signal_data.get("metadata", {}).get("indicator_params") or processed_signal.get("metadata", {}).get("indicator_params")
+                with st.expander("🛠 Analyzer Inputs", expanded=False):
+                    st.write("**Category Weights**")
+                    if raw_weight_data or has_weight_data:
+                        weight_rows = []
+                        for category in FACTOR_CATEGORY_ORDER:
+                            normalized_value = normalized_weights_map.get(category, 0.0)
+                            raw_value = raw_weights_map.get(category, 0.0)
+                            row = {
+                                "Category": format_category_label(category),
+                                "Normalized Weight": f"{normalized_value:.2f}",
+                            }
+                            if raw_weight_data:
+                                row["Raw Weight"] = f"{raw_value:.2f}"
+                            weight_rows.append(row)
+                        weight_df = pd.DataFrame(weight_rows)
+                        st.dataframe(
+                            weight_df,
+                            width="stretch",
+                            hide_index=True,
+                            key=ui_key(
+                                "automated_signals",
+                                f"category_weights_{config_store.symbol}_{config_store.timeframe}"
+                            ),
+                        )
+                    else:
+                        st.write("No weight data available.")
+
+                    if analyzer_indicator_params:
+                        st.write("**Indicator Parameters**")
+                        st.json(analyzer_indicator_params)
+
+                    if result:
+                        st.write("**Parameter Hash:**", result.get("params_hash"))
+                        st.write("**Weights Hash:**", result.get("weights_hash"))
+                    else:
+                        st.write("**Parameter Hash:**", state.get("params_hash"))
+                        st.write("**Weights Hash:**", state.get("weights_hash"))
+
+                # Factor Analysis
+                factors = signal_data.get("factors", []) or []
+                factor_entries: Dict[str, Dict[str, Any]] = {}
+                for factor in factors:
+                    if not isinstance(factor, dict):
+                        continue
+                    category = normalize_factor_category(factor.get("factor_name"))
+                    if not category or category not in FACTOR_CATEGORY_ORDER:
+                        continue
+                    score = safe_float(factor.get("score"))
+                    metadata = factor.get("metadata") or {}
+                    direction = metadata.get("direction")
+                    confidence = safe_float(metadata.get("confidence"))
+                    entry = factor_entries.get(category)
+                    if entry is None or (score is not None and entry.get("score") is not None and abs(score - 0.5) > abs(entry["score"] - 0.5)):
+                        factor_entries[category] = {
+                            "score": score,
+                            "emoji": factor.get("emoji", "⚪"),
+                            "description": factor.get("description", ""),
+                            "direction": direction,
+                            "confidence": confidence,
+                        }
+
+                factors_rows = []
+                for category in FACTOR_CATEGORY_ORDER:
+                    entry = factor_entries.get(category)
+                    weight_value = normalized_weights_map.get(category, 0.0)
+                    if entry and entry.get("score") is not None:
                         row = {
                             "Category": format_category_label(category),
-                            "Normalized Weight": f"{normalized_value:.2f}",
+                            "Score": f"{entry['score']:.2f}",
+                            "Weight": f"{weight_value:.2f}",
+                            "Direction": entry.get("direction", "").title() if entry.get("direction") else "—",
+                            "Emoji": entry.get("emoji", "⚪") or "⚪",
+                            "Description": entry.get("description", ""),
+                            "Confidence": f"{entry['confidence']:.1f}" if entry.get("confidence") is not None else "—",
                         }
-                        if raw_weight_data:
-                            row["Raw Weight"] = f"{raw_value:.2f}"
-                        weight_rows.append(row)
-                    weight_df = pd.DataFrame(weight_rows)
+                        factors_rows.append(row)
+                    elif has_weight_data and weight_value > 0:
+                        factors_rows.append(
+                            {
+                                "Category": format_category_label(category),
+                                "Score": "N/A",
+                                "Weight": f"{weight_value:.2f}",
+                                "Direction": "Neutral",
+                                "Emoji": "⚪",
+                                "Description": "No factor data available",
+                                "Confidence": "—",
+                            }
+                        )
+
+                if factors_rows:
+                    st.markdown("### 📊 Factor Analysis")
+                    factors_df = pd.DataFrame(factors_rows)
                     st.dataframe(
-                        weight_df,
+                        factors_df,
                         width="stretch",
                         hide_index=True,
                         key=ui_key(
                             "automated_signals",
-                            f"category_weights_{config_store.symbol}_{config_store.timeframe}"
+                            f"factors_{config_store.symbol}_{config_store.timeframe}"
                         ),
                     )
+
+                st.markdown("---")
+
+                # Position Plan
+                position_plan = signal_data.get("position_plan", {})
+                if position_plan:
+                    st.markdown("### 💼 Position Plan")
+
+                    plan_col1, plan_col2, plan_col3, plan_col4 = st.columns(4)
+
+                    entry_price = position_plan.get("entry_price", 0.0)
+                    with plan_col1:
+                        st.metric("Entry Price", f"${entry_price:.4f}")
+
+                    position_size_usd = position_plan.get("position_size_usd", 0.0)
+                    with plan_col2:
+                        st.metric(
+                            "Position Size",
+                            f"${position_size_usd:.2f}" if position_size_usd else "N/A",
+                        )
+
+                    direction = position_plan.get("direction", "N/A")
+                    with plan_col3:
+                        st.metric("Direction", direction.upper() if direction else "N/A")
+
+                    leverage = position_plan.get("leverage", 1.0)
+                    with plan_col4:
+                        st.metric("Leverage", f"{leverage:.1f}x" if leverage else "N/A")
+
+                    st.markdown("#### TP/SL Ladder")
+
+                    ladder_col1, ladder_col2 = st.columns(2)
+
+                    with ladder_col1:
+                        stop_loss = position_plan.get("stop_loss", 0.0)
+                        st.write(f"**Stop Loss:** ${stop_loss:.4f}" if stop_loss else "**Stop Loss:** N/A")
+
+                        if entry_price and stop_loss:
+                            risk_distance = abs(entry_price - stop_loss)
+                            risk_pct = (risk_distance / entry_price) * 100
+                            st.write(f"Risk Distance: ${risk_distance:.4f} ({risk_pct:.2f}%)")
+
+                    with ladder_col2:
+                        take_profit_levels = position_plan.get("take_profit_levels", [])
+                        if take_profit_levels:
+                            for idx, tp_level in enumerate(take_profit_levels, 1):
+                                if entry_price and tp_level:
+                                    profit_pct = ((tp_level - entry_price) / entry_price) * 100
+                                    st.write(f"TP{idx}: ${tp_level:.4f} ({profit_pct:+.2f}%)")
+                        else:
+                            st.write("No TP levels defined")
+
+                    if position_plan.get("risk_reward_ratio"):
+                        rrr = position_plan.get("risk_reward_ratio")
+                        st.markdown(f"**Risk/Reward Ratio:** {rrr:.2f}:1")
+
+                    if position_plan.get("max_risk_pct"):
+                        max_risk = position_plan.get("max_risk_pct")
+                        st.markdown(f"**Max Risk %:** {max_risk * 100:.2f}%")
+
+                st.markdown("---")
+
+                if signal_data.get("holding_horizon_bars"):
+                    holding_horizon = signal_data.get("holding_horizon_bars")
+                    st.markdown("### ⏱️ Holding Horizon")
+                    st.info(f"**Estimated Holding Period:** {holding_horizon} bars")
+
+                explanation = signal_data.get("explanation", {})
+                if explanation:
+                    st.markdown("### 📝 Signal Rationale")
+
+                    primary_reason = explanation.get("primary_reason", "")
+                    if primary_reason:
+                        st.markdown(f"**Primary Reason:** {primary_reason}")
+
+                    supporting_factors = explanation.get("supporting_factors", [])
+                    if supporting_factors:
+                        st.markdown("**Supporting Factors:**")
+                        for factor in supporting_factors:
+                            st.write(f"• {factor}")
+
+                    risk_factors = explanation.get("risk_factors", [])
+                    if risk_factors:
+                        st.markdown("**Risk Factors:**")
+                        for risk in risk_factors:
+                            st.write(f"⚠️ {risk}")
+
+                    market_context = explanation.get("market_context", "")
+                    if market_context:
+                        st.markdown(f"**Market Context:** {market_context}")
+
+                st.markdown("---")
+
+                cancellation_reasons = signal_data.get("cancellation_reasons", []) or []
+                plan_warnings = (signal_data.get("metadata", {}) or {}).get("plan_warnings", []) or []
+                if signal_data.get("signal") == "HOLD" and cancellation_reasons:
+                    st.warning("### ⛔ Blocking Reasons")
+                    for reason in cancellation_reasons:
+                        st.write(f"• {reason}")
                 else:
-                    st.write("No weight data available.")
+                    advisory_notes = list(dict.fromkeys(plan_warnings + cancellation_reasons))
+                    if advisory_notes:
+                        st.info("### ℹ️ Signal Notes")
+                        for note in advisory_notes:
+                            st.write(f"• {note}")
 
-                if analyzer_indicator_params:
-                    st.write("**Indicator Parameters**")
-                    st.json(analyzer_indicator_params)
+                st.markdown("---")
 
-                if result:
-                    st.write("**Parameter Hash:**", result.get("params_hash"))
-                    st.write("**Weights Hash:**", result.get("weights_hash"))
-                else:
-                    st.write("**Parameter Hash:**", state.get("params_hash"))
-                    st.write("**Weights Hash:**", state.get("weights_hash"))
+                optimization_stats = signal_data.get("optimization_stats", {})
+                if optimization_stats:
+                    st.markdown("### 📈 Performance Metrics")
 
-            # Factor Analysis
-            factors = signal_data.get("factors", []) or []
-            factor_entries: Dict[str, Dict[str, Any]] = {}
-            for factor in factors:
-                if not isinstance(factor, dict):
-                    continue
-                category = normalize_factor_category(factor.get("factor_name"))
-                if not category or category not in FACTOR_CATEGORY_ORDER:
-                    continue
-                score = safe_float(factor.get("score"))
-                metadata = factor.get("metadata") or {}
-                direction = metadata.get("direction")
-                confidence = safe_float(metadata.get("confidence"))
-                entry = factor_entries.get(category)
-                if entry is None or (score is not None and entry.get("score") is not None and abs(score - 0.5) > abs(entry["score"] - 0.5)):
-                    factor_entries[category] = {
-                        "score": score,
-                        "emoji": factor.get("emoji", "⚪"),
-                        "description": factor.get("description", ""),
-                        "direction": direction,
-                        "confidence": confidence,
-                    }
+                    perf_col1, perf_col2, perf_col3, perf_col4 = st.columns(4)
 
-            factors_rows = []
-            for category in FACTOR_CATEGORY_ORDER:
-                entry = factor_entries.get(category)
-                weight_value = normalized_weights_map.get(category, 0.0)
-                if entry and entry.get("score") is not None:
-                    row = {
-                        "Category": format_category_label(category),
-                        "Score": f"{entry['score']:.2f}",
-                        "Weight": f"{weight_value:.2f}",
-                        "Direction": entry.get("direction", "").title() if entry.get("direction") else "—",
-                        "Emoji": entry.get("emoji", "⚪") or "⚪",
-                        "Description": entry.get("description", ""),
-                        "Confidence": f"{entry['confidence']:.1f}" if entry.get("confidence") is not None else "—",
-                    }
-                    factors_rows.append(row)
-                elif has_weight_data and weight_value > 0:
-                    factors_rows.append(
-                        {
-                            "Category": format_category_label(category),
-                            "Score": "N/A",
-                            "Weight": f"{weight_value:.2f}",
-                            "Direction": "Neutral",
-                            "Emoji": "⚪",
-                            "Description": "No factor data available",
-                            "Confidence": "—",
-                        }
-                    )
+                    with perf_col1:
+                        win_rate = optimization_stats.get("backtest_win_rate")
+                        if win_rate is not None:
+                            st.metric("Win Rate", f"{win_rate:.1f}%")
 
-            if factors_rows:
-                st.markdown("### 📊 Factor Analysis")
-                factors_df = pd.DataFrame(factors_rows)
-                st.dataframe(
-                    factors_df,
-                    width="stretch",
-                    hide_index=True,
-                    key=ui_key(
-                        "automated_signals",
-                        f"factors_{config_store.symbol}_{config_store.timeframe}"
-                    ),
+                    with perf_col2:
+                        profit_factor = optimization_stats.get("profit_factor")
+                        if profit_factor is not None:
+                            st.metric("Profit Factor", f"{profit_factor:.2f}")
+
+                    with perf_col3:
+                        sharpe_ratio = optimization_stats.get("sharpe_ratio")
+                        if sharpe_ratio is not None:
+                            st.metric("Sharpe Ratio", f"{sharpe_ratio:.2f}")
+
+                    with perf_col4:
+                        total_signals = optimization_stats.get("total_signals", 0)
+                        st.metric("Total Signals", total_signals)
+
+                    perf_extra_col1, perf_extra_col2, perf_extra_col3 = st.columns(3)
+
+                    with perf_extra_col1:
+                        avg_profit = optimization_stats.get("avg_profit_pct")
+                        if avg_profit is not None:
+                            st.metric("Avg Profit %", f"{avg_profit:.2f}%")
+
+                    with perf_extra_col2:
+                        avg_loss = optimization_stats.get("avg_loss_pct")
+                        if avg_loss is not None:
+                            st.metric("Avg Loss %", f"{avg_loss:.2f}%")
+
+                    with perf_extra_col3:
+                        profitable = optimization_stats.get("profitable_signals", 0)
+                        losing = optimization_stats.get("losing_signals", 0)
+                        st.metric("Profitable Signals", f"{profitable}/{profitable + losing}")
+
+                st.markdown("---")
+                st.info(
+                    "💡 **Note:** This automated signals tab generates trading system analysis using real Binance data. "
+                    "Ensure your trading system exports signals in the expected JSON format for full functionality."
                 )
-
-            st.markdown("---")
-
-            # Position Plan
-            position_plan = signal_data.get("position_plan", {})
-            if position_plan:
-                st.markdown("### 💼 Position Plan")
-
-                plan_col1, plan_col2, plan_col3, plan_col4 = st.columns(4)
-
-                entry_price = position_plan.get("entry_price", 0.0)
-                with plan_col1:
-                    st.metric("Entry Price", f"${entry_price:.4f}")
-
-                position_size_usd = position_plan.get("position_size_usd", 0.0)
-                with plan_col2:
-                    st.metric(
-                        "Position Size",
-                        f"${position_size_usd:.2f}" if position_size_usd else "N/A",
-                    )
-
-                direction = position_plan.get("direction", "N/A")
-                with plan_col3:
-                    st.metric("Direction", direction.upper() if direction else "N/A")
-
-                leverage = position_plan.get("leverage", 1.0)
-                with plan_col4:
-                    st.metric("Leverage", f"{leverage:.1f}x" if leverage else "N/A")
-
-                st.markdown("#### TP/SL Ladder")
-
-                ladder_col1, ladder_col2 = st.columns(2)
-
-                with ladder_col1:
-                    stop_loss = position_plan.get("stop_loss", 0.0)
-                    st.write(f"**Stop Loss:** ${stop_loss:.4f}" if stop_loss else "**Stop Loss:** N/A")
-
-                    if entry_price and stop_loss:
-                        risk_distance = abs(entry_price - stop_loss)
-                        risk_pct = (risk_distance / entry_price) * 100
-                        st.write(f"Risk Distance: ${risk_distance:.4f} ({risk_pct:.2f}%)")
-
-                with ladder_col2:
-                    take_profit_levels = position_plan.get("take_profit_levels", [])
-                    if take_profit_levels:
-                        for idx, tp_level in enumerate(take_profit_levels, 1):
-                            if entry_price and tp_level:
-                                profit_pct = ((tp_level - entry_price) / entry_price) * 100
-                                st.write(f"TP{idx}: ${tp_level:.4f} ({profit_pct:+.2f}%)")
-                    else:
-                        st.write("No TP levels defined")
-
-                if position_plan.get("risk_reward_ratio"):
-                    rrr = position_plan.get("risk_reward_ratio")
-                    st.markdown(f"**Risk/Reward Ratio:** {rrr:.2f}:1")
-
-                if position_plan.get("max_risk_pct"):
-                    max_risk = position_plan.get("max_risk_pct")
-                    st.markdown(f"**Max Risk %:** {max_risk * 100:.2f}%")
-
-            st.markdown("---")
-
-            if signal_data.get("holding_horizon_bars"):
-                holding_horizon = signal_data.get("holding_horizon_bars")
-                st.markdown("### ⏱️ Holding Horizon")
-                st.info(f"**Estimated Holding Period:** {holding_horizon} bars")
-
-            explanation = signal_data.get("explanation", {})
-            if explanation:
-                st.markdown("### 📝 Signal Rationale")
-
-                primary_reason = explanation.get("primary_reason", "")
-                if primary_reason:
-                    st.markdown(f"**Primary Reason:** {primary_reason}")
-
-                supporting_factors = explanation.get("supporting_factors", [])
-                if supporting_factors:
-                    st.markdown("**Supporting Factors:**")
-                    for factor in supporting_factors:
-                        st.write(f"• {factor}")
-
-                risk_factors = explanation.get("risk_factors", [])
-                if risk_factors:
-                    st.markdown("**Risk Factors:**")
-                    for risk in risk_factors:
-                        st.write(f"⚠️ {risk}")
-
-                market_context = explanation.get("market_context", "")
-                if market_context:
-                    st.markdown(f"**Market Context:** {market_context}")
-
-            st.markdown("---")
-
-            cancellation_reasons = signal_data.get("cancellation_reasons", []) or []
-            plan_warnings = (signal_data.get("metadata", {}) or {}).get("plan_warnings", []) or []
-            if signal_data.get("signal") == "HOLD" and cancellation_reasons:
-                st.warning("### ⛔ Blocking Reasons")
-                for reason in cancellation_reasons:
-                    st.write(f"• {reason}")
             else:
-                advisory_notes = list(dict.fromkeys(plan_warnings + cancellation_reasons))
-                if advisory_notes:
-                    st.info("### ℹ️ Signal Notes")
-                    for note in advisory_notes:
-                        st.write(f"• {note}")
-
-            st.markdown("---")
-
-            optimization_stats = signal_data.get("optimization_stats", {})
-            if optimization_stats:
-                st.markdown("### 📈 Performance Metrics")
-
-                perf_col1, perf_col2, perf_col3, perf_col4 = st.columns(4)
-
-                with perf_col1:
-                    win_rate = optimization_stats.get("backtest_win_rate")
-                    if win_rate is not None:
-                        st.metric("Win Rate", f"{win_rate:.1f}%")
-
-                with perf_col2:
-                    profit_factor = optimization_stats.get("profit_factor")
-                    if profit_factor is not None:
-                        st.metric("Profit Factor", f"{profit_factor:.2f}")
-
-                with perf_col3:
-                    sharpe_ratio = optimization_stats.get("sharpe_ratio")
-                    if sharpe_ratio is not None:
-                        st.metric("Sharpe Ratio", f"{sharpe_ratio:.2f}")
-
-                with perf_col4:
-                    total_signals = optimization_stats.get("total_signals", 0)
-                    st.metric("Total Signals", total_signals)
-
-                perf_extra_col1, perf_extra_col2, perf_extra_col3 = st.columns(3)
-
-                with perf_extra_col1:
-                    avg_profit = optimization_stats.get("avg_profit_pct")
-                    if avg_profit is not None:
-                        st.metric("Avg Profit %", f"{avg_profit:.2f}%")
-
-                with perf_extra_col2:
-                    avg_loss = optimization_stats.get("avg_loss_pct")
-                    if avg_loss is not None:
-                        st.metric("Avg Loss %", f"{avg_loss:.2f}%")
-
-                with perf_extra_col3:
-                    profitable = optimization_stats.get("profitable_signals", 0)
-                    losing = optimization_stats.get("losing_signals", 0)
-                    st.metric("Profitable Signals", f"{profitable}/{profitable + losing}")
-
-            st.markdown("---")
-            st.info(
-                "💡 **Note:** This automated signals tab generates trading system analysis using real Binance data. "
-                "Ensure your trading system exports signals in the expected JSON format for full functionality."
-            )
-        else:
-            st.info("Configure symbol, timeframe, and date range to run automated signals with real Binance data.")
+                st.info("Configure symbol, timeframe, and date range to run automated signals with real Binance data.")
     
     with backtest_tab:
         st.subheader("🔬 Backtesting")

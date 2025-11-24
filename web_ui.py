@@ -1763,6 +1763,8 @@ def main():
     if "signals_worker_manager" not in st.session_state:
         from worker_manager import SignalsWorkerManager
         st.session_state.signals_worker_manager = SignalsWorkerManager()
+    if "export_token" not in st.session_state:
+        st.session_state.export_token = ""
     
     with st.sidebar:
         st.header("⚙️ Configuration")
@@ -1832,6 +1834,7 @@ def main():
 
         st.subheader("Export Options")
 
+        export_default = st.session_state.export_token
         export_token = st.text_input(
             "Export Token/ID",
             value=export_default,

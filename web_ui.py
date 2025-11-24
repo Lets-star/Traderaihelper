@@ -4278,13 +4278,13 @@ def main():
                     losing = optimization_stats.get("losing_signals", 0)
                     st.metric("Profitable Signals", f"{profitable}/{profitable + losing}")
 
-            st.markdown("---")
-            st.info(
-                "💡 **Note:** This automated signals tab generates trading system analysis using real Binance data. "
-                "Ensure your trading system exports signals in the expected JSON format for full functionality."
-            )
-        else:
-            st.info("Configure symbol, timeframe, and date range to run automated signals with real Binance data.")
+                st.markdown("---")
+                st.info(
+                    "💡 **Note:** This automated signals tab generates trading system analysis using real Binance data. "
+                    "Ensure your trading system exports signals in the expected JSON format for full functionality."
+                )
+            else:
+                st.info("Configure symbol, timeframe, and date range to run automated signals with real Binance data.")
     
     with backtest_tab:
         st.subheader("🔬 Backtesting")

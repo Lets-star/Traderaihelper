@@ -1747,6 +1747,8 @@ def main():
         st.session_state.atr_channels_enabled = True
     if "order_blocks_enabled" not in st.session_state:
         st.session_state.order_blocks_enabled = True
+    if "export_token" not in st.session_state:
+        st.session_state.export_token = ""
     
     # Initialize WebSocket and UpdateBus support
     if "use_websocket" not in st.session_state:
@@ -1831,6 +1833,8 @@ def main():
         st.session_state.use_websocket = use_ws_checkbox
 
         st.subheader("Export Options")
+
+        export_default = st.session_state.export_token
 
         export_token = st.text_input(
             "Export Token/ID",

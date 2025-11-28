@@ -339,6 +339,7 @@ def run_automated_signal_flow(
     signal_config: Optional[SignalConfig] = None,
     indicator_params: Optional[Dict[str, Any]] = None,
     signal_params: Optional[Dict[str, Any]] = None,
+    preloaded_df: Optional[pd.DataFrame] = None,
 ) -> AutomatedSignalResult:
     """Fetch Binance candles and generate trading signals.
 
@@ -353,6 +354,7 @@ def run_automated_signal_flow(
         signal_config: Optional ``SignalConfig`` overrides for analyzer weights and thresholds.
         indicator_params: Optional indicator parameter overrides (e.g., MACD/RSI/ATR).
         signal_params: Optional explicit signal generation parameters (risk settings, etc.).
+        preloaded_df: Optional pre-loaded DataFrame to avoid fetching.
 
     Returns:
         ``AutomatedSignalResult`` containing candles, processed payload, and explicit signal.
@@ -366,7 +368,17 @@ def run_automated_signal_flow(
     symbol_norm = _normalize_symbol(symbol)
 
     source = data_source or BinanceKlinesSource()
-    df = source.load_candles(symbol_norm, tf, start_utc, end_utc)
+    
+    if preloaded_df is not None and not preloaded_df.empty:
+        df = preloaded_df.copy()
+        # Filter by date range if needed, or assume caller handled it
+        if "ts" in df.columns:
+            start_ts = int(start_utc.timestamp() * 1000)
+            end_ts = int(end_utc.timestamp() * 1000)
+            df = df[(df["ts"] >= start_ts) & (df["ts"] <= end_ts)]
+    else:
+        df = source.load_candles(symbol_norm, tf, start_utc, end_utc)
+        
     if df is None or df.empty:
         raise ValueError(f"No Binance candles returned for {symbol_norm} {tf.value}")
 

@@ -1934,14 +1934,8 @@ def main():
         st.subheader(f"Price Chart with Indicators - {selected_token}")
         
         # Controls row
-        ctrl_col1, ctrl_col2, ctrl_col3, ctrl_col4, ctrl_col5 = st.columns([1, 1, 1, 1, 1])
+        ctrl_col1, ctrl_col2, ctrl_col3, ctrl_col4 = st.columns([1, 1, 1, 1])
         with ctrl_col1:
-            auto_refresh = st.checkbox(
-                "🔄 Auto-refresh",
-                value=st.session_state.auto_refresh_enabled,
-                key="charts_auto_refresh_toggle",
-            )
-        with ctrl_col2:
             show_forming_bar = st.checkbox(
                 "📊 Forming Bar",
                 value=st.session_state.get("show_forming_bar", False),
@@ -1949,21 +1943,21 @@ def main():
                 help="Show the currently forming candle (not yet closed)",
             )
             st.session_state.show_forming_bar = show_forming_bar
-        with ctrl_col3:
+        with ctrl_col2:
             bvi_enabled = st.checkbox(
                 "📊 Better Volume",
                 value=st.session_state.bvi_enabled,
                 key="charts_bvi_toggle",
             )
             st.session_state.bvi_enabled = bvi_enabled
-        with ctrl_col4:
+        with ctrl_col3:
             atr_channels_enabled = st.checkbox(
                 "📈 ATR Channels",
                 value=st.session_state.atr_channels_enabled,
                 key="charts_atr_channels_toggle",
             )
             st.session_state.atr_channels_enabled = atr_channels_enabled
-        with ctrl_col5:
+        with ctrl_col4:
             order_blocks_enabled = st.checkbox(
                 "🟦 Order Blocks",
                 value=st.session_state.order_blocks_enabled,
@@ -1971,13 +1965,15 @@ def main():
             )
             st.session_state.order_blocks_enabled = order_blocks_enabled
         
+        # Force auto-refresh ON
+        auto_refresh = True
+        st.session_state.auto_refresh_enabled = True
+        st.session_state.use_websocket = True
+        
         # Status indicator
-        if st.session_state.worker_running:
-            st.info(f"🟢 Live: Monitoring {selected_token} {selected_timeframe}")
-        elif auto_refresh:
-            st.caption("Initializing auto-refresh...")
-        else:
-            st.caption("Auto-refresh disabled")
+        status_color = "🟢" if st.session_state.worker_running else "🟡"
+        status_text = "Connected" if st.session_state.worker_running else "Connecting..."
+        st.info(f"{status_color} Live WebSocket: Monitoring {selected_token} {selected_timeframe} | {status_text}")
 
         chart_container = st.empty()
         
@@ -1985,17 +1981,8 @@ def main():
         symbol_changed = st.session_state.chart_symbol != selected_token
         timeframe_changed = st.session_state.chart_timeframe != selected_timeframe
         
-        # Stop existing worker if symbol/timeframe changed or auto-refresh disabled
-        if (symbol_changed or timeframe_changed or not auto_refresh):
-            # Stop old worker
-            if st.session_state.chart_worker is not None:
-                try:
-                    st.session_state.chart_worker.stop()
-                    st.session_state.chart_worker = None
-                    st.session_state.worker_running = False
-                except Exception as e:
-                    logger.warning(f"Failed to stop chart worker: {e}")
-            
+        # Stop existing worker if symbol/timeframe changed
+        if symbol_changed or timeframe_changed:
             # Stop WorkerManager
             try:
                 st.session_state.chart_worker_manager.stop()
@@ -2011,7 +1998,7 @@ def main():
             st.session_state.chart_timeframe = selected_timeframe
             st.session_state.chart_df = None
             st.session_state.chart_indicators = None
-            # Reset last_closed_ts for backward compatibility, but per-tf tracking is used internally
+            # Reset last_closed_ts for backward compatibility
             st.session_state.last_closed_ts = 0
             last_map = st.session_state.get("last_closed_ts_per_tf", {}) or {}
             last_map.pop(f"{selected_token}|{selected_timeframe}", None)
@@ -2048,44 +2035,27 @@ def main():
                     st.session_state.chart_df = None
                     st.session_state.chart_indicators = None
         
-        # Start worker if auto-refresh is enabled and not already running
-        if auto_refresh:
-            use_websocket = st.session_state.use_websocket
-            manager = st.session_state.chart_worker_manager
-            
-            # Check if we need to start a new worker
-            if not manager.is_running() and st.session_state.chart_worker is None:
-                try:
-                    # Try WorkerManager with WebSocket
-                    if use_websocket:
-                        success = manager.start_new(
-                            symbol=selected_token,
-                            timeframe=selected_timeframe,
-                            update_bus=st.session_state.chart_update_bus,
-                            use_websocket=True,
-                            session_state=st.session_state,
-                            num_bars=selected_period,
-                        )
-                        if success:
-                            st.session_state.worker_running = True
-                            logger.info(f"Started WebSocket chart worker for {selected_token} {selected_timeframe}")
-                        else:
-                            # Fallback to REST polling already handled by manager
-                            st.session_state.worker_running = True
-                    else:
-                        # Use REST polling
-                        worker = ChartAutoRefreshWorker(
-                            symbol=selected_token,
-                            timeframe=selected_timeframe,
-                            num_bars=selected_period,
-                            session_state=st.session_state,
-                        )
-                        worker.start()
-                        st.session_state.chart_worker = worker
-                        st.session_state.worker_running = True
-                except Exception as e:
-                    logger.error(f"Failed to start chart worker: {e}", exc_info=True)
-                    st.error(f"❌ Failed to start auto-refresh worker: {str(e)}")
+        # Start worker if not already running
+        manager = st.session_state.chart_worker_manager
+        
+        # Check if we need to start a new worker
+        if not manager.is_running():
+            try:
+                success = manager.start_new(
+                    symbol=selected_token,
+                    timeframe=selected_timeframe,
+                    update_bus=st.session_state.chart_update_bus,
+                    use_websocket=True,
+                    session_state=st.session_state,
+                    num_bars=selected_period,
+                )
+                if success:
+                    st.session_state.worker_running = True
+                    logger.info(f"Started WebSocket chart worker for {selected_token} {selected_timeframe}")
+            except Exception as e:
+                logger.error(f"Failed to start chart worker: {e}", exc_info=True)
+                st.error(f"❌ Failed to start auto-refresh worker: {str(e)}")
+        
         
         # Poll for updates from WorkerManager and apply to session state
         if auto_refresh and st.session_state.use_websocket:
@@ -3537,38 +3507,17 @@ def main():
                     st.info("No execution logs found.")
 
         # Auto-advance toggle for End time
-        auto_advance_key = ui_key("automated_signals", "auto_advance_end")
-        if auto_advance_key not in st.session_state:
-            st.session_state[auto_advance_key] = not state.get("end_time_user_set", False)
-        auto_advance_end = st.checkbox(
-            "🔄 Auto-advance End time to latest TF boundary (with auto-refresh)",
-            value=st.session_state[auto_advance_key],
-            key=auto_advance_key,
-            help=f"When enabled, End time automatically updates to the latest closed {config_store.timeframe.upper()} bar boundary and signals refresh automatically without user action",
-        )
+        # Force auto-advance ON
+        auto_advance_end = True
+        state["end_time_user_set"] = False
         
-        # Update end_time_user_set based on checkbox
-        prev_end_time_user_set = state.get("end_time_user_set", False)
-        state["end_time_user_set"] = not auto_advance_end
+        st.info("🔄 Auto-refresh enabled: End time automatically updates to latest closed candle.")
         
         # Start or stop worker based on auto-advance state
-        worker = getattr(st.session_state, "automated_signals_worker", None)
-        if auto_advance_end and not prev_end_time_user_set:
-            # Just enabled auto-advance - start worker if not running
-            if worker is None or not getattr(st.session_state, "automated_signals_worker_running", False):
-                # We'll start the worker after we have all config ready (below)
-                pass
-        elif not auto_advance_end and prev_end_time_user_set:
-            # Just disabled auto-advance - stop worker
-            if worker is not None:
-                try:
-                    worker.stop()
-                    logger.info("Stopped automated signals worker (user disabled auto-advance)")
-                except Exception as e:
-                    logger.warning(f"Failed to stop worker: {e}")
-                st.session_state.automated_signals_worker = None
+        # ... simplified logic ...
         
         # Widget keys for date/time controls
+
         end_date_key = ui_key("automated_signals", "end_date")
         end_time_key = ui_key("automated_signals", "end_time")
         
@@ -5002,3 +4951,34 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+    # Real-time polling loop
+    # This loop runs at the end of the script execution and polls for updates from background workers.
+    # If an update is detected, it triggers a rerun of the script.
+    import time
+    
+    # Only loop if workers are initialized
+    has_workers = "chart_worker_manager" in st.session_state or "signals_worker_manager" in st.session_state
+    
+    if has_workers:
+        while True:
+            try:
+                updated = False
+                
+                # Check Chart updates
+                if "chart_worker_manager" in st.session_state:
+                    if st.session_state.chart_worker_manager.poll_and_apply(st.session_state):
+                        updated = True
+                
+                # Check Signals updates
+                if "signals_worker_manager" in st.session_state:
+                    if st.session_state.signals_worker_manager.poll_and_apply(st.session_state):
+                        updated = True
+                
+                if updated:
+                    st.rerun()
+                
+                time.sleep(0.1)
+            except Exception:
+                # Avoid crashing the loop on transient errors
+                time.sleep(1.0)

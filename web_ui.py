@@ -3689,7 +3689,7 @@ def main():
                         candles = result_dict.get("candles", [])
                         if candles:
                             last_ts = candles[-1].get("ts")
-                            from chart_auto_refresh import TIMEFRAME_TO_MS
+                            from timeframe_utils import TIMEFRAME_TO_MS
                             tf_ms = TIMEFRAME_TO_MS.get(config_store.timeframe, 3_600_000)
                             # Calculate close_time of last candle
                             state["auto_end_time_ms"] = int(last_ts) + tf_ms

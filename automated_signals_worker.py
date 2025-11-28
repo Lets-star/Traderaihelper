@@ -8,17 +8,10 @@ TIMESTAMP SEMANTICS:
 -------------------
 All internal timestamps are in UTC milliseconds.
 
-- auto_end_time_ms: close_time of the last closed bar (stored in session state)
-- Worker polls Binance server time and detects new closed bars
-- When detected, immediately fetches new candles and recomputes signals
-
-The worker:
-1. Polls at adaptive cadence (1s for <=15m, 5s for >=1h)
-2. Detects new closed bar boundaries
-3. Triggers immediate data refresh and signal recomputation
-4. Sets analysis_updated flag to notify UI
-5. Uses threading.Lock for thread-safe session state updates
-6. Never calls st.* APIs from the worker thread
+- auto_end_time_ms: close_time of the last closed bar
+- Worker listens to WebSocket closed bar events
+- When detected, immediately appends data and recomputes signals
+- Publishes updates via UpdateBus
 """
 
 from __future__ import annotations
@@ -27,186 +20,154 @@ import copy
 import datetime as dt
 import logging
 import threading
-import time
+from datetime import timezone
 from typing import Any, Dict, Optional
 
-from chart_auto_refresh import TIMEFRAME_TO_MS, floor_closed_bar_local
+import pandas as pd
+
+from chart_auto_refresh import TIMEFRAME_TO_MS
 from indicator_collector.trading_system.auto_analyze_worker import get_binance_server_time_ms
 from indicator_collector.trading_system.automated_signals import run_automated_signal_flow
 from indicator_collector.trading_system.data_sources.binance_source import BinanceKlinesSource
-from indicator_collector.trading_system.data_sources.timestamp_utils import normalize_timestamp
 from indicator_collector.trading_system.signal_generator import SignalConfig
+from update_bus import UpdateBus
+from websocket_client import BinanceWebSocketClient
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TOLERANCE_MS = 60_000  # 60 seconds tolerance to avoid fetching incomplete bars
-
-
-def get_poll_interval(timeframe: str) -> float:
-    """
-    Get poll interval in seconds based on timeframe.
-    
-    Args:
-        timeframe: Timeframe string (e.g., "1m", "5m", "1h")
-        
-    Returns:
-        Poll interval in seconds (1s for <=15m, 5s for >=1h)
-    """
-    tf_ms = TIMEFRAME_TO_MS.get(timeframe, 3_600_000)
-    
-    if tf_ms <= 900_000:  # <=15m
-        return 1.0
-    else:  # >=1h
-        return 5.0
-
 
 class AutomatedSignalsWorker:
-    """Background worker that auto-advances End time and refreshes signals on new closed bars."""
-    
+    """WebSocket-based worker that auto-advances End time and refreshes signals on new closed bars."""
+
     def __init__(
         self,
         symbol: str,
         timeframe: str,
-        session_state: Any,
+        update_bus: UpdateBus,
         signal_config_payload: Dict[str, Any],
         indicator_params: Dict[str, Any],
         signal_params: Dict[str, Any],
+        signal_executor: Optional[Any] = None,
     ):
         """
         Initialize the automated signals worker.
-        
+
         Args:
-            symbol: Trading symbol (e.g., "BTCUSDT")
-            timeframe: Timeframe string (e.g., "1h", "3h")
-            session_state: Streamlit session state object
+            symbol: Trading symbol
+            timeframe: Timeframe string
+            update_bus: UpdateBus instance
             signal_config_payload: Signal configuration payload
             indicator_params: Indicator parameters
             signal_params: Signal parameters
+            signal_executor: Optional SignalExecutor instance
         """
         self.symbol = symbol
         self.timeframe = timeframe
-        self.session_state = session_state
+        self.update_bus = update_bus
         self.signal_config_payload = signal_config_payload
         self.indicator_params = indicator_params
         self.signal_params = signal_params
+        self.signal_executor = signal_executor
+        
         self.data_source = BinanceKlinesSource()
-        self._stop_event = threading.Event()
-        self._thread: Optional[threading.Thread] = None
-        self._lock = threading.RLock()
+        self.ws_client: Optional[BinanceWebSocketClient] = None
+        self.df = pd.DataFrame()
         
         # Get timeframe interval in milliseconds
         self.tf_ms = TIMEFRAME_TO_MS.get(timeframe, 3_600_000)
-    
+
     def start(self) -> None:
-        """Start the worker thread."""
-        if self._thread is not None and self._thread.is_alive():
-            logger.warning("Automated signals worker thread already running")
+        """Start the worker (initial fetch + WebSocket)."""
+        if self.ws_client is not None:
             return
         
-        self._stop_event.clear()
-        self._thread = threading.Thread(target=self._run_loop, daemon=True)
-        self._thread.start()
-        with self._lock:
-            self.session_state.automated_signals_worker_running = True
-        logger.info(f"Automated signals worker started for {self.symbol} {self.timeframe}")
-    
-    def stop(self) -> None:
-        """Stop the worker thread."""
-        self._stop_event.set()
-        if self._thread is not None:
-            self._thread.join(timeout=5.0)
-            self._thread = None
-        with self._lock:
-            self.session_state.automated_signals_worker_running = False
-        logger.info(f"Automated signals worker stopped for {self.symbol} {self.timeframe}")
-    
-    def _run_loop(self) -> None:
-        """Main worker loop that checks for new closed bars and triggers signal refresh."""
-        poll_interval = get_poll_interval(self.timeframe)
-        
-        while not self._stop_event.is_set():
-            try:
-                # Check if auto-advance is still enabled
-                with self._lock:
-                    state = getattr(self.session_state, "automated_signals_state", {})
-                    end_time_user_set = state.get("end_time_user_set", False)
-                    
-                    if end_time_user_set:
-                        # Auto-advance disabled, skip this iteration
-                        logger.debug(f"Auto-advance disabled for {self.symbol} {self.timeframe}, skipping")
-                        time.sleep(poll_interval)
-                        continue
-                
-                # Get Binance server time
-                server_time_ms = get_binance_server_time_ms(self.data_source)
-                server_time_ms = normalize_timestamp(server_time_ms)
-                
-                # Calculate new last closed bar boundary (close_time)
-                new_last_closed_close_ms = floor_closed_bar_local(
-                    server_time_ms,
-                    self.tf_ms,
-                    tol_ms=DEFAULT_TOLERANCE_MS,
-                )
-                
-                with self._lock:
-                    state = getattr(self.session_state, "automated_signals_state", {})
-                    current_auto_end_time_ms = state.get("auto_end_time_ms", 0)
-                    
-                    # Check if there's a new closed bar
-                    if new_last_closed_close_ms > current_auto_end_time_ms:
-                        logger.info(
-                            f"[{self.symbol} {self.timeframe}] New closed bar boundary detected: "
-                            f"auto_end_time_ms={new_last_closed_close_ms}, previous={current_auto_end_time_ms}"
-                        )
-                        
-                        # Update auto_end_time_ms
-                        state["auto_end_time_ms"] = new_last_closed_close_ms
-                        state["fetch_needed"] = True
-                        setattr(self.session_state, "automated_signals_state", state)
-                        
-                        # Trigger immediate data refresh and signal recomputation
-                        try:
-                            self._refresh_signals(new_last_closed_close_ms)
-                        except Exception as exc:
-                            logger.error(f"Failed to refresh signals: {exc}", exc_info=True)
-                            with self._lock:
-                                state["fetch_needed"] = False
-                                state["error"] = f"Signal refresh failed: {exc}"
-                                setattr(self.session_state, "automated_signals_state", state)
-                
-                # Adaptive poll interval: sleep poll_interval seconds
-                sleep_seconds = poll_interval
-                while not self._stop_event.is_set() and sleep_seconds > 0:
-                    sleep_chunk = min(0.5, sleep_seconds)
-                    time.sleep(sleep_chunk)
-                    sleep_seconds -= sleep_chunk
+        # Initial synchronous fetch to bootstrap history
+        try:
+            logger.info(f"Fetching initial history for {self.symbol} {self.timeframe}...")
+            server_time_ms = get_binance_server_time_ms(self.data_source)
+            end_dt = dt.datetime.fromtimestamp(server_time_ms / 1000, tz=timezone.utc)
+            # Fetch enough bars for indicators (e.g. 500)
+            start_dt = end_dt - dt.timedelta(milliseconds=self.tf_ms * 500)
             
-            except Exception as exc:
-                logger.error(f"Error in automated signals worker loop: {exc}", exc_info=True)
-                time.sleep(5.0)
-    
-    def _refresh_signals(self, end_time_ms: int) -> None:
-        """
-        Fetch new candles and recompute signals.
+            self.df = self.data_source.load_candles(
+                self.symbol,
+                self.timeframe,
+                start_dt,
+                end_dt
+            )
+            
+            # Run initial analysis
+            if not self.df.empty:
+                self._refresh_signals()
+                
+        except Exception as e:
+            logger.error(f"Initial fetch failed for {self.symbol}: {e}", exc_info=True)
+            # Continue anyway, WebSocket might fill gaps eventually or we retry later? 
+            # For now, we proceed to start WS.
+
+        self.ws_client = BinanceWebSocketClient(
+            symbol=self.symbol,
+            timeframe=self.timeframe,
+            on_closed_kline=self._on_closed_kline,
+            on_forming_kline=None,  # Signals only care about closed klines
+            on_error=self._on_error,
+            on_connect=self._on_connect,
+            on_disconnect=self._on_disconnect,
+            backfill_bars=0,  # We fetched manually
+        )
+        self.ws_client.start()
+        logger.info(f"Automated signals WebSocket worker started for {self.symbol} {self.timeframe}")
+
+    def stop(self) -> None:
+        """Stop the worker."""
+        if self.ws_client:
+            self.ws_client.stop()
+            self.ws_client = None
+        logger.info(f"Automated signals worker stopped for {self.symbol} {self.timeframe}")
+
+    def _on_closed_kline(self, df: pd.DataFrame) -> None:
+        """Callback for closed kline events."""
+        if df.empty:
+            return
         
-        Args:
-            end_time_ms: End time in milliseconds (UTC)
-        """
-        logger.info(f"Refreshing signals for {self.symbol} {self.timeframe} up to {end_time_ms}")
+        # Append to internal DataFrame
+        if self.df.empty:
+            self.df = df
+        else:
+            self.df = pd.concat([self.df, df], ignore_index=True)
+            self.df = (
+                self.df.drop_duplicates(subset="ts", keep="last")
+                .sort_values("ts")
+                .reset_index(drop=True)
+            )
+            
+        # Trim DataFrame to keep memory usage stable (e.g. keep last 1000 bars)
+        if len(self.df) > 1000:
+            self.df = self.df.iloc[-1000:].reset_index(drop=True)
+
+        # Recompute signals
+        try:
+            self._refresh_signals()
+        except Exception as exc:
+            logger.error(f"Failed to refresh signals: {exc}", exc_info=True)
+            self.update_bus.publish({
+                "type": "signals_error",
+                "error": str(exc),
+                "symbol": self.symbol,
+                "timeframe": self.timeframe
+            })
+
+    def _refresh_signals(self) -> None:
+        """Recompute signals using internal DataFrame."""
+        if self.df.empty:
+            return
         
-        # Convert end time to datetime
-        end_dt = dt.datetime.fromtimestamp(end_time_ms / 1000, tz=dt.timezone.utc)
-        
-        # Get start time from session state
-        with self._lock:
-            state = getattr(self.session_state, "automated_signals_state", {})
-            start_dt_str = state.get("start_datetime_iso")
-            if start_dt_str:
-                start_dt = dt.datetime.fromisoformat(start_dt_str)
-            else:
-                # Default to 200 bars back
-                start_dt = end_dt - dt.timedelta(milliseconds=self.tf_ms * 200)
-        
+        last_ts = int(self.df["ts"].iloc[-1])
+        end_dt = dt.datetime.fromtimestamp(last_ts / 1000, tz=timezone.utc)
+        # We pass the full range of our dataframe
+        start_ts = int(self.df["ts"].iloc[0])
+        start_dt = dt.datetime.fromtimestamp(start_ts / 1000, tz=timezone.utc)
+
         # Build signal config
         weights = self.signal_config_payload.get("weights", {})
         signal_config = SignalConfig(
@@ -221,7 +182,7 @@ class AutomatedSignalsWorker:
             sell_threshold=float(self.signal_config_payload.get("sell_threshold", 0.35)),
             min_confidence=float(self.signal_config_payload.get("min_confidence", 0.6)),
         )
-        
+
         # Calculate minimum candles needed
         indicator_periods = self.indicator_params.get("rsi", {})
         atr_period = int(self.indicator_params.get("atr", {}).get("period", 14))
@@ -234,7 +195,7 @@ class AutomatedSignalsWorker:
             atr_period + 2,
             macd_slow + macd_signal,
         )
-        
+
         # Run automated signal flow
         result = run_automated_signal_flow(
             self.symbol,
@@ -246,96 +207,101 @@ class AutomatedSignalsWorker:
             indicator_params=self.indicator_params,
             signal_params=self.signal_params,
             min_candles=min_candles,
+            preloaded_df=self.df,
         )
-        
-        # Store results in session state
+
+        # Prepare result dict
         result_dict = {
             "candles": result.candles,
             "processed_payload": result.processed_payload,
             "explicit_signal": result.explicit_signal,
         }
         
-        final_indicator_params = (
-            result_dict.get("explicit_signal", {})
-            .get("metadata", {})
-            .get("indicator_params")
-            or result_dict.get("processed_payload", {})
-            .get("metadata", {})
-            .get("indicator_params")
-            or self.indicator_params
-        )
+        # Publish update
+        # Note: last_ts is the open_time of the last bar. The "end_time" of the analysis is effectively close_time = last_ts + tf_ms
+        last_closed_close_ms = last_ts + self.tf_ms
         
-        with self._lock:
-            state = getattr(self.session_state, "automated_signals_state", {})
-            state.update(
-                {
-                    "result": result_dict,
-                    "error": None,
-                    "candles": result_dict.get("candles", []),
-                    "processed_payload": result_dict.get("processed_payload"),
-                    "explicit_signal": result_dict.get("explicit_signal"),
-                    "indicator_params": final_indicator_params,
-                    "analysis_updated": True,
-                    "fetch_needed": False,
-                }
-            )
-            setattr(self.session_state, "automated_signals_state", state)
-        
-        # Trigger ByBit execution if configured
+        self.update_bus.publish({
+            "type": "signals_update",
+            "result": result_dict,
+            "symbol": self.symbol,
+            "timeframe": self.timeframe,
+            "auto_end_time_ms": last_closed_close_ms
+        })
+
+        # Execute if enabled
+        if self.signal_executor and self.signal_executor.enabled:
+            self._execute_signal(result.explicit_signal, last_closed_close_ms)
+
+    def _execute_signal(self, explicit_signal: Dict[str, Any], generated_at_ms: int) -> None:
+        """Execute signal via executor."""
         try:
-            executor = getattr(self.session_state, "signal_executor", None)
-            if executor and executor.enabled:
-                explicit_signal = result_dict.get("explicit_signal", {})
-                signal_type = explicit_signal.get("signal", "HOLD")
+            signal_type = explicit_signal.get("signal", "HOLD")
+            
+            if signal_type in ["BUY", "SELL"]:
+                entries = explicit_signal.get("entries", [])
+                entry_price = float(entries[0]) if entries else 0.0
                 
-                if signal_type in ["BUY", "SELL"]:
-                    entries = explicit_signal.get("entries", [])
-                    entry_price = float(entries[0]) if entries else 0.0
-                    
-                    take_profits = explicit_signal.get("take_profits", {})
-                    tp_price = 0.0
-                    if isinstance(take_profits, dict) and take_profits:
-                        tp_price = float(list(take_profits.values())[0])
-                    
-                    stop_loss = float(explicit_signal.get("stop_loss", 0.0))
-                    
-                    payload = {
-                        "signal_id": f"{self.symbol}_{end_time_ms}",
-                        "symbol": self.symbol,
-                        "direction": "LONG" if signal_type == "BUY" else "SHORT",
-                        "entry_price": entry_price,
-                        "take_profit": tp_price,
-                        "stop_loss": stop_loss,
-                        "leverage": 5,
-                        "quantity": 0.001,
-                        "generated_at": end_time_ms
-                    }
-                    
-                    executor.execute_signal(payload)
+                take_profits = explicit_signal.get("take_profits", {})
+                tp_price = 0.0
+                if isinstance(take_profits, dict) and take_profits:
+                    tp_price = float(list(take_profits.values())[0])
+                
+                stop_loss = float(explicit_signal.get("stop_loss", 0.0))
+                
+                payload = {
+                    "signal_id": f"{self.symbol}_{generated_at_ms}",
+                    "symbol": self.symbol,
+                    "direction": "LONG" if signal_type == "BUY" else "SHORT",
+                    "entry_price": entry_price,
+                    "take_profit": tp_price,
+                    "stop_loss": stop_loss,
+                    "leverage": 5,
+                    "quantity": 0.001,
+                    "generated_at": generated_at_ms
+                }
+                
+                self.signal_executor.execute_signal(payload)
+                
         except Exception as exc:
              logger.error(f"Failed to execute signal: {exc}", exc_info=True)
-        
-        logger.info(
-            f"Signal refresh complete for {self.symbol} {self.timeframe}: "
-            f"{len(result.candles)} candles, signal={result.explicit_signal.get('signal', 'UNKNOWN')}"
-        )
-    
+
     def update_config(
         self,
         signal_config_payload: Dict[str, Any],
         indicator_params: Dict[str, Any],
         signal_params: Dict[str, Any],
     ) -> None:
-        """
-        Update configuration without restarting the worker.
-        
-        Args:
-            signal_config_payload: Signal configuration payload
-            indicator_params: Indicator parameters
-            signal_params: Signal parameters
-        """
-        with self._lock:
-            self.signal_config_payload = copy.deepcopy(signal_config_payload)
-            self.indicator_params = copy.deepcopy(indicator_params)
-            self.signal_params = copy.deepcopy(signal_params)
+        """Update configuration."""
+        self.signal_config_payload = copy.deepcopy(signal_config_payload)
+        self.indicator_params = copy.deepcopy(indicator_params)
+        self.signal_params = copy.deepcopy(signal_params)
         logger.info(f"Updated config for automated signals worker {self.symbol} {self.timeframe}")
+        
+        # Trigger refresh with new config
+        self._refresh_signals()
+
+    def _on_error(self, error: Exception) -> None:
+        self.update_bus.publish({
+            "type": "signals_error",
+            "error": str(error),
+            "symbol": self.symbol,
+            "timeframe": self.timeframe,
+        })
+
+    def _on_connect(self) -> None:
+        self.update_bus.publish({
+            "type": "signals_connect",
+            "symbol": self.symbol,
+            "timeframe": self.timeframe,
+        })
+
+    def _on_disconnect(self) -> None:
+        self.update_bus.publish({
+            "type": "signals_disconnect",
+            "symbol": self.symbol,
+            "timeframe": self.timeframe,
+        })
+    
+    def is_running(self) -> bool:
+        return self.ws_client is not None and self.ws_client.is_connected()

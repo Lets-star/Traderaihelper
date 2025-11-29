@@ -2039,7 +2039,12 @@ def main():
         manager = st.session_state.chart_worker_manager
         
         # Check if we need to start a new worker
-        if not manager.is_running():
+        # Restart if not running OR if configuration changed
+        should_restart = not manager.is_running()
+        if manager.current_symbol != selected_token or manager.current_timeframe != selected_timeframe:
+            should_restart = True
+            
+        if should_restart:
             try:
                 success = manager.start_new(
                     symbol=selected_token,
@@ -3708,7 +3713,12 @@ def main():
                 worker = getattr(st.session_state, "automated_signals_worker", None)
                 if worker is None or not getattr(st.session_state, "automated_signals_worker_running", False):
                     try:
-                        if use_websocket and not manager.is_running():
+                        # Check restart condition
+                        should_restart = not manager.is_running()
+                        if manager.current_symbol != config_store.symbol or manager.current_timeframe != config_store.timeframe:
+                            should_restart = True
+
+                        if use_websocket and should_restart:
                             # Try WorkerManager with WebSocket
                             success = manager.start_new(
                                 symbol=config_store.symbol,
@@ -3763,6 +3773,12 @@ def main():
             else:
                 state["analysis_updated"] = False
 
+            # Initialize variables to avoid UnboundLocalError
+            has_weight_data = False
+            signal_data = {}
+            normalized_weights_map = {}
+            raw_weights_map = {}
+
             error_message = state.get("error")
             result = state.get("result")
 
@@ -3796,6 +3812,7 @@ def main():
                 raw_weight_data = signal_data.get("weights") or state.get("weights")
                 normalized_weights_map, raw_weights_map = normalize_category_weights(raw_weight_data)
                 has_weight_data = any(raw_weights_map.get(category, 0.0) > 0 for category in FACTOR_CATEGORY_ORDER)
+            
             if not has_weight_data:
                 has_weight_data = any(normalized_weights_map.get(category, 0.0) > 0 for category in FACTOR_CATEGORY_ORDER)
 
@@ -4961,21 +4978,26 @@ if __name__ == "__main__":
     has_workers = "chart_worker_manager" in st.session_state or "signals_worker_manager" in st.session_state
     
     if has_workers:
+        rerun_needed = False
+        last_rerun_time = 0.0
+        rerun_cooldown = 1.0  # Max 1 refresh per second
+        
         while True:
             try:
-                updated = False
-                
                 # Check Chart updates
                 if "chart_worker_manager" in st.session_state:
                     if st.session_state.chart_worker_manager.poll_and_apply(st.session_state):
-                        updated = True
+                        rerun_needed = True
                 
                 # Check Signals updates
                 if "signals_worker_manager" in st.session_state:
                     if st.session_state.signals_worker_manager.poll_and_apply(st.session_state):
-                        updated = True
+                        rerun_needed = True
                 
-                if updated:
+                now = time.time()
+                if rerun_needed and (now - last_rerun_time > rerun_cooldown):
+                    rerun_needed = False
+                    last_rerun_time = now
                     st.rerun()
                 
                 time.sleep(0.1)

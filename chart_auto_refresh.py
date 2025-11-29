@@ -565,13 +565,9 @@ class ChartAutoRefreshWorker:
         from websocket_client import BinanceWebSocketClient
         self.ws_client = BinanceWebSocketClient(
             symbol=self.symbol,
-            timeframe=self.timeframe,
-            on_closed_kline=self._on_closed_kline,
-            on_forming_kline=self._on_forming_kline,
-            on_error=self._on_error,
-            on_connect=self._on_connect,
-            on_disconnect=self._on_disconnect,
-            backfill_bars=3,
+            interval=self.timeframe,
+            on_closed_bar=self._on_closed_kline,
+            on_forming_bar=self._on_forming_kline,
         )
         self.ws_client.start()
         logger.info(f"Chart WebSocket worker started for {self.symbol} {self.timeframe}")
@@ -583,8 +579,9 @@ class ChartAutoRefreshWorker:
             self.ws_client = None
         logger.info(f"Chart WebSocket worker stopped for {self.symbol} {self.timeframe}")
 
-    def _on_closed_kline(self, df: pd.DataFrame) -> None:
+    def _on_closed_kline(self, kline: Dict) -> None:
         """Callback for closed kline events (called from WebSocket thread)."""
+        df = pd.DataFrame([kline])
         if df.empty:
             return
 
@@ -599,8 +596,9 @@ class ChartAutoRefreshWorker:
             "timeframe": self.timeframe,
         })
 
-    def _on_forming_kline(self, df: pd.DataFrame) -> None:
+    def _on_forming_kline(self, kline: Dict) -> None:
         """Callback for forming kline updates (called from WebSocket thread)."""
+        df = pd.DataFrame([kline])
         self.update_bus.publish({
             "type": "chart_forming_kline",
             "df": df,
@@ -608,31 +606,6 @@ class ChartAutoRefreshWorker:
             "timeframe": self.timeframe,
         })
 
-    def _on_error(self, error: Exception) -> None:
-        """Callback for WebSocket errors (called from WebSocket thread)."""
-        self.update_bus.publish({
-            "type": "chart_error",
-            "error": str(error),
-            "symbol": self.symbol,
-            "timeframe": self.timeframe,
-        })
-
-    def _on_connect(self) -> None:
-        """Callback for WebSocket connection (called from WebSocket thread)."""
-        self.update_bus.publish({
-            "type": "chart_connect",
-            "symbol": self.symbol,
-            "timeframe": self.timeframe,
-        })
-
-    def _on_disconnect(self) -> None:
-        """Callback for WebSocket disconnection (called from WebSocket thread)."""
-        self.update_bus.publish({
-            "type": "chart_disconnect",
-            "symbol": self.symbol,
-            "timeframe": self.timeframe,
-        })
-
     def is_running(self) -> bool:
         """Check if worker is running."""
-        return self.ws_client is not None and self.ws_client.is_connected()
+        return self.ws_client is not None

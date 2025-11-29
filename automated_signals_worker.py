@@ -25,7 +25,7 @@ from typing import Any, Dict, Optional
 
 import pandas as pd
 
-from chart_auto_refresh import TIMEFRAME_TO_MS
+from timeframe_utils import TIMEFRAME_TO_MS, map_tf_to_ms
 from indicator_collector.trading_system.auto_analyze_worker import get_binance_server_time_ms
 from indicator_collector.trading_system.automated_signals import run_automated_signal_flow
 from indicator_collector.trading_system.data_sources.binance_source import BinanceKlinesSource

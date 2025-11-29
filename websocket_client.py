@@ -22,7 +22,7 @@ from typing import Any, Callable, Dict, Optional
 
 import pandas as pd
 
-from chart_auto_refresh import TIMEFRAME_TO_MS
+from timeframe_utils import TIMEFRAME_TO_MS, map_tf_to_ms
 from indicator_collector.trading_system.data_sources.binance_source import BinanceKlinesSource
 
 logger = logging.getLogger(__name__)

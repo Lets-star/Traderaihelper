@@ -12,19 +12,9 @@ from ..timeframes import Timeframe
 from .automated_signals import run_automated_signal_flow
 from .data_sources.binance_source import BinanceKlinesSource
 from .signal_generator import SignalConfig
+from timeframe_utils import TIMEFRAME_TO_MS
 
 logger = logging.getLogger(__name__)
-
-# Mapping of timeframe to milliseconds
-TIMEFRAME_TO_MS: Dict[str, int] = {
-    "1m": 60_000,
-    "5m": 300_000,
-    "15m": 900_000,
-    "1h": 3_600_000,
-    "3h": 10_800_000,
-    "4h": 14_400_000,
-    "1d": 86_400_000,
-}
 
 _SERVER_TIME_FALLBACK_WARNED = False
 

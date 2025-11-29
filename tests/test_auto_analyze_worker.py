@@ -7,8 +7,8 @@ from datetime import datetime, timezone
 
 from indicator_collector.trading_system.auto_analyze_worker import (
     floor_closed_bar,
-    TIMEFRAME_TO_MS,
 )
+from timeframe_utils import TIMEFRAME_TO_MS
 
 
 class TestFloorClosedBar:

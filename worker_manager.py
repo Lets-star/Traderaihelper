@@ -32,6 +32,16 @@ class ChartWorkerManager:
         self._update_bus: Optional[UpdateBus] = None
         self._current_symbol: Optional[str] = None
         self._current_timeframe: Optional[str] = None
+
+    @property
+    def current_symbol(self) -> Optional[str]:
+        with self._lock:
+            return self._current_symbol
+            
+    @property
+    def current_timeframe(self) -> Optional[str]:
+        with self._lock:
+            return self._current_timeframe
     
     def start_new(
         self,
@@ -149,6 +159,16 @@ class SignalsWorkerManager:
         self._update_bus: Optional[UpdateBus] = None
         self._current_symbol: Optional[str] = None
         self._current_timeframe: Optional[str] = None
+
+    @property
+    def current_symbol(self) -> Optional[str]:
+        with self._lock:
+            return self._current_symbol
+            
+    @property
+    def current_timeframe(self) -> Optional[str]:
+        with self._lock:
+            return self._current_timeframe
     
     def start_new(
         self,

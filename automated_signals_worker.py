@@ -107,13 +107,9 @@ class AutomatedSignalsWorker:
 
         self.ws_client = BinanceWebSocketClient(
             symbol=self.symbol,
-            timeframe=self.timeframe,
-            on_closed_kline=self._on_closed_kline,
-            on_forming_kline=None,  # Signals only care about closed klines
-            on_error=self._on_error,
-            on_connect=self._on_connect,
-            on_disconnect=self._on_disconnect,
-            backfill_bars=0,  # We fetched manually
+            interval=self.timeframe,
+            on_closed_bar=self._on_closed_kline,
+            on_forming_bar=None,  # Signals only care about closed klines
         )
         self.ws_client.start()
         logger.info(f"Automated signals WebSocket worker started for {self.symbol} {self.timeframe}")
@@ -125,8 +121,9 @@ class AutomatedSignalsWorker:
             self.ws_client = None
         logger.info(f"Automated signals worker stopped for {self.symbol} {self.timeframe}")
 
-    def _on_closed_kline(self, df: pd.DataFrame) -> None:
+    def _on_closed_kline(self, kline: Dict) -> None:
         """Callback for closed kline events."""
+        df = pd.DataFrame([kline])
         if df.empty:
             return
         
@@ -304,4 +301,4 @@ class AutomatedSignalsWorker:
         })
     
     def is_running(self) -> bool:
-        return self.ws_client is not None and self.ws_client.is_connected()
+        return self.ws_client is not None

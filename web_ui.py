@@ -1794,6 +1794,7 @@ def main():
             fetch_closed_candles,
             invalidate_cache,
         )
+        from streamlit_autorefresh import st_autorefresh
         
         st.subheader(f"Price Chart with Indicators - {selected_token}")
         
@@ -1817,6 +1818,14 @@ def main():
                 st.info(f"🟢 Live: Monitoring {selected_token} {selected_timeframe}")
             else:
                 st.caption("Auto-refresh disabled")
+        
+        # Poll for updates from worker thread using auto-refresh
+        # Only poll when auto-refresh is enabled
+        if auto_refresh:
+            tf = selected_timeframe.lower()
+            fast_timeframes = {"1m", "3m", "5m", "15m"}
+            poll_interval_ms = 1000 if tf in fast_timeframes else 5000
+            st_autorefresh(interval=poll_interval_ms, key="chart_auto_refresh_poll")
         
         # Create stable containers for chart and status output
         if "chart_box_placeholder" not in st.session_state:
@@ -1850,18 +1859,20 @@ def main():
         st.session_state.auto_refresh_enabled = auto_refresh
         
         # Handle symbol/timeframe change: reset state and invalidate cache
-        if symbol_changed or timeframe_changed:
+        if symbol_changed or timeframe_changed or period_changed:
             st.session_state.chart_symbol = selected_token
             st.session_state.chart_timeframe = selected_timeframe
+            st.session_state.chart_period = selected_period
             st.session_state.chart_df = None
             st.session_state.last_closed_ts = 0
             st.session_state.analysis_updated = False
             
-            # Invalidate cache
-            try:
-                invalidate_cache(selected_token, selected_timeframe)
-            except Exception as e:
-                logger.warning(f"Failed to invalidate cache: {e}")
+            # Invalidate cache when symbol or timeframe changes
+            if symbol_changed or timeframe_changed:
+                try:
+                    invalidate_cache(selected_token, selected_timeframe)
+                except Exception as e:
+                    logger.warning(f"Failed to invalidate cache: {e}")
             
             # Fetch initial data synchronously
             with st.spinner(f"Loading chart data for {selected_token} {selected_timeframe}..."):

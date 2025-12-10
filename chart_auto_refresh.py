@@ -34,7 +34,10 @@ TIMEFRAME_TO_MS: Dict[str, int] = {
     "1w": 604_800_000,
 }
 
-_CANDLE_CACHE: Dict[tuple[str, str, int, int], pd.DataFrame] = {}
+CACHE_SOURCE = "binance"
+OVERLAP_BARS = 3
+
+_CANDLE_CACHE: Dict[tuple[str, str, str, int, int], pd.DataFrame] = {}
 _CACHE_LOCK = threading.Lock()
 
 
@@ -68,10 +71,13 @@ def floor_closed_bar_local(now_ms: int, tf_ms: int, tol_ms: int = 60_000) -> int
     # Last closed bar is the bar before the current one
     last_closed = current_bar_start - tf_ms
     
-    # Ensure we're not too close to the boundary (within tolerance)
+    # Ensure non-negative timestamps
+    if last_closed < 0:
+        last_closed = 0
+    
+    # If we're within the tolerance of a new bar boundary, keep previous bar
     if (now_ms - current_bar_start) < tol_ms:
-        # We're too close to the current bar start, use the previous bar
-        last_closed = current_bar_start - tf_ms
+        return last_closed
     
     return last_closed
 
@@ -79,7 +85,10 @@ def floor_closed_bar_local(now_ms: int, tf_ms: int, tol_ms: int = 60_000) -> int
 def invalidate_cache(symbol: str, timeframe: str) -> None:
     """Invalidate cache for a specific symbol/timeframe combination."""
     with _CACHE_LOCK:
-        keys_to_remove = [k for k in _CANDLE_CACHE.keys() if k[0] == symbol and k[1] == timeframe]
+        keys_to_remove = [
+            k for k in _CANDLE_CACHE.keys()
+            if k[0] == CACHE_SOURCE and k[1] == symbol and k[2] == timeframe
+        ]
         for key in keys_to_remove:
             del _CANDLE_CACHE[key]
         logger.info(f"Invalidated {len(keys_to_remove)} cache entries for {symbol} {timeframe}")
@@ -103,7 +112,7 @@ def fetch_closed_candles(
         use_cache: Whether to use cache
         
     Returns:
-        Tuple of (DataFrame, last_closed_ts)
+        Tuple of (DataFrame, last_closed_close_ts)
     """
     if data_source is None:
         data_source = BinanceKlinesSource()
@@ -113,47 +122,74 @@ def fetch_closed_candles(
     
     # Get timeframe in milliseconds
     tf_ms = TIMEFRAME_TO_MS.get(timeframe, 3_600_000)
+    if tf_ms <= 0:
+        raise ValueError(f"Unsupported timeframe: {timeframe}")
     
-    # Calculate last closed bar timestamp
-    last_closed_ts = floor_closed_bar_local(server_time_ms, tf_ms, tol_ms=60_000)
+    # Calculate last closed bar start and close timestamps
+    last_closed_start = floor_closed_bar_local(server_time_ms, tf_ms, tol_ms=60_000)
+    last_closed_start = max(last_closed_start, 0)
+    last_closed_close = last_closed_start + tf_ms
+    if last_closed_close <= 0:
+        raise ValueError("No closed candles available yet from Binance")
     
-    # Calculate start time (go back num_bars from last closed)
-    start_ms = max(0, last_closed_ts - (tf_ms * num_bars))
+    effective_bars = max(int(num_bars), 1)
+    fetch_span_bars = effective_bars + OVERLAP_BARS
+    start_ms = max(0, last_closed_close - (tf_ms * fetch_span_bars))
     
-    # Check cache
-    cache_key = (symbol, timeframe, start_ms, last_closed_ts)
+    # Check cache using (source, symbol, timeframe, start, end)
+    cache_key = (CACHE_SOURCE, symbol, timeframe, start_ms, last_closed_close)
     if use_cache:
         with _CACHE_LOCK:
-            if cache_key in _CANDLE_CACHE:
-                logger.debug(f"Using cached candles for {symbol} {timeframe}")
-                return _CANDLE_CACHE[cache_key].copy(), last_closed_ts
+            cached_df = _CANDLE_CACHE.get(cache_key)
+        if cached_df is not None:
+            logger.debug(f"Using cached candles for {symbol} {timeframe}")
+            trimmed = cached_df.tail(effective_bars).reset_index(drop=True)
+            return trimmed, last_closed_close
     
-    # Convert to datetime
     start_dt = datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc)
-    end_dt = datetime.fromtimestamp(last_closed_ts / 1000, tz=timezone.utc)
+    end_dt = datetime.fromtimestamp(last_closed_close / 1000, tz=timezone.utc)
     
-    # Fetch candles using BinanceKlinesSource
     try:
-        # Strip BINANCE: prefix if present
-        clean_symbol = symbol
-        if clean_symbol.startswith("BINANCE:"):
-            clean_symbol = clean_symbol[8:]
-        
+        clean_symbol = symbol[8:] if symbol.startswith("BINANCE:") else symbol
         df = data_source.load_candles(
             symbol=clean_symbol,
             timeframe=timeframe,
             start=start_dt,
             end=end_dt,
         )
-        
-        # Store in cache
-        with _CACHE_LOCK:
-            _CANDLE_CACHE[cache_key] = df.copy()
-        
-        return df, last_closed_ts
-    except Exception as e:
-        logger.error(f"Failed to fetch candles for {symbol} {timeframe}: {e}")
+    except Exception as exc:
+        logger.error(f"Failed to fetch candles for {symbol} {timeframe}: {exc}")
         raise
+    
+    if df is None or df.empty:
+        raise ValueError(f"No Binance candles returned for {symbol} {timeframe}")
+    
+    # Sort, deduplicate, and ensure only fully closed bars (ts is bar start)
+    df = (
+        df.drop_duplicates(subset="ts")
+        .sort_values("ts")
+        .reset_index(drop=True)
+    )
+    df = df[df["ts"] <= last_closed_start].copy()
+    if df.empty:
+        raise ValueError(f"No closed candles available for {symbol} {timeframe}")
+    
+    trimmed_df = df.tail(effective_bars).reset_index(drop=True)
+    
+    with _CACHE_LOCK:
+        _CANDLE_CACHE[cache_key] = df.copy()
+    
+    logger.info(
+        "Fetched %s candles for %s %s (start=%s, end=%s, last_closed=%s)",
+        len(trimmed_df),
+        symbol,
+        timeframe,
+        start_dt.strftime("%Y-%m-%d %H:%M"),
+        end_dt.strftime("%Y-%m-%d %H:%M"),
+        datetime.fromtimestamp(last_closed_close / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M"),
+    )
+    
+    return trimmed_df, last_closed_close
 
 
 class ChartAutoRefreshWorker:

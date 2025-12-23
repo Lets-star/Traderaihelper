@@ -24,6 +24,9 @@ class BinanceWebSocketClient:
         
     def start(self):
         """Start WebSocket connection with error handling."""
+        if self.stop_event.is_set():
+            return
+            
         try:
             self._connect()
         except Exception as e:
@@ -42,18 +45,35 @@ class BinanceWebSocketClient:
                 on_close=self._on_close,
             )
             # Run in background thread
-            ws_thread = threading.Thread(target=self.ws.run_forever, daemon=True)
+            ws_thread = threading.Thread(target=self._run_websocket, daemon=True)
             ws_thread.start()
             self.reconnect_count = 0  # Reset on successful connection
             logger.info(f"WebSocket connected: {self.symbol} {self.interval}")
         except Exception as e:
             logger.error(f"WebSocket connection error: {e}")
+            self.ws = None
             self._schedule_reconnect()
+    
+    def _run_websocket(self):
+        """Run WebSocket in a safe manner."""
+        try:
+            if self.ws:
+                self.ws.run_forever()
+        except Exception as e:
+            logger.error(f"Error running WebSocket: {e}")
+        finally:
+            # Ensure cleanup
+            if not self.stop_event.is_set():
+                self._schedule_reconnect()
     
     def _on_open(self, ws):
         """Handle WebSocket open."""
         logger.info(f"WebSocket opened: {self.symbol} {self.interval}")
-        self.sock = ws.sock
+        try:
+            self.sock = ws.sock
+        except Exception as e:
+            logger.error(f"Error accessing WebSocket socket: {e}")
+            self.sock = None
 
     def _on_error(self, ws, error):
         """Handle WebSocket errors."""
@@ -118,4 +138,10 @@ class BinanceWebSocketClient:
     
     def is_connected(self):
         """Check if connected."""
-        return self.ws is not None and self.ws.sock is not None and self.ws.sock.connected
+        try:
+            return (self.ws is not None and 
+                   self.ws.sock is not None and 
+                   self.ws.sock.connected)
+        except Exception as e:
+            logger.debug(f"Error checking WebSocket connection: {e}")
+            return False

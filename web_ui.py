@@ -52,6 +52,14 @@ from worker_manager import ChartWorkerManager, SignalsWorkerManager
 logger = logging.getLogger(__name__)
 
 
+def safe_rerun():
+    """Safely rerun Streamlit app with error handling."""
+    try:
+        st.rerun()
+    except Exception as e:
+        logger.debug(f"Cannot rerun: no ScriptRunContext or other error: {e}")
+
+
 def format_correlation(value: float) -> str:
     """Format correlation value with color coding."""
     if value > 0.7:
@@ -2105,10 +2113,8 @@ def main():
                     fig = create_candlestick_chart(summary, main_series)
                     chart_container.plotly_chart(fig, width="stretch", key="fallback_chart")
                 
-                # Reset analysis_updated flag and rerun if needed
-                if st.session_state.analysis_updated:
-                    st.session_state.analysis_updated = False
-                    st.rerun()
+                # Reset analysis_updated flag (no rerun here to avoid infinite loops)
+                st.session_state.analysis_updated = False
             else:
                 # No data available
                 st.warning("Waiting for chart data...")
@@ -3765,13 +3771,8 @@ def main():
                 except Exception as e:
                     logger.error(f"Error polling signals worker manager: {e}", exc_info=True)
 
-            # Consume analysis_updated flag and trigger rerun if needed
-            if auto_advance_end and state.get("analysis_updated", False):
-                state["analysis_updated"] = False
-                logger.info("Analysis updated via worker - triggering UI refresh")
-                st.rerun()
-            else:
-                state["analysis_updated"] = False
+            # Consume analysis_updated flag (no rerun here to avoid infinite loops)
+            state["analysis_updated"] = False
 
             # Initialize variables to avoid UnboundLocalError
             has_weight_data = False
@@ -3809,9 +3810,17 @@ def main():
                 signal_data = result["explicit_signal"]
                 processed_signal = result["processed_payload"]
 
+                # Ensure has_weight_data is properly initialized
+                has_weight_data = False
+                
                 raw_weight_data = signal_data.get("weights") or state.get("weights")
-                normalized_weights_map, raw_weights_map = normalize_category_weights(raw_weight_data)
-                has_weight_data = any(raw_weights_map.get(category, 0.0) > 0 for category in FACTOR_CATEGORY_ORDER)
+                if raw_weight_data:
+                    normalized_weights_map, raw_weights_map = normalize_category_weights(raw_weight_data)
+                    has_weight_data = any(raw_weights_map.get(category, 0.0) > 0 for category in FACTOR_CATEGORY_ORDER)
+                else:
+                    # Initialize empty maps when no weight data is available
+                    normalized_weights_map = {}
+                    raw_weights_map = {}
             
             if not has_weight_data:
                 has_weight_data = any(normalized_weights_map.get(category, 0.0) > 0 for category in FACTOR_CATEGORY_ORDER)
@@ -4980,27 +4989,54 @@ if __name__ == "__main__":
     if has_workers:
         rerun_needed = False
         last_rerun_time = 0.0
-        rerun_cooldown = 1.0  # Max 1 refresh per second
+        rerun_cooldown = 2.0  # Max 1 refresh every 2 seconds to prevent excessive reruns
+        consecutive_errors = 0
+        max_consecutive_errors = 5
         
         while True:
             try:
+                rerun_needed = False  # Reset flag at start of each iteration
+                
                 # Check Chart updates
                 if "chart_worker_manager" in st.session_state:
-                    if st.session_state.chart_worker_manager.poll_and_apply(st.session_state):
-                        rerun_needed = True
+                    try:
+                        if st.session_state.chart_worker_manager.poll_and_apply(st.session_state):
+                            rerun_needed = True
+                    except Exception as e:
+                        logger.error(f"Error polling chart worker manager: {e}", exc_info=True)
+                        consecutive_errors += 1
                 
                 # Check Signals updates
                 if "signals_worker_manager" in st.session_state:
-                    if st.session_state.signals_worker_manager.poll_and_apply(st.session_state):
-                        rerun_needed = True
+                    try:
+                        if st.session_state.signals_worker_manager.poll_and_apply(st.session_state):
+                            rerun_needed = True
+                    except Exception as e:
+                        logger.error(f"Error polling signals worker manager: {e}", exc_info=True)
+                        consecutive_errors += 1
                 
+                # Safe rerun with cooldown and error handling
                 now = time.time()
-                if rerun_needed and (now - last_rerun_time > rerun_cooldown):
-                    rerun_needed = False
-                    last_rerun_time = now
-                    st.rerun()
+                if (rerun_needed and 
+                    consecutive_errors < max_consecutive_errors and 
+                    now - last_rerun_time > rerun_cooldown):
+                    try:
+                        safe_rerun()
+                        last_rerun_time = now
+                        consecutive_errors = 0  # Reset on successful rerun
+                    except Exception as e:
+                        logger.error(f"Error during rerun: {e}")
+                        consecutive_errors += 1
                 
-                time.sleep(0.1)
+                # Reset consecutive errors if no issues
+                if not rerun_needed:
+                    consecutive_errors = 0
+                
+                time.sleep(0.1)  # Prevent busy loop
             except Exception:
                 # Avoid crashing the loop on transient errors
+                consecutive_errors += 1
+                if consecutive_errors >= max_consecutive_errors:
+                    logger.error("Too many consecutive errors, stopping polling loop")
+                    break
                 time.sleep(1.0)

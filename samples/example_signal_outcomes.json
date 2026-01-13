@@ -1,0 +1,60 @@
+[
+    {
+        "signal_type": "BUY",
+        "entry_price": 45000.0,
+        "exit_price": 46800.0,
+        "entry_timestamp": 1640995200000,
+        "exit_timestamp": 1641174400000,
+        "timestamp": 1640995200000,
+        "symbol": "BTCUSDT",
+        "pnl_pct": 4.0,
+        "holding_bars": 48,
+        "success": true,
+        "factors": [
+            {
+                "factor_name": "technical",
+                "score": 0.8,
+                "weight": 1.0
+            },
+            {
+                "factor_name": "sentiment",
+                "score": 0.6,
+                "weight": 0.8
+            }
+        ],
+        "metadata": {
+            "exchange": "binance",
+            "timeframe": "1h",
+            "data_source": "real_market_data"
+        }
+    },
+    {
+        "signal_type": "SELL",
+        "entry_price": 47000.0,
+        "exit_price": 45150.0,
+        "entry_timestamp": 1641260800000,
+        "exit_timestamp": 1641347200000,
+        "timestamp": 1641260800000,
+        "symbol": "BTCUSDT",
+        "pnl_pct": -3.94,
+        "holding_bars": 24,
+        "success": false,
+        "factors": [
+            {
+                "factor_name": "volume",
+                "score": -0.3,
+                "weight": 1.2
+            },
+            {
+                "factor_name": "multitimeframe",
+                "score": -0.5,
+                "weight": 0.9
+            }
+        ],
+        "metadata": {
+            "exchange": "binance",
+            "timeframe": "1h",
+            "data_source": "real_market_data"
+        }
+    }
+]

@@ -1,11 +1,13 @@
 import logging
 import asyncio
+import threading
 import time
 import json
 import os
 import csv
 from typing import Dict, Any, Optional
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
 from bybit_client import ByBitClient
 from update_bus import UpdateBus
 
@@ -163,12 +165,99 @@ class SignalExecutor:
                 "timestamp": end_time
             })
 
+    def _run_async_in_thread(self, signal: Dict[str, Any]):
+        """Run async execution in a dedicated thread with its own event loop."""
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(self._execute_async(signal))
+        except Exception as e:
+            logger.error(f"Failed to run async execution in thread: {e}")
+        finally:
+            loop.close()
+
     def execute_signal(self, signal: Dict[str, Any]):
         """
-        Synchronous wrapper to run async execution.
+        Synchronous wrapper to run async execution in a background thread.
+        This avoids conflicts with Streamlit's event loop.
         """
         try:
-            asyncio.run(self._execute_async(signal))
+            # Use threading to avoid conflicts with Streamlit's event loop
+            thread = threading.Thread(target=self._run_async_in_thread, args=(signal,))
+            thread.daemon = True
+            thread.start()
+            # Don't wait for completion - let it run in background
+            # The update_bus will publish results when done
         except Exception as e:
-            logger.error(f"Failed to run async execution: {e}")
+            logger.error(f"Failed to start execution thread: {e}")
 
+    def execute_signal_sync(self, signal: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Synchronous execution that waits for completion.
+        Use this when you need the result immediately.
+        Returns the execution result.
+        """
+        result = {"status": "pending", "error": None}
+        
+        def run_and_capture():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(self._execute_async(signal))
+                result["status"] = "completed"
+            except Exception as e:
+                result["status"] = "error"
+                result["error"] = str(e)
+            finally:
+                loop.close()
+        
+        thread = threading.Thread(target=run_and_capture)
+        thread.daemon = True
+        thread.start()
+        thread.join(timeout=30.0)  # Wait up to 30 seconds
+        
+        if thread.is_alive():
+            result["status"] = "timeout"
+            result["error"] = "Execution timed out after 30 seconds"
+        
+        return result
+
+    async def _get_position_async(self, symbol: str) -> Dict[str, Any]:
+        """Get current position for a symbol."""
+        if not self.api_key or not self.api_secret:
+            return {"error": "API credentials not configured"}
+        
+        client = ByBitClient(self.api_key, self.api_secret, self.testnet)
+        try:
+            result = await client.get_position(symbol)
+            await client.close()
+            return result
+        except Exception as e:
+            await client.close()
+            logger.error(f"Error getting position: {e}")
+            return {"error": str(e)}
+
+    def get_position(self, symbol: str) -> Dict[str, Any]:
+        """Synchronous wrapper to get position."""
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(self._get_position_async(symbol))
+        except Exception as e:
+            logger.error(f"Failed to get position: {e}")
+            return {"error": str(e)}
+        finally:
+            loop.close()
+
+    def is_position_open(self, symbol: str) -> bool:
+        """Check if there's an open position for the symbol."""
+        result = self.get_position(symbol)
+        if result.get("retCode") != 0:
+            return False
+        
+        positions = result.get("result", {}).get("list", [])
+        for pos in positions:
+            size = float(pos.get("size", 0))
+            if size > 0:
+                return True
+        return False

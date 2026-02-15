@@ -17,3 +17,15 @@ venv/
 .DS_Store
 *.log
 *.sqlite3
+
+# Streamlit secrets (NEVER commit these!)
+.streamlit/secrets.toml
+!streamlit/secrets.toml.example
+
+# Trading logs
+trade_execution_log.csv
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/

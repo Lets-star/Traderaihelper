@@ -61,6 +61,22 @@ def safe_rerun():
         logger.debug(f"Cannot rerun: no ScriptRunContext or other error: {e}")
 
 
+def get_api_credentials_from_secrets() -> tuple[str, str]:
+    """
+    Retrieve API credentials from st.secrets with fallback to empty strings.
+
+    Returns:
+        Tuple of (api_key, api_secret)
+    """
+    try:
+        bybit_secrets = st.secrets.get("bybit", {})
+        api_key = bybit_secrets.get("api_key", "")
+        api_secret = bybit_secrets.get("api_secret", "")
+        return str(api_key), str(api_secret)
+    except Exception:
+        return "", ""
+
+
 def format_correlation(value: float) -> str:
     """Format correlation value with color coding."""
     if value > 0.7:
@@ -3491,18 +3507,41 @@ def main():
 
         with st.expander("ByBit Execution", expanded=False):
             st.warning("⚠️ Testnet only recommended. Use at your own risk.")
-            
+
+            # Get API credentials from secrets as fallback
+            secrets_key, secrets_secret = get_api_credentials_from_secrets()
+
             exec_enabled = st.toggle("Enable ByBit Execution", value=executor.enabled, key="bybit_enabled")
-            
+
             c1, c2 = st.columns(2)
             with c1:
-                api_key = st.text_input("API Key", value=executor.api_key, type="password", key="bybit_key")
+                # Use session state value or secrets as default for API key
+                default_key = executor.api_key or secrets_key
+                api_key_input = st.text_input(
+                    "API Key",
+                    value=default_key,
+                    type="password",
+                    key="bybit_key",
+                    help="Leave empty to use st.secrets['bybit']['api_key']" if secrets_key else "Enter your ByBit API key"
+                )
                 is_testnet = st.selectbox("Network", ["Testnet", "Mainnet"], index=0 if executor.testnet else 1, key="bybit_net") == "Testnet"
                 dry_run = st.checkbox("Dry Run (Log only)", value=executor.dry_run, key="bybit_dry")
             with c2:
-                api_secret = st.text_input("API Secret", value=executor.api_secret, type="password", key="bybit_secret")
+                # Use session state value or secrets as default for API secret
+                default_secret = executor.api_secret or secrets_secret
+                api_secret_input = st.text_input(
+                    "API Secret",
+                    value=default_secret,
+                    type="password",
+                    key="bybit_secret",
+                    help="Leave empty to use st.secrets['bybit']['api_secret']" if secrets_secret else "Enter your ByBit API secret"
+                )
                 leverage = st.number_input("Default Leverage", min_value=1, max_value=125, value=executor.default_leverage, key="bybit_lev")
                 pos_mult = st.number_input("Pos Size Multiplier", min_value=0.1, max_value=10.0, value=executor.pos_size_multiplier, step=0.1, key="bybit_pos")
+
+            # Use input values or fall back to secrets if inputs are empty
+            api_key = api_key_input if api_key_input else secrets_key
+            api_secret = api_secret_input if api_secret_input else secrets_secret
 
             executor.configure(exec_enabled, api_key, api_secret, is_testnet, int(leverage), float(pos_mult), dry_run)
 
@@ -3739,7 +3778,7 @@ def main():
                                 indicator_params=indicator_params,
                                 signal_params=signal_params,
                                 use_websocket=True,
-                                session_state=st.session_state,
+                                signal_executor=getattr(st.session_state, "signal_executor", None),
                             )
                             if success:
                                 logger.info(f"Started WebSocket signals worker for {config_store.symbol} {config_store.timeframe}")

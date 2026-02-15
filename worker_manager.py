@@ -178,20 +178,17 @@ class SignalsWorkerManager:
         signal_config_payload: Dict[str, Any],
         indicator_params: Dict[str, Any],
         signal_params: Dict[str, Any],
-        session_state: Optional[Any] = None,
+        signal_executor: Optional[Any] = None,
         use_websocket: bool = True,
     ) -> bool:
         """Start a new signals worker."""
         with self._lock:
             self.stop()
-            
+
             self._current_symbol = symbol
             self._current_timeframe = timeframe
             self._update_bus = update_bus
-            
-            # Extract signal_executor from session_state if available
-            signal_executor = getattr(session_state, "signal_executor", None) if session_state else None
-            
+
             try:
                 self._worker = AutomatedSignalsWorker(
                     symbol=symbol,

@@ -115,11 +115,18 @@ class ByBitClient:
 
                     if response.status != 200:
                         logger.error(f"ByBit API error (HTTP {response.status}): {text}")
+                        # Handle rate limit (429) with retry and exponential backoff
+                        if response.status == 429:
+                            retry_after = int(response.headers.get("Retry-After", 1))
+                            wait_time = max(retry_after, 0.5 * (2 ** attempt))
+                            logger.warning(f"Rate limit hit (429). Retrying after {wait_time:.1f}s (attempt {attempt + 1}/{retries})")
+                            await asyncio.sleep(wait_time)
+                            continue  # Retry the request
                         # Don't retry client errors (4xx) unless it's rate limit
-                        if 400 <= response.status < 500 and response.status != 429:
+                        if 400 <= response.status < 500:
                             try:
                                 return json.loads(text)
-                            except:
+                            except json.JSONDecodeError:
                                 return {"retCode": -1, "retMsg": f"HTTP {response.status}: {text}"}
                     
                     try:

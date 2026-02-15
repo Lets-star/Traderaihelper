@@ -219,3 +219,29 @@ class ByBitClient:
     async def get_leverage(self, symbol: str) -> Dict[str, Any]:
         # Leverage info is in get_position response
         return await self.get_position(symbol)
+
+    async def get_wallet_balance(self, account_type: str = "UNIFIED") -> Dict[str, Any]:
+        """
+        Get wallet balance.
+        account_type: UNIFIED, CONTRACT, SPOT
+        """
+        params = {"accountType": account_type}
+        return await self._request("GET", "/v5/account/wallet-balance", params)
+
+    async def get_tickers(self, symbol: Optional[str] = None) -> Dict[str, Any]:
+        """Get latest market tickers."""
+        params = {"category": "linear"}
+        if symbol:
+            params["symbol"] = symbol
+        return await self._request("GET", "/v5/market/tickers", params)
+
+    async def get_open_orders(self, symbol: Optional[str] = None) -> Dict[str, Any]:
+        """Get open orders."""
+        params = {"category": "linear"}
+        if symbol:
+            params["symbol"] = symbol
+        return await self._request("GET", "/v5/order/realtime", params)
+
+    def validate_credentials(self) -> bool:
+        """Validate that API credentials are configured."""
+        return bool(self.api_key and self.api_secret and len(self.api_key) > 10 and len(self.api_secret) > 10)

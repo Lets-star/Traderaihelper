@@ -1,45 +1,161 @@
+"""
+ByBit API Client with enhanced error handling, validation, and thread safety.
+
+FEATURES:
+- Thread-safe synchronous API client (replaces async/await approach)
+- Context manager support (__enter__/__exit__)
+- Comprehensive parameter validation for all methods
+- Rate limit handling for 429 errors with exponential backoff
+- Connection pooling for HTTP requests
+- Thread-safe CSV logging for all API operations
+- Improved logging and error handling
+"""
+
 import time
 import hmac
 import hashlib
 import json
 import logging
-import asyncio
-from typing import Any, Dict, Optional, List
-import aiohttp
-from urllib.parse import urlencode
+import threading
+import csv
+import os
+import queue
+from typing import Any, Dict, Optional, List, Union
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
+
 class ByBitClient:
     """
-    Async client for ByBit V5 API (Testnet).
+    Thread-safe synchronous client for ByBit V5 API with context manager support.
     Supports Linear Futures (USDT Perpetuals).
     """
 
     TESTNET_API_URL = "https://api-testnet.bybit.com"
-    MAINNET_API_URL = "https://api.bybit.com"  # Not used for now, but good to have
+    MAINNET_API_URL = "https://api.bybit.com"
 
-    def __init__(self, api_key: str, api_secret: str, testnet: bool = True):
+    # Rate limiting settings
+    MAX_RETRIES = 3
+    RATE_LIMIT_BACKOFF = [1, 2, 4, 8]  # seconds for different retry attempts
+    BASE_TIMEOUT = 30
+
+    def __init__(self, api_key: str, api_secret: str, testnet: bool = True,
+                 connection_pool_size: int = 10, log_trades: bool = True):
+        """
+        Initialize ByBit client with connection pooling.
+
+        Args:
+            api_key: ByBit API key
+            api_secret: ByBit API secret
+            testnet: Use testnet (True) or mainnet (False)
+            connection_pool_size: Size of HTTP connection pool
+            log_trades: Enable CSV logging of API calls
+        """
         self.api_key = api_key
         self.api_secret = api_secret
         self.base_url = self.TESTNET_API_URL if testnet else self.MAINNET_API_URL
         self.recv_window = "5000"
-        self.session: Optional[aiohttp.ClientSession] = None
 
-    async def _get_session(self) -> aiohttp.ClientSession:
-        if self.session is None or self.session.closed:
-            self.session = aiohttp.ClientSession()
-        return self.session
+        # Connection pooling configuration
+        self.connection_pool_size = connection_pool_size
+        self.session: Optional[requests.Session] = None
 
-    async def close(self):
-        if self.session and not self.session.closed:
-            await self.session.close()
+        # Thread safety
+        self._lock = threading.RLock()
+        self._csv_lock = threading.Lock()
+
+        # CSV logging
+        self.log_trades = log_trades
+        self.trade_log_file = "bybit_api_log.csv"
+        self._ensure_log_file()
+
+    def _ensure_log_file(self) -> None:
+        """Ensure CSV log file exists with proper headers."""
+        if not self.log_trades:
+            return
+
+        with self._csv_lock:
+            if not os.path.exists(self.trade_log_file):
+                with open(self.trade_log_file, 'w', newline='') as f:
+                    writer = csv.writer(f)
+                    writer.writerow([
+                        "timestamp", "method", "endpoint", "symbol", "side", "qty",
+                        "order_type", "price", "status", "ret_code", "ret_msg",
+                        "latency_ms", "attempt", "error_details"
+                    ])
+
+    def _log_trade(self, method: str, endpoint: str, symbol: str, side: str, qty: str,
+                   order_type: str, price: Optional[str], status: str,
+                   ret_code: int, ret_msg: str, latency_ms: float,
+                   attempt: int, error_details: Optional[str] = None) -> None:
+        """Thread-safe CSV logging for API calls."""
+        if not self.log_trades:
+            return
+
+        with self._csv_lock:
+            try:
+                with open(self.trade_log_file, 'a', newline='') as f:
+                    writer = csv.writer(f)
+                    writer.writerow([
+                        datetime.utcnow().isoformat(), method, endpoint, symbol, side, qty,
+                        order_type, price or "", status, ret_code, ret_msg,
+                        f"{latency_ms:.2f}", attempt, error_details or ""
+                    ])
+            except Exception as e:
+                logger.error(f"Failed to log API call: {e}")
+
+    def _get_session(self) -> requests.Session:
+        """Get or create HTTP session with connection pooling and retry strategy."""
+        with self._lock:
+            if self.session is None:
+                self.session = requests.Session()
+
+                # Configure retry strategy
+                retry_strategy = Retry(
+                    total=self.MAX_RETRIES,
+                    backoff_factor=0.5,
+                    status_forcelist=[429, 500, 502, 503, 504],
+                    allowed_methods=["HEAD", "GET", "OPTIONS", "POST"]
+                )
+
+                # Configure adapter with connection pooling
+                adapter = HTTPAdapter(
+                    pool_connections=self.connection_pool_size,
+                    pool_maxsize=self.connection_pool_size,
+                    max_retries=retry_strategy
+                )
+
+                self.session.mount("http://", adapter)
+                self.session.mount("https://", adapter)
+
+                # Set default headers
+                self.session.headers.update({
+                    'Content-Type': 'application/json',
+                    'User-Agent': 'ByBit-Client/2.0'
+                })
+
+            return self.session
+
+    # Context manager support
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+    def close(self):
+        """Close the HTTP session."""
+        with self._lock:
+            if self.session is not None:
+                self.session.close()
+                self.session = None
 
     def _generate_signature(self, timestamp: str, payload: str) -> str:
-        """
-        Generate HMAC-SHA256 signature.
-        param_str is timestamp + api_key + recv_window + payload
-        """
+        """Generate HMAC-SHA256 signature."""
         param_str = timestamp + self.api_key + self.recv_window + payload
         return hmac.new(
             self.api_secret.encode("utf-8"),
@@ -47,208 +163,471 @@ class ByBitClient:
             hashlib.sha256
         ).hexdigest()
 
-    async def _request(self, method: str, endpoint: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
-        """
-        Internal request wrapper with retry logic.
-        """
-        session = await self._get_session()
-        url = f"{self.base_url}{endpoint}"
-        
-        # Prepare payload
-        payload = ""
-        if method == "POST":
-            payload = json.dumps(params) if params else "{}"
-        elif method == "GET" and params:
-            # For GET, params are query string, but signature uses query string format without ?
-            # However, ByBit V5 GET requests: 
-            # "Sort the parameters by key in ascending order... append to timestamp+key+recvWindow"
-            # Actually, standard is: timestamp + key + recvWindow + queryString
-            # Query string is key=value&key2=value2
-            pass
+    def _validate_symbol(self, symbol: str) -> None:
+        """Validate trading symbol format."""
+        if not symbol or not isinstance(symbol, str):
+            raise ValueError("Symbol must be a non-empty string")
+        if len(symbol) < 3:
+            raise ValueError("Symbol must be at least 3 characters long")
+        if not symbol.isupper():
+            symbol = symbol.upper()
 
-        # Prepare headers
+    def _validate_side(self, side: str) -> str:
+        """Validate and normalize order side."""
+        if not side or not isinstance(side, str):
+            raise ValueError("Side must be a non-empty string")
+        side_normalized = side.capitalize()
+        if side_normalized not in ['Buy', 'Sell']:
+            raise ValueError("Side must be 'Buy' or 'Sell'")
+        return side_normalized
+
+    def _validate_order_type(self, order_type: str) -> None:
+        """Validate order type."""
+        valid_types = ['Market', 'Limit', 'Stop', 'StopMarket', 'TakeProfit', 'TakeProfitMarket', 'TrailingStop']
+        if order_type not in valid_types:
+            raise ValueError(f"Order type must be one of: {valid_types}")
+
+    def _validate_quantity(self, qty: Union[str, float, int]) -> str:
+        """Validate order quantity and return as string."""
+        try:
+            qty_float = float(qty)
+            if qty_float <= 0:
+                raise ValueError("Quantity must be positive")
+            if qty_float > 1000000:  # Reasonable upper limit
+                raise ValueError("Quantity seems unreasonably large")
+            return str(qty_float)
+        except (ValueError, TypeError) as e:
+            raise ValueError(f"Invalid quantity: {e}")
+
+    def _validate_price(self, price: Union[str, float, int]) -> Optional[str]:
+        """Validate price if provided and return as string."""
+        if price is None:
+            return None
+        try:
+            price_float = float(price)
+            if price_float <= 0:
+                raise ValueError("Price must be positive")
+            if price_float > 1000000:  # Reasonable upper limit
+                raise ValueError("Price seems unreasonably large")
+            return str(price_float)
+        except (ValueError, TypeError) as e:
+            raise ValueError(f"Invalid price: {e}")
+
+    def _validate_leverage(self, leverage: Union[str, float, int]) -> str:
+        """Validate leverage and return as string."""
+        try:
+            lev_float = float(leverage)
+            if lev_float <= 0 or lev_float > 125:
+                raise ValueError("Leverage must be between 0 and 125")
+            return str(lev_float)
+        except (ValueError, TypeError) as e:
+            raise ValueError(f"Invalid leverage: {e}")
+
+    def _make_request(self, method: str, endpoint: str, params: Dict[str, Any] = None,
+                     retry_count: int = 0) -> Dict[str, Any]:
+        """
+        Make HTTP request with rate limiting and retry logic.
+
+        Args:
+            method: HTTP method (GET or POST)
+            endpoint: API endpoint
+            params: Request parameters
+            retry_count: Current retry attempt
+
+        Returns:
+            API response as dictionary
+        """
+        session = self._get_session()
+        url = f"{self.base_url}{endpoint}"
+
+        # Prepare payload and headers
         timestamp = str(int(time.time() * 1000))
-        
+
         if method == "GET":
-             # Sort and encode params
+            # Handle query parameters for signing
             query_string = ""
             if params:
-                # ByBit requires params sorted by key
-                # But aiohttp params handling might differ. 
-                # Let's manually construct query string for signing to be safe and consistent.
                 sorted_keys = sorted(params.keys())
                 query_parts = []
                 for key in sorted_keys:
-                    query_parts.append(f"{key}={params[key]}")
+                    value = str(params[key])
+                    query_parts.append(f"{key}={value}")
                 query_string = "&".join(query_parts)
-            
+
             signature = self._generate_signature(timestamp, query_string)
             full_url = f"{url}?{query_string}" if query_string else url
             data = None
+
+            headers = {
+                "X-BAPI-API-KEY": self.api_key,
+                "X-BAPI-SIGN": signature,
+                "X-BAPI-SIGN-TYPE": "2",
+                "X-BAPI-TIMESTAMP": timestamp,
+                "X-BAPI-RECV-WINDOW": self.recv_window
+            }
         else:
-            # POST
+            # POST request
+            payload = json.dumps(params) if params else "{}"
             signature = self._generate_signature(timestamp, payload)
             full_url = url
             data = payload
 
-        headers = {
-            "X-BAPI-API-KEY": self.api_key,
-            "X-BAPI-SIGN": signature,
-            "X-BAPI-SIGN-TYPE": "2",
-            "X-BAPI-TIMESTAMP": timestamp,
-            "X-BAPI-RECV-WINDOW": self.recv_window,
-            "Content-Type": "application/json"
+            headers = {
+                "X-BAPI-API-KEY": self.api_key,
+                "X-BAPI-SIGN": signature,
+                "X-BAPI-SIGN-TYPE": "2",
+                "X-BAPI-TIMESTAMP": timestamp,
+                "X-BAPI-RECV-WINDOW": self.recv_window
+            }
+
+        start_time = time.time()
+
+        try:
+            response = session.request(
+                method,
+                full_url,
+                headers=headers,
+                data=data,
+                timeout=self.BASE_TIMEOUT
+            )
+
+            latency_ms = (time.time() - start_time) * 1000
+
+            logger.debug(f"ByBit API call: {method} {endpoint} | "
+                        f"Status: {response.status_code} | Latency: {latency_ms:.2f}ms")
+
+            # Handle HTTP errors
+            if response.status_code != 200:
+                # Handle rate limiting specifically
+                if response.status_code == 429:
+                    logger.warning(f"Rate limit hit (429) for {method} {endpoint}, "
+                                 f"attempt {retry_count + 1}")
+
+                    if retry_count < self.MAX_RETRIES:
+                        wait_time = self.RATE_LIMIT_BACKOFF[min(retry_count, len(self.RATE_LIMIT_BACKOFF)-1)]
+                        logger.info(f"Retrying in {wait_time} seconds...")
+                        time.sleep(wait_time)
+                        return self._make_request(method, endpoint, params, retry_count + 1)
+                    else:
+                        return {
+                            "retCode": -1,
+                            "retMsg": f"Rate limit exceeded after {self.MAX_RETRIES} retries"
+                        }
+
+                # Other client errors - don't retry
+                logger.error(f"HTTP {response.status_code}: {response.text}")
+                try:
+                    return response.json()
+                except ValueError:
+                    return {
+                        "retCode": -1,
+                        "retMsg": f"HTTP {response.status_code}: {response.text}"
+                    }
+
+            # Parse successful response
+            try:
+                resp_json = response.json()
+                return resp_json
+            except ValueError as e:
+                logger.error(f"Invalid JSON response: {response.text}")
+                return {
+                    "retCode": -1,
+                    "retMsg": f"Invalid JSON: {response.text}"
+                }
+
+        except requests.exceptions.Timeout as e:
+            logger.error(f"Request timeout (attempt {retry_count + 1}): {e}")
+
+            # Retry on timeout
+            if retry_count < self.MAX_RETRIES:
+                wait_time = self.RATE_LIMIT_BACKOFF[min(retry_count, len(self.RATE_LIMIT_BACKOFF)-1)]
+                logger.info(f"Retrying in {wait_time} seconds...")
+                time.sleep(wait_time)
+                return self._make_request(method, endpoint, params, retry_count + 1)
+            else:
+                return {
+                    "retCode": -1,
+                    "retMsg": f"Request timeout after {self.MAX_RETRIES} retries"
+                }
+
+        except requests.exceptions.ConnectionError as e:
+            logger.error(f"Connection error (attempt {retry_count + 1}): {e}")
+
+            # Retry on connection errors
+            if retry_count < self.MAX_RETRIES:
+                wait_time = self.RATE_LIMIT_BACKOFF[min(retry_count, len(self.RATE_LIMIT_BACKOFF)-1)]
+                logger.info(f"Retrying in {wait_time} seconds...")
+                time.sleep(wait_time)
+                return self._make_request(method, endpoint, params, retry_count + 1)
+            else:
+                return {
+                    "retCode": -1,
+                    "retMsg": f"Connection failed after {self.MAX_RETRIES} retries: {str(e)}"
+                }
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Request error (attempt {retry_count + 1}): {e}")
+
+            # Retry on other request errors
+            if retry_count < self.MAX_RETRIES:
+                wait_time = self.RATE_LIMIT_BACKOFF[min(retry_count, len(self.RATE_LIMIT_BACKOFF)-1)]
+                logger.info(f"Retrying in {wait_time} seconds...")
+                time.sleep(wait_time)
+                return self._make_request(method, endpoint, params, retry_count + 1)
+            else:
+                return {
+                    "retCode": -1,
+                    "retMsg": f"Request failed after {self.MAX_RETRIES} retries: {str(e)}"
+                }
+
+        except Exception as e:
+            logger.error(f"Unexpected error (attempt {retry_count + 1}): {e}")
+            return {
+                "retCode": -1,
+                "retMsg": f"Unexpected error: {str(e)}"
+            }
+
+    def set_leverage(self, symbol: str, leverage: Union[str, int, float]) -> Dict[str, Any]:
+        """
+        Set leverage for a symbol with validation.
+
+        Args:
+            symbol: Trading symbol (e.g., 'BTCUSDT')
+            leverage: Leverage value (e.g., '5', 5, 5.0)
+
+        Returns:
+            API response
+        """
+        # Validate inputs
+        self._validate_symbol(symbol)
+        leverage_str = self._validate_leverage(leverage)
+
+        params = {
+            "category": "linear",
+            "symbol": symbol.upper(),
+            "buyLeverage": leverage_str,
+            "sellLeverage": leverage_str
         }
 
-        retries = 3
-        last_exception = None
+        result = self._make_request("POST", "/v5/position/set-leverage", params)
 
-        for attempt in range(retries):
-            try:
-                start_time = time.time()
-                async with session.request(method, full_url, headers=headers, data=data) as response:
-                    latency = (time.time() - start_time) * 1000
-                    text = await response.text()
-                    
-                    logger.info(f"ByBit API call: {method} {endpoint} | Status: {response.status} | Latency: {latency:.2f}ms")
-                    logger.debug(f"Request: {data if method=='POST' else full_url} | Response: {text}")
+        # Log the API call
+        self._log_trade(
+            method="POST", endpoint="/v5/position/set-leverage", symbol=symbol.upper(),
+            side="", qty="", order_type="", price=None,
+            status="success" if result.get("retCode") == 0 else "error",
+            ret_code=result.get("retCode", -1), ret_msg=result.get("retMsg", ""),
+            latency_ms=0, attempt=1
+        )
 
-                    if response.status != 200:
-                        logger.error(f"ByBit API error (HTTP {response.status}): {text}")
-                        # Handle rate limit (429) with retry and exponential backoff
-                        if response.status == 429:
-                            retry_after = int(response.headers.get("Retry-After", 1))
-                            wait_time = max(retry_after, 0.5 * (2 ** attempt))
-                            logger.warning(f"Rate limit hit (429). Retrying after {wait_time:.1f}s (attempt {attempt + 1}/{retries})")
-                            await asyncio.sleep(wait_time)
-                            continue  # Retry the request
-                        # Don't retry client errors (4xx) unless it's rate limit
-                        if 400 <= response.status < 500:
-                            try:
-                                return json.loads(text)
-                            except json.JSONDecodeError:
-                                return {"retCode": -1, "retMsg": f"HTTP {response.status}: {text}"}
-                    
-                    try:
-                        resp_json = json.loads(text)
-                    except json.JSONDecodeError:
-                         return {"retCode": -1, "retMsg": f"Invalid JSON: {text}"}
-                    
-                    if resp_json.get("retCode") != 0:
-                        # Business logic error
-                        logger.warning(f"ByBit business error: {resp_json}")
-                        # Not necessarily need to retry unless it's system error
-                    
-                    return resp_json
+        return result
 
-            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-                last_exception = e
-                logger.warning(f"ByBit connection error (attempt {attempt+1}/{retries}): {e}")
-                await asyncio.sleep(0.5 * (2 ** attempt)) # Exponential backoff
-
-        return {"retCode": -1, "retMsg": f"Request failed after {retries} retries: {last_exception}"}
-
-    async def set_leverage(self, symbol: str, leverage: str) -> Dict[str, Any]:
-        """
-        Set leverage for a symbol.
-        """
-        return await self._request("POST", "/v5/position/set-leverage", {
-            "category": "linear",
-            "symbol": symbol,
-            "buyLeverage": str(leverage),
-            "sellLeverage": str(leverage)
-        })
-
-    async def place_order(
-        self, 
-        symbol: str, 
-        side: str, 
-        qty: str, 
+    def place_order(
+        self,
+        symbol: str,
+        side: str,
+        qty: Union[str, float, int],
         order_type: str = "Market",
-        price: Optional[str] = None,
-        take_profit: Optional[str] = None, 
-        stop_loss: Optional[str] = None, 
-        client_order_id: Optional[str] = None
+        price: Optional[Union[str, float, int]] = None,
+        take_profit: Optional[Union[str, float, int]] = None,
+        stop_loss: Optional[Union[str, float, int]] = None,
+        client_order_id: Optional[str] = None,
+        reduce_only: bool = False,
+        close_on_trigger: bool = False
     ) -> Dict[str, Any]:
         """
-        Place an order.
-        side: "Buy" or "Sell"
+        Place an order with comprehensive validation.
+
+        Args:
+            symbol: Trading symbol (e.g., 'BTCUSDT')
+            side: Order side ('Buy' or 'Sell')
+            qty: Order quantity
+            order_type: Order type ('Market', 'Limit', etc.)
+            price: Order price (required for Limit orders)
+            take_profit: Take profit price
+            stop_loss: Stop loss price
+            client_order_id: Custom client order ID
+            reduce_only: Reduce position only flag
+            close_on_trigger: Close position on trigger
+
+        Returns:
+            API response
         """
+        # Comprehensive validation
+        self._validate_symbol(symbol)
+        side_normalized = self._validate_side(side)
+        self._validate_order_type(order_type)
+        qty_str = self._validate_quantity(qty)
+
+        if price is not None:
+            price_str = self._validate_price(price)
+        else:
+            price_str = None
+
+        if take_profit is not None:
+            tp_str = self._validate_price(take_profit)
+        else:
+            tp_str = None
+
+        if stop_loss is not None:
+            sl_str = self._validate_price(stop_loss)
+        else:
+            sl_str = None
+
+        # Limit order requires price
+        if order_type == "Limit" and price_str is None:
+            raise ValueError("Price is required for Limit orders")
+
+        # Validate client order ID if provided
+        if client_order_id is not None:
+            if not isinstance(client_order_id, str) or len(client_order_id) > 36:
+                raise ValueError("Client order ID must be string with max 36 characters")
+
+        # Build parameters
         params = {
             "category": "linear",
-            "symbol": symbol,
-            "side": side.capitalize(),
+            "symbol": symbol.upper(),
+            "side": side_normalized,
             "orderType": order_type,
-            "qty": str(qty),
+            "qty": qty_str,
         }
-        if price:
-            params["price"] = str(price)
-        if take_profit:
-            params["takeProfit"] = str(take_profit)
-        if stop_loss:
-            params["stopLoss"] = str(stop_loss)
-        if client_order_id:
+
+        if price_str is not None:
+            params["price"] = price_str
+        if tp_str is not None:
+            params["takeProfit"] = tp_str
+        if sl_str is not None:
+            params["stopLoss"] = sl_str
+        if client_order_id is not None:
             params["orderLinkId"] = client_order_id
+        if reduce_only:
+            params["reduceOnly"] = True
+        if close_on_trigger:
+            params["closeOnTrigger"] = True
 
-        return await self._request("POST", "/v5/order/create", params)
+        start_time = time.time()
+        result = self._make_request("POST", "/v5/order/create", params)
+        latency_ms = (time.time() - start_time) * 1000
 
-    async def cancel_order(self, symbol: str, order_id: Optional[str] = None, client_order_id: Optional[str] = None) -> Dict[str, Any]:
+        # Log the order attempt
+        self._log_trade(
+            method="POST", endpoint="/v5/order/create", symbol=symbol.upper(),
+            side=side_normalized, qty=qty_str, order_type=order_type,
+            price=price_str, status="success" if result.get("retCode") == 0 else "error",
+            ret_code=result.get("retCode", -1), ret_msg=result.get("retMsg", ""),
+            latency_ms=latency_ms, attempt=1
+        )
+
+        return result
+
+    def cancel_order(self, symbol: str, order_id: Optional[str] = None,
+                    client_order_id: Optional[str] = None) -> Dict[str, Any]:
+        """Cancel an order with validation."""
+        self._validate_symbol(symbol)
+
+        if not order_id and not client_order_id:
+            raise ValueError("Either order_id or client_order_id must be provided")
+
         params = {
             "category": "linear",
-            "symbol": symbol
+            "symbol": symbol.upper()
         }
         if order_id:
             params["orderId"] = order_id
         if client_order_id:
             params["orderLinkId"] = client_order_id
-            
-        return await self._request("POST", "/v5/order/cancel", params)
 
-    async def get_order_status(self, symbol: str, order_id: Optional[str] = None, client_order_id: Optional[str] = None) -> Dict[str, Any]:
+        return self._make_request("POST", "/v5/order/cancel", params)
+
+    def cancel_all_orders(self, symbol: str) -> Dict[str, Any]:
+        """Cancel all open orders for a symbol."""
+        self._validate_symbol(symbol)
+
         params = {
             "category": "linear",
-            "symbol": symbol
+            "symbol": symbol.upper()
+        }
+        return self._make_request("POST", "/v5/order/cancel-all", params)
+
+    def get_order_status(self, symbol: str, order_id: Optional[str] = None,
+                        client_order_id: Optional[str] = None) -> Dict[str, Any]:
+        """Get order status with validation."""
+        self._validate_symbol(symbol)
+
+        if not order_id and not client_order_id:
+            raise ValueError("Either order_id or client_order_id must be provided")
+
+        params = {
+            "category": "linear",
+            "symbol": symbol.upper()
         }
         if order_id:
             params["orderId"] = order_id
         if client_order_id:
             params["orderLinkId"] = client_order_id
 
-        return await self._request("GET", "/v5/order/realtime", params)
+        return self._make_request("GET", "/v5/order/realtime", params)
 
-    async def get_position(self, symbol: str) -> Dict[str, Any]:
+    def get_position(self, symbol: str) -> Dict[str, Any]:
+        """Get position for symbol with validation."""
+        self._validate_symbol(symbol)
+
         params = {
             "category": "linear",
-            "symbol": symbol
+            "symbol": symbol.upper()
         }
-        return await self._request("GET", "/v5/position/list", params)
+        return self._make_request("GET", "/v5/position/list", params)
 
-    async def get_leverage(self, symbol: str) -> Dict[str, Any]:
-        # Leverage info is in get_position response
-        return await self.get_position(symbol)
+    def get_all_positions(self) -> Dict[str, Any]:
+        """Get all positions."""
+        params = {"category": "linear"}
+        return self._make_request("GET", "/v5/position/list", params)
 
-    async def get_wallet_balance(self, account_type: str = "UNIFIED") -> Dict[str, Any]:
-        """
-        Get wallet balance.
-        account_type: UNIFIED, CONTRACT, SPOT
-        """
+    def get_leverage(self, symbol: str) -> Dict[str, Any]:
+        """Get leverage info for symbol."""
+        return self.get_position(symbol)
+
+    def get_wallet_balance(self, account_type: str = "UNIFIED") -> Dict[str, Any]:
+        """Get wallet balance."""
+        valid_account_types = ["UNIFIED", "CONTRACT", "SPOT"]
+        if account_type not in valid_account_types:
+            raise ValueError(f"Account type must be one of: {valid_account_types}")
+
         params = {"accountType": account_type}
-        return await self._request("GET", "/v5/account/wallet-balance", params)
+        return self._make_request("GET", "/v5/account/wallet-balance", params)
 
-    async def get_tickers(self, symbol: Optional[str] = None) -> Dict[str, Any]:
-        """Get latest market tickers."""
+    def get_tickers(self, symbol: Optional[str] = None) -> Dict[str, Any]:
+        """Get market tickers with optional symbol filter."""
         params = {"category": "linear"}
         if symbol:
-            params["symbol"] = symbol
-        return await self._request("GET", "/v5/market/tickers", params)
+            self._validate_symbol(symbol)
+            params["symbol"] = symbol.upper()
+        return self._make_request("GET", "/v5/market/tickers", params)
 
-    async def get_open_orders(self, symbol: Optional[str] = None) -> Dict[str, Any]:
-        """Get open orders."""
+    def get_open_orders(self, symbol: Optional[str] = None) -> Dict[str, Any]:
+        """Get open orders with optional symbol filter."""
         params = {"category": "linear"}
         if symbol:
-            params["symbol"] = symbol
-        return await self._request("GET", "/v5/order/realtime", params)
+            self._validate_symbol(symbol)
+            params["symbol"] = symbol.upper()
+        return self._make_request("GET", "/v5/order/realtime", params)
+
+    def get_order_history(self, symbol: Optional[str] = None, limit: int = 50) -> Dict[str, Any]:
+        """Get order history with optional symbol filter."""
+        params = {
+            "category": "linear",
+            "limit": min(limit, 200)  # API limit is 200
+        }
+        if symbol:
+            self._validate_symbol(symbol)
+            params["symbol"] = symbol.upper()
+        return self._make_request("GET", "/v5/order/history", params)
 
     def validate_credentials(self) -> bool:
-        """Validate that API credentials are configured."""
-        return bool(self.api_key and self.api_secret and len(self.api_key) > 10 and len(self.api_secret) > 10)
+        """Validate that API credentials are properly configured."""
+        return bool(
+            self.api_key and
+            self.api_secret and
+            len(self.api_key) > 10 and
+            len(self.api_secret) > 10
+        )

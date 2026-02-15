@@ -17,8 +17,9 @@ class SignalExecutor:
     """
     Executes automated signals on ByBit.
     """
-    
+
     LOG_FILE = "trade_execution_log.csv"
+    _log_lock = threading.Lock()
 
     def __init__(self, update_bus: Optional[UpdateBus] = None):
         self.client: Optional[ByBitClient] = None
@@ -30,16 +31,17 @@ class SignalExecutor:
         self.default_leverage = 5
         self.pos_size_multiplier = 1.0
         self.dry_run = False
-        
-        # Ensure log file exists with header
-        if not os.path.exists(self.LOG_FILE):
-            with open(self.LOG_FILE, 'w', newline='') as f:
-                writer = csv.writer(f)
-                writer.writerow([
-                    "timestamp", "signal_id", "symbol", "direction", "qty", 
-                    "entry_price", "take_profit", "stop_loss", "leverage", 
-                    "status", "response_code", "latency_ms", "error_msg"
-                ])
+
+        # Ensure log file exists with header (thread-safe initialization)
+        with self._log_lock:
+            if not os.path.exists(self.LOG_FILE):
+                with open(self.LOG_FILE, 'w', newline='') as f:
+                    writer = csv.writer(f)
+                    writer.writerow([
+                        "timestamp", "signal_id", "symbol", "direction", "qty",
+                        "entry_price", "take_profit", "stop_loss", "leverage",
+                        "status", "response_code", "latency_ms", "error_msg"
+                    ])
 
     def configure(self, enabled: bool, api_key: str, api_secret: str, testnet: bool, 
                   leverage: int, pos_size_multiplier: float, dry_run: bool):
@@ -145,15 +147,16 @@ class SignalExecutor:
 
         end_time = time.time()
         latency_ms = (end_time - start_time) * 1000
-        
-        # Log to file
-        with open(self.LOG_FILE, 'a', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                datetime.utcnow().isoformat(), signal_id, symbol, direction, qty, 
-                entry_price, tp, sl, leverage, 
-                status, response_code, f"{latency_ms:.2f}", error_msg
-            ])
+
+        # Log to file (thread-safe)
+        with self._log_lock:
+            with open(self.LOG_FILE, 'a', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow([
+                    datetime.utcnow().isoformat(), signal_id, symbol, direction, qty,
+                    entry_price, tp, sl, leverage,
+                    status, response_code, f"{latency_ms:.2f}", error_msg
+                ])
             
         if self.update_bus:
             self.update_bus.publish({

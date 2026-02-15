@@ -35,6 +35,7 @@ from indicator_collector.trading_system.backtester import (
     indicator_defaults_for,
 )
 from automated_signals_worker import AutomatedSignalsWorker
+from chart_auto_refresh import compute_atr_channels
 from indicator_collector.trading_system.automated_signals import run_automated_signal_flow
 from indicator_collector.trading_system.auto_analyze_worker import (
     AutoAnalyzeWorker,
@@ -696,7 +697,11 @@ def create_realtime_candlestick_chart(
         subplot_titles=("Price & Indicators", "RSI", "MACD", "Volume"),
     )
 
-    atr_channels = atr_channels or {}
+    # Compute ATR channels from plot_df to ensure proper alignment with timestamps
+    if show_atr_channels:
+        atr_channels = compute_atr_channels(plot_df)
+    else:
+        atr_channels = {}
     order_blocks = order_blocks or []
 
     fig.add_trace(
@@ -3743,10 +3748,11 @@ def main():
                             worker = AutomatedSignalsWorker(
                                 symbol=config_store.symbol,
                                 timeframe=config_store.timeframe,
-                                session_state=st.session_state,
+                                update_bus=st.session_state.signals_update_bus,
                                 signal_config_payload=signal_config_payload,
                                 indicator_params=indicator_params,
                                 signal_params=signal_params,
+                                signal_executor=getattr(st.session_state, "signal_executor", None),
                             )
                             worker.start()
                             st.session_state.automated_signals_worker = worker
@@ -3779,6 +3785,7 @@ def main():
             signal_data = {}
             normalized_weights_map = {}
             raw_weights_map = {}
+            processed_signal = None
 
             error_message = state.get("error")
             result = state.get("result")

@@ -39,8 +39,26 @@ from indicator_collector.trading_system.data_sources.binance_source import (
 )
 from update_bus import UpdateBus
 from timeframe_utils import TIMEFRAME_TO_MS, map_tf_to_ms, get_boundary
+from logging_config import get_structured_logger
 
-logger = logging.getLogger(__name__)
+# Optional metrics import
+try:
+    from metrics import (
+        cache_hits,
+        cache_misses,
+        cache_size,
+        cache_evictions,
+        worker_starts,
+        worker_stops,
+        worker_errors,
+        worker_processing_time,
+    )
+    from metrics.collectors import get_cache_collector, get_worker_collector
+    METRICS_AVAILABLE = True
+except ImportError:
+    METRICS_AVAILABLE = False
+
+logger = get_structured_logger(__name__)
 
 _CANDLE_CACHE: Dict[tuple[str, str, int, int], pd.DataFrame] = {}
 _CACHE_LOCK = threading.Lock()
@@ -134,6 +152,11 @@ class ChartDataStore:
                 self._last_closed_close_ms = int(last_closed_close_ms)
                 self._analysis_pending = True
                 self._rebuild_with_forming_locked()
+                
+                # Update cache size metric
+                if METRICS_AVAILABLE:
+                    cache_size.labels(cache_name="chart_data_store").set(0)
+                
                 return 0, 0, 0
 
             combined = self._dedupe_sort(combined)
@@ -150,6 +173,11 @@ class ChartDataStore:
             self._last_closed_close_ms = int(last_closed_close_ms)
             self._analysis_pending = True
             self._rebuild_with_forming_locked()
+            
+            # Update cache size metric
+            if METRICS_AVAILABLE:
+                cache_size.labels(cache_name="chart_data_store").set(len(combined))
+            
             return appended, deduped, len(combined)
 
     def set_forming_bar(self, forming_df: Optional[pd.DataFrame]) -> None:
@@ -459,9 +487,24 @@ def invalidate_cache(symbol: str, timeframe: str) -> None:
     """Invalidate cache for a specific symbol/timeframe combination."""
     with _CACHE_LOCK:
         keys_to_remove = [k for k in _CANDLE_CACHE.keys() if k[0] == symbol and k[1] == timeframe]
+        removed_count = len(keys_to_remove)
         for key in keys_to_remove:
             del _CANDLE_CACHE[key]
-        logger.info(f"Invalidated {len(keys_to_remove)} cache entries for {symbol} {timeframe}")
+        
+        logger.info(
+            "Invalidated cache entries",
+            symbol=symbol,
+            timeframe=timeframe,
+            count=removed_count
+        )
+        
+        # Record cache eviction metric
+        if METRICS_AVAILABLE and removed_count > 0:
+            cache_evictions.labels(
+                cache_name="candle_cache",
+                reason="invalidation"
+            ).inc(removed_count)
+            cache_size.labels(cache_name="candle_cache").set(len(_CANDLE_CACHE))
 
 
 def fetch_closed_candles(
@@ -506,8 +549,22 @@ def fetch_closed_candles(
     if use_cache:
         with _CACHE_LOCK:
             if cache_key in _CANDLE_CACHE:
-                logger.debug(f"Using cached candles for {symbol} {timeframe}")
+                logger.debug(
+                    "Using cached candles",
+                    symbol=symbol,
+                    timeframe=timeframe
+                )
+                
+                # Record cache hit metric
+                if METRICS_AVAILABLE:
+                    cache_hits.labels(cache_name="candle_cache", key_type="default").inc()
+                    cache_size.labels(cache_name="candle_cache").set(len(_CANDLE_CACHE))
+                
                 return _CANDLE_CACHE[cache_key].copy(), last_closed_ts
+        
+        # Record cache miss
+        if METRICS_AVAILABLE:
+            cache_misses.labels(cache_name="candle_cache", key_type="default").inc()
     
     # Convert to datetime
     start_dt = datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc)
@@ -530,6 +587,10 @@ def fetch_closed_candles(
         # Store in cache
         with _CACHE_LOCK:
             _CANDLE_CACHE[cache_key] = df.copy()
+            
+            # Update cache size metric
+            if METRICS_AVAILABLE:
+                cache_size.labels(cache_name="candle_cache").set(len(_CANDLE_CACHE))
         
         return df, last_closed_ts
     except Exception as e:
@@ -564,6 +625,23 @@ class ChartAutoRefreshWorker:
         """Start the worker thread."""
         if self.ws_client is not None:
             return
+        
+        logger.info(
+            "Starting chart WebSocket worker",
+            symbol=self.symbol,
+            timeframe=self.timeframe
+        )
+        
+        # Record metrics
+        if METRICS_AVAILABLE:
+            worker_starts.labels(
+                worker_type="chart_auto_refresh",
+                symbol=self.symbol,
+                timeframe=self.timeframe
+            ).inc()
+            
+            collector = get_worker_collector()
+            collector.record_start("chart_auto_refresh", self.symbol, self.timeframe)
 
         from websocket_client import BinanceWebSocketClient
         self.ws_client = BinanceWebSocketClient(
@@ -573,14 +651,42 @@ class ChartAutoRefreshWorker:
             on_forming_bar=self._on_forming_kline,
         )
         self.ws_client.start()
-        logger.info(f"Chart WebSocket worker started for {self.symbol} {self.timeframe}")
+        
+        logger.info(
+            "Chart WebSocket worker started",
+            symbol=self.symbol,
+            timeframe=self.timeframe
+        )
 
     def stop(self) -> None:
         """Stop the worker thread."""
+        logger.info(
+            "Stopping chart WebSocket worker",
+            symbol=self.symbol,
+            timeframe=self.timeframe
+        )
+        
         if self.ws_client:
             self.ws_client.stop()
             self.ws_client = None
-        logger.info(f"Chart WebSocket worker stopped for {self.symbol} {self.timeframe}")
+        
+        # Record metrics
+        if METRICS_AVAILABLE:
+            worker_stops.labels(
+                worker_type="chart_auto_refresh",
+                symbol=self.symbol,
+                timeframe=self.timeframe,
+                reason="normal"
+            ).inc()
+            
+            collector = get_worker_collector()
+            collector.record_stop("chart_auto_refresh", self.symbol, self.timeframe, "normal")
+        
+        logger.info(
+            "Chart WebSocket worker stopped",
+            symbol=self.symbol,
+            timeframe=self.timeframe
+        )
 
     def _on_closed_kline(self, kline: Dict) -> None:
         """Callback for closed kline events (called from WebSocket thread)."""

@@ -20,6 +20,7 @@ import copy
 import datetime as dt
 import logging
 import threading
+import time
 from datetime import timezone
 from typing import Any, Dict, Optional
 
@@ -32,8 +33,17 @@ from indicator_collector.trading_system.data_sources.binance_source import Binan
 from indicator_collector.trading_system.signal_generator import SignalConfig
 from update_bus import UpdateBus
 from websocket_client import BinanceWebSocketClient
+from logging_config import get_structured_logger
 
-logger = logging.getLogger(__name__)
+# Optional metrics import
+try:
+    from metrics import worker_starts, worker_stops, worker_errors, worker_processing_time
+    from metrics.collectors import get_worker_collector
+    METRICS_AVAILABLE = True
+except ImportError:
+    METRICS_AVAILABLE = False
+
+logger = get_structured_logger(__name__)
 
 
 class AutomatedSignalsWorker:
@@ -81,9 +91,30 @@ class AutomatedSignalsWorker:
         if self.ws_client is not None:
             return
         
+        logger.info(
+            "Starting automated signals worker",
+            symbol=self.symbol,
+            timeframe=self.timeframe
+        )
+        
+        # Record metrics
+        if METRICS_AVAILABLE:
+            worker_starts.labels(
+                worker_type="automated_signals",
+                symbol=self.symbol,
+                timeframe=self.timeframe
+            ).inc()
+            
+            collector = get_worker_collector()
+            collector.record_start("automated_signals", self.symbol, self.timeframe)
+        
         # Initial synchronous fetch to bootstrap history
         try:
-            logger.info(f"Fetching initial history for {self.symbol} {self.timeframe}...")
+            logger.info(
+                "Fetching initial history",
+                symbol=self.symbol,
+                timeframe=self.timeframe
+            )
             server_time_ms = get_binance_server_time_ms(self.data_source)
             end_dt = dt.datetime.fromtimestamp(server_time_ms / 1000, tz=timezone.utc)
             # Fetch enough bars for indicators (e.g. 500)
@@ -101,7 +132,20 @@ class AutomatedSignalsWorker:
                 self._refresh_signals()
                 
         except Exception as e:
-            logger.error(f"Initial fetch failed for {self.symbol}: {e}", exc_info=True)
+            logger.error(
+                "Initial fetch failed",
+                symbol=self.symbol,
+                error=str(e)
+            )
+            
+            if METRICS_AVAILABLE:
+                worker_errors.labels(
+                    worker_type="automated_signals",
+                    symbol=self.symbol,
+                    timeframe=self.timeframe,
+                    error_type="initial_fetch"
+                ).inc()
+            
             # Continue anyway, WebSocket might fill gaps eventually or we retry later? 
             # For now, we proceed to start WS.
 
@@ -112,14 +156,42 @@ class AutomatedSignalsWorker:
             on_forming_bar=None,  # Signals only care about closed klines
         )
         self.ws_client.start()
-        logger.info(f"Automated signals WebSocket worker started for {self.symbol} {self.timeframe}")
+        
+        logger.info(
+            "Automated signals worker started",
+            symbol=self.symbol,
+            timeframe=self.timeframe
+        )
 
     def stop(self) -> None:
         """Stop the worker."""
+        logger.info(
+            "Stopping automated signals worker",
+            symbol=self.symbol,
+            timeframe=self.timeframe
+        )
+        
         if self.ws_client:
             self.ws_client.stop()
             self.ws_client = None
-        logger.info(f"Automated signals worker stopped for {self.symbol} {self.timeframe}")
+        
+        # Record metrics
+        if METRICS_AVAILABLE:
+            worker_stops.labels(
+                worker_type="automated_signals",
+                symbol=self.symbol,
+                timeframe=self.timeframe,
+                reason="normal"
+            ).inc()
+            
+            collector = get_worker_collector()
+            collector.record_stop("automated_signals", self.symbol, self.timeframe, "normal")
+        
+        logger.info(
+            "Automated signals worker stopped",
+            symbol=self.symbol,
+            timeframe=self.timeframe
+        )
 
     def _on_closed_kline(self, kline: Dict) -> None:
         """Callback for closed kline events."""
@@ -159,6 +231,8 @@ class AutomatedSignalsWorker:
         if self.df.empty:
             return
         
+        start_time = time.time()
+        
         last_ts = int(self.df["ts"].iloc[-1])
         end_dt = dt.datetime.fromtimestamp(last_ts / 1000, tz=timezone.utc)
         # We pass the full range of our dataframe
@@ -197,48 +271,98 @@ class AutomatedSignalsWorker:
         available_candles = len(self.df) if self.df is not None else 0
         if available_candles < min_candles:
             logger.warning(
-                f"Insufficient candles for {self.symbol} {self.timeframe}: "
-                f"{available_candles} available, {min_candles} required. "
-                f"Skipping signal generation."
+                "Insufficient candles for signal generation",
+                symbol=self.symbol,
+                timeframe=self.timeframe,
+                available=available_candles,
+                required=min_candles
             )
+            
+            if METRICS_AVAILABLE:
+                worker_errors.labels(
+                    worker_type="automated_signals",
+                    symbol=self.symbol,
+                    timeframe=self.timeframe,
+                    error_type="insufficient_data"
+                ).inc()
+            
             return
 
-        # Run automated signal flow
-        result = run_automated_signal_flow(
-            self.symbol,
-            self.timeframe,
-            start_dt,
-            end_dt,
-            validate_real_data=True,
-            signal_config=signal_config,
-            indicator_params=self.indicator_params,
-            signal_params=self.signal_params,
-            min_candles=min_candles,
-            preloaded_df=self.df,
-        )
+        try:
+            # Run automated signal flow
+            result = run_automated_signal_flow(
+                self.symbol,
+                self.timeframe,
+                start_dt,
+                end_dt,
+                validate_real_data=True,
+                signal_config=signal_config,
+                indicator_params=self.indicator_params,
+                signal_params=self.signal_params,
+                min_candles=min_candles,
+                preloaded_df=self.df,
+            )
+            
+            processing_time = time.time() - start_time
+            
+            # Record metrics
+            if METRICS_AVAILABLE:
+                worker_processing_time.labels(
+                    worker_type="automated_signals",
+                    symbol=self.symbol,
+                    timeframe=self.timeframe
+                ).observe(processing_time)
+            
+            logger.debug(
+                "Signal refresh completed",
+                symbol=self.symbol,
+                timeframe=self.timeframe,
+                processing_time_ms=round(processing_time * 1000, 2)
+            )
 
-        # Prepare result dict
-        result_dict = {
-            "candles": result.candles,
-            "processed_payload": result.processed_payload,
-            "explicit_signal": result.explicit_signal,
-        }
-        
-        # Publish update
-        # Note: last_ts is the open_time of the last bar. The "end_time" of the analysis is effectively close_time = last_ts + tf_ms
-        last_closed_close_ms = last_ts + self.tf_ms
-        
-        self.update_bus.publish({
-            "type": "signals_update",
-            "result": result_dict,
-            "symbol": self.symbol,
-            "timeframe": self.timeframe,
-            "auto_end_time_ms": last_closed_close_ms
-        })
+            # Prepare result dict
+            result_dict = {
+                "candles": result.candles,
+                "processed_payload": result.processed_payload,
+                "explicit_signal": result.explicit_signal,
+            }
+            
+            # Publish update
+            # Note: last_ts is the open_time of the last bar. The "end_time" of the analysis is effectively close_time = last_ts + tf_ms
+            last_closed_close_ms = last_ts + self.tf_ms
+            
+            self.update_bus.publish({
+                "type": "signals_update",
+                "result": result_dict,
+                "symbol": self.symbol,
+                "timeframe": self.timeframe,
+                "auto_end_time_ms": last_closed_close_ms
+            })
 
-        # Execute if enabled
-        if self.signal_executor and self.signal_executor.enabled:
-            self._execute_signal(result.explicit_signal, last_closed_close_ms)
+            # Execute if enabled
+            if self.signal_executor and self.signal_executor.enabled:
+                self._execute_signal(result.explicit_signal, last_closed_close_ms)
+                
+        except Exception as e:
+            processing_time = time.time() - start_time
+            
+            logger.error(
+                "Failed to refresh signals",
+                symbol=self.symbol,
+                timeframe=self.timeframe,
+                error=str(e),
+                processing_time_ms=round(processing_time * 1000, 2)
+            )
+            
+            if METRICS_AVAILABLE:
+                worker_errors.labels(
+                    worker_type="automated_signals",
+                    symbol=self.symbol,
+                    timeframe=self.timeframe,
+                    error_type="signal_generation"
+                ).inc()
+            
+            raise
 
     def _execute_signal(self, explicit_signal: Dict[str, Any], generated_at_ms: int) -> None:
         """Execute signal via executor."""

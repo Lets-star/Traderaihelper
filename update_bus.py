@@ -12,7 +12,17 @@ import queue
 import threading
 from typing import Any, Dict, List, Optional
 
-logger = logging.getLogger(__name__)
+from logging_config import get_structured_logger
+
+# Optional metrics import
+try:
+    from metrics import update_bus_messages, update_bus_dropped, update_bus_queue_size
+    from metrics.collectors import get_update_bus_collector
+    METRICS_AVAILABLE = True
+except ImportError:
+    METRICS_AVAILABLE = False
+
+logger = get_structured_logger(__name__)
 
 
 class UpdateBus:
@@ -40,24 +50,44 @@ class UpdateBus:
             True if published successfully, False if queue is full
         """
         if not isinstance(update, dict):
-            logger.warning(f"Invalid update payload: {type(update)}")
+            logger.warning("Invalid update payload", payload_type=type(update).__name__)
             return False
         
         if "type" not in update:
-            logger.warning(f"Update payload missing 'type' field: {update}")
+            logger.warning("Update payload missing 'type' field", update=update)
             return False
+        
+        msg_type = update.get("type", "unknown")
         
         try:
             self._queue.put_nowait(update)
+            
+            # Record metrics
+            if METRICS_AVAILABLE:
+                update_bus_messages.labels(message_type=msg_type).inc()
+                update_bus_queue_size.set(self._queue.qsize())
+                
+                collector = get_update_bus_collector()
+                collector.record_publish(msg_type)
+            
             return True
         except queue.Full:
             with self._lock:
                 self._dropped_count += 1
                 if self._dropped_count % 10 == 1:  # Log every 10th drop
                     logger.warning(
-                        f"UpdateBus queue full, dropped {self._dropped_count} updates "
-                        f"(type={update.get('type')})"
+                        "UpdateBus queue full, dropping updates",
+                        dropped_count=self._dropped_count,
+                        message_type=msg_type
                     )
+            
+            # Record dropped metric
+            if METRICS_AVAILABLE:
+                update_bus_dropped.labels(message_type=msg_type, reason="queue_full").inc()
+                
+                collector = get_update_bus_collector()
+                collector.record_dropped(msg_type, "queue_full")
+            
             return False
     
     def drain(self, max_updates: Optional[int] = None) -> List[Dict[str, Any]]:
@@ -84,6 +114,10 @@ class UpdateBus:
             except queue.Empty:
                 break
         
+        # Update queue size metric after draining
+        if METRICS_AVAILABLE:
+            update_bus_queue_size.set(self._queue.qsize())
+        
         return updates
     
     def has_updates(self) -> bool:
@@ -102,12 +136,25 @@ class UpdateBus:
     
     def clear(self) -> None:
         """Clear all pending updates."""
+        cleared = 0
         while not self._queue.empty():
             try:
                 self._queue.get_nowait()
+                cleared += 1
             except queue.Empty:
                 break
+        
+        # Record dropped metric for cleared messages
+        if METRICS_AVAILABLE and cleared > 0:
+            update_bus_dropped.labels(message_type="all", reason="clear").inc(cleared)
+            update_bus_queue_size.set(0)
     
     def size(self) -> int:
         """Get the current queue size."""
-        return self._queue.qsize()
+        size = self._queue.qsize()
+        
+        # Update metric
+        if METRICS_AVAILABLE:
+            update_bus_queue_size.set(size)
+        
+        return size

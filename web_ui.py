@@ -2080,7 +2080,6 @@ def main():
                     timeframe=selected_timeframe,
                     update_bus=st.session_state.chart_update_bus,
                     use_websocket=True,
-                    session_state=st.session_state,
                     num_bars=selected_period,
                 )
                 if success:

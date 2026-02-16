@@ -49,10 +49,20 @@ class ChartWorkerManager:
         timeframe: str,
         update_bus: UpdateBus,
         num_bars: int = 200,
-        session_state: Optional[Any] = None,
         use_websocket: bool = True,
     ) -> bool:
-        """Start a new chart worker (stops existing worker if any)."""
+        """Start a new chart worker (stops existing worker if any).
+
+        Args:
+            symbol: Trading symbol
+            timeframe: Timeframe string
+            update_bus: UpdateBus for worker communication
+            num_bars: Number of bars to fetch
+            use_websocket: Enable WebSocket updates
+
+        Returns:
+            True if worker started successfully, False otherwise
+        """
         with self._lock:
             self.stop()
             

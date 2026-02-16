@@ -5,21 +5,25 @@ FEATURES:
 - Thread-safe CSV logging with threading.Lock
 - Validation for processed signals
 - st.secrets support for API keys with fallback to environment variables
-- Threaded execution (replaces asyncio.run() approach)
-- Comprehensive error handling
+- Threaded execution with ThreadPoolExecutor (replaces asyncio.run() approach)
+- Comprehensive error handling (no bare excepts)
 - Enhanced logging and monitoring
+- Context manager support for ByBitClient
+- UpdateBus integration for real-time updates
 """
 
+from __future__ import annotations
+
+import csv
 import logging
+import os
 import threading
 import time
-import json
-import os
-import csv
-import requests
-from typing import Dict, Any, Optional, List
-from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+from typing import Dict, Any, List, Optional, Tuple
+
+import requests
 
 from bybit_client import ByBitClient
 from update_bus import UpdateBus
@@ -30,12 +34,26 @@ logger = logging.getLogger(__name__)
 class SignalExecutor:
     """
     Thread-safe signal executor for ByBit with enhanced validation and logging.
+
+    This class provides:
+    - Thread-safe signal execution using ThreadPoolExecutor
+    - Comprehensive signal validation
+    - CSV logging with file locking
+    - st.secrets integration with environment variable fallbacks
+    - UpdateBus integration for real-time execution updates
+    - Dry run mode for testing
     """
 
     LOG_FILE = "trade_execution_log.csv"
     MAX_WORKER_THREADS = 3
 
-    def __init__(self, update_bus: Optional[UpdateBus] = None):
+    def __init__(self, update_bus: Optional[UpdateBus] = None) -> None:
+        """
+        Initialize signal executor.
+
+        Args:
+            update_bus: Optional UpdateBus for publishing execution updates
+        """
         self.client: Optional[ByBitClient] = None
         self.update_bus = update_bus
         self.enabled = False
@@ -52,6 +70,12 @@ class SignalExecutor:
 
         # Thread pool for concurrent execution
         self._executor = ThreadPoolExecutor(max_workers=self.MAX_WORKER_THREADS)
+
+        # Statistics tracking
+        self._total_executions = 0
+        self._successful_executions = 0
+        self._failed_executions = 0
+        self._validation_errors = 0
 
         # Ensure log file exists with header
         self._ensure_log_file()
@@ -238,9 +262,16 @@ class SignalExecutor:
 
         return errors
 
-    def configure(self, enabled: bool, api_key: str = "", api_secret: str = "",
-                  testnet: bool = True, leverage: int = 5,
-                  pos_size_multiplier: float = 1.0, dry_run: bool = False):
+    def configure(
+        self,
+        enabled: bool,
+        api_key: str = "",
+        api_secret: str = "",
+        testnet: bool = True,
+        leverage: int = 5,
+        pos_size_multiplier: float = 1.0,
+        dry_run: bool = False,
+    ) -> None:
         """
         Configure executor with optional st.secrets integration.
 
@@ -292,6 +323,10 @@ class SignalExecutor:
         # Validate signal before execution
         validation_errors = self._validate_signal(signal)
         if validation_errors:
+            with self._lock:
+                self._total_executions += 1
+                self._validation_errors += 1
+
             error_msg = f"Signal validation failed: {', '.join(validation_errors)}"
             logger.error(f"Signal validation failed: {validation_errors}")
 
@@ -410,6 +445,14 @@ class SignalExecutor:
 
         end_time = time.time()
         latency_ms = (end_time - start_time) * 1000
+
+        # Update statistics
+        with self._lock:
+            self._total_executions += 1
+            if response_code == 0:
+                self._successful_executions += 1
+            else:
+                self._failed_executions += 1
 
         # Log execution
         self._log_trade({
@@ -533,7 +576,40 @@ class SignalExecutor:
             self._executor.shutdown(wait=True)
         logger.info("Signal executor cleaned up")
 
-    def __del__(self):
+    def get_statistics(self) -> Dict[str, Any]:
+        """
+        Get execution statistics.
+
+        Returns:
+            Dictionary with execution statistics
+        """
+        with self._lock:
+            total = self._total_executions
+            success_rate = (
+                (self._successful_executions / total * 100)
+                if total > 0
+                else 0.0
+            )
+
+            return {
+                "total_executions": total,
+                "successful_executions": self._successful_executions,
+                "failed_executions": self._failed_executions,
+                "validation_errors": self._validation_errors,
+                "success_rate_percent": round(success_rate, 2),
+                "enabled": self.enabled,
+                "dry_run": self.dry_run,
+            }
+
+    def reset_statistics(self) -> None:
+        """Reset execution statistics."""
+        with self._lock:
+            self._total_executions = 0
+            self._successful_executions = 0
+            self._failed_executions = 0
+            self._validation_errors = 0
+
+    def __del__(self) -> None:
         """Destructor to ensure cleanup."""
         try:
             self.cleanup()

@@ -27,8 +27,17 @@ import requests
 
 from bybit_client import ByBitClient
 from update_bus import UpdateBus
+from logging_config import get_structured_logger
 
-logger = logging.getLogger(__name__)
+# Optional metrics import
+try:
+    from metrics import signal_executions, signal_execution_latency, signal_validation_errors, active_signals
+    from metrics.collectors import get_signal_collector
+    METRICS_AVAILABLE = True
+except ImportError:
+    METRICS_AVAILABLE = False
+
+logger = get_structured_logger(__name__)
 
 
 class SignalExecutor:
@@ -326,9 +335,26 @@ class SignalExecutor:
             with self._lock:
                 self._total_executions += 1
                 self._validation_errors += 1
+            
+            # Track validation error metrics
+            if METRICS_AVAILABLE:
+                signal_validation_errors.labels(
+                    symbol=signal.get("symbol", "unknown"),
+                    error_field=validation_errors[0].split(":")[0] if validation_errors else "unknown"
+                ).inc()
+                
+                collector = get_signal_collector()
+                collector.record_validation_error(
+                    signal.get("symbol", "unknown"),
+                    validation_errors[0].split(":")[0] if validation_errors else "unknown"
+                )
 
             error_msg = f"Signal validation failed: {', '.join(validation_errors)}"
-            logger.error(f"Signal validation failed: {validation_errors}")
+            logger.error(
+                "Signal validation failed",
+                signal_id=signal.get("signal_id"),
+                errors=validation_errors
+            )
 
             # Log validation failure
             self._log_trade({
@@ -363,8 +389,18 @@ class SignalExecutor:
         # Get leverage from signal or default
         leverage = signal.get("leverage", self.default_leverage)
 
-        logger.info(f"Processing signal {signal_id} for {symbol} {direction} x {qty} "
-                   f"(thread: {thread_id})")
+        logger.info(
+            "Processing signal",
+            signal_id=signal_id,
+            symbol=symbol,
+            direction=direction,
+            quantity=qty,
+            thread_id=thread_id
+        )
+        
+        # Track active signals
+        if METRICS_AVAILABLE:
+            active_signals.labels(symbol=symbol).inc()
 
         start_time = time.time()
 
@@ -445,6 +481,7 @@ class SignalExecutor:
 
         end_time = time.time()
         latency_ms = (end_time - start_time) * 1000
+        latency_sec = latency_ms / 1000
 
         # Update statistics
         with self._lock:
@@ -453,6 +490,43 @@ class SignalExecutor:
                 self._successful_executions += 1
             else:
                 self._failed_executions += 1
+        
+        # Track metrics
+        if METRICS_AVAILABLE:
+            active_signals.labels(symbol=symbol).dec()
+            
+            success = response_code == 0
+            status_label = "success" if success else "error"
+            error_type = ""
+            if not success:
+                if "validation" in error_msg.lower():
+                    error_type = "validation"
+                elif "network" in error_msg.lower():
+                    error_type = "network"
+                elif "timeout" in error_msg.lower():
+                    error_type = "timeout"
+                else:
+                    error_type = "other"
+            
+            signal_executions.labels(
+                symbol=symbol,
+                status=status_label,
+                error_type=error_type or "none"
+            ).inc()
+            signal_execution_latency.labels(
+                symbol=symbol,
+                status=status_label
+            ).observe(latency_sec)
+            
+            # Record to collector
+            collector = get_signal_collector()
+            collector.record(
+                signal_id=signal_id,
+                symbol=symbol,
+                status=status,
+                latency_ms=latency_ms,
+                error_msg=error_msg
+            )
 
         # Log execution
         self._log_trade({

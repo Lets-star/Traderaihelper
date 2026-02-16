@@ -26,7 +26,17 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from datetime import datetime
 
-logger = logging.getLogger(__name__)
+from logging_config import get_structured_logger
+
+# Optional metrics import
+try:
+    from metrics import api_requests, api_latency, api_rate_limits, api_errors, api_active_requests
+    from metrics.collectors import get_api_collector
+    METRICS_AVAILABLE = True
+except ImportError:
+    METRICS_AVAILABLE = False
+
+logger = get_structured_logger(__name__)
 
 
 class ByBitClient:
@@ -281,6 +291,10 @@ class ByBitClient:
             }
 
         start_time = time.time()
+        
+        # Track active requests
+        if METRICS_AVAILABLE:
+            api_active_requests.labels(endpoint=endpoint, method=method).inc()
 
         try:
             response = session.request(
@@ -292,20 +306,36 @@ class ByBitClient:
             )
 
             latency_ms = (time.time() - start_time) * 1000
+            latency_sec = latency_ms / 1000
 
-            logger.debug(f"ByBit API call: {method} {endpoint} | "
-                        f"Status: {response.status_code} | Latency: {latency_ms:.2f}ms")
+            logger.debug(
+                "ByBit API call",
+                method=method,
+                endpoint=endpoint,
+                status_code=response.status_code,
+                latency_ms=round(latency_ms, 2),
+                attempt=retry_count + 1
+            )
 
             # Handle HTTP errors
             if response.status_code != 200:
                 # Handle rate limiting specifically
                 if response.status_code == 429:
-                    logger.warning(f"Rate limit hit (429) for {method} {endpoint}, "
-                                 f"attempt {retry_count + 1}")
+                    logger.warning(
+                        "Rate limit hit",
+                        method=method,
+                        endpoint=endpoint,
+                        attempt=retry_count + 1
+                    )
+                    
+                    if METRICS_AVAILABLE:
+                        api_rate_limits.labels(endpoint=endpoint, method=method).inc()
+                        api_requests.labels(endpoint=endpoint, method=method, status="rate_limited").inc()
+                        api_latency.labels(endpoint=endpoint, method=method, status="rate_limited").observe(latency_sec)
 
                     if retry_count < self.MAX_RETRIES:
                         wait_time = self.RATE_LIMIT_BACKOFF[min(retry_count, len(self.RATE_LIMIT_BACKOFF)-1)]
-                        logger.info(f"Retrying in {wait_time} seconds...")
+                        logger.info("Retrying after rate limit", wait_time=wait_time)
                         time.sleep(wait_time)
                         return self._make_request(method, endpoint, params, retry_count + 1)
                     else:
@@ -315,7 +345,17 @@ class ByBitClient:
                         }
 
                 # Other client errors - don't retry
-                logger.error(f"HTTP {response.status_code}: {response.text}")
+                logger.error(
+                    "HTTP error",
+                    status_code=response.status_code,
+                    response_text=response.text[:200]
+                )
+                
+                if METRICS_AVAILABLE:
+                    api_requests.labels(endpoint=endpoint, method=method, status="error").inc()
+                    api_latency.labels(endpoint=endpoint, method=method, status="error").observe(latency_sec)
+                    api_errors.labels(endpoint=endpoint, method=method, error_code=str(response.status_code)).inc()
+                
                 try:
                     return response.json()
                 except ValueError:
@@ -327,21 +367,43 @@ class ByBitClient:
             # Parse successful response
             try:
                 resp_json = response.json()
+                
+                # Record metrics for successful request
+                if METRICS_AVAILABLE:
+                    api_requests.labels(endpoint=endpoint, method=method, status="success").inc()
+                    api_latency.labels(endpoint=endpoint, method=method, status="success").observe(latency_sec)
+                    
+                    # Also record to collector for detailed stats
+                    collector = get_api_collector()
+                    collector.record_request(endpoint, method, "success", latency_ms)
+                
                 return resp_json
             except ValueError as e:
-                logger.error(f"Invalid JSON response: {response.text}")
+                logger.error("Invalid JSON response", response_text=response.text[:200])
+                
+                if METRICS_AVAILABLE:
+                    api_requests.labels(endpoint=endpoint, method=method, status="error").inc()
+                    api_latency.labels(endpoint=endpoint, method=method, status="error").observe(latency_sec)
+                    api_errors.labels(endpoint=endpoint, method=method, error_code="JSON_PARSE").inc()
+                
                 return {
                     "retCode": -1,
                     "retMsg": f"Invalid JSON: {response.text}"
                 }
 
         except requests.exceptions.Timeout as e:
-            logger.error(f"Request timeout (attempt {retry_count + 1}): {e}")
+            latency_ms = (time.time() - start_time) * 1000
+            logger.error("Request timeout", attempt=retry_count + 1, error=str(e))
+            
+            if METRICS_AVAILABLE:
+                api_requests.labels(endpoint=endpoint, method=method, status="timeout").inc()
+                api_latency.labels(endpoint=endpoint, method=method, status="timeout").observe(latency_ms / 1000)
+                api_errors.labels(endpoint=endpoint, method=method, error_code="TIMEOUT").inc()
 
             # Retry on timeout
             if retry_count < self.MAX_RETRIES:
                 wait_time = self.RATE_LIMIT_BACKOFF[min(retry_count, len(self.RATE_LIMIT_BACKOFF)-1)]
-                logger.info(f"Retrying in {wait_time} seconds...")
+                logger.info("Retrying after timeout", wait_time=wait_time)
                 time.sleep(wait_time)
                 return self._make_request(method, endpoint, params, retry_count + 1)
             else:
@@ -351,12 +413,18 @@ class ByBitClient:
                 }
 
         except requests.exceptions.ConnectionError as e:
-            logger.error(f"Connection error (attempt {retry_count + 1}): {e}")
+            latency_ms = (time.time() - start_time) * 1000
+            logger.error("Connection error", attempt=retry_count + 1, error=str(e))
+            
+            if METRICS_AVAILABLE:
+                api_requests.labels(endpoint=endpoint, method=method, status="connection_error").inc()
+                api_latency.labels(endpoint=endpoint, method=method, status="connection_error").observe(latency_ms / 1000)
+                api_errors.labels(endpoint=endpoint, method=method, error_code="CONNECTION").inc()
 
             # Retry on connection errors
             if retry_count < self.MAX_RETRIES:
                 wait_time = self.RATE_LIMIT_BACKOFF[min(retry_count, len(self.RATE_LIMIT_BACKOFF)-1)]
-                logger.info(f"Retrying in {wait_time} seconds...")
+                logger.info("Retrying after connection error", wait_time=wait_time)
                 time.sleep(wait_time)
                 return self._make_request(method, endpoint, params, retry_count + 1)
             else:
@@ -366,12 +434,18 @@ class ByBitClient:
                 }
 
         except requests.exceptions.RequestException as e:
-            logger.error(f"Request error (attempt {retry_count + 1}): {e}")
+            latency_ms = (time.time() - start_time) * 1000
+            logger.error("Request error", attempt=retry_count + 1, error=str(e))
+            
+            if METRICS_AVAILABLE:
+                api_requests.labels(endpoint=endpoint, method=method, status="error").inc()
+                api_latency.labels(endpoint=endpoint, method=method, status="error").observe(latency_ms / 1000)
+                api_errors.labels(endpoint=endpoint, method=method, error_code="REQUEST").inc()
 
             # Retry on other request errors
             if retry_count < self.MAX_RETRIES:
                 wait_time = self.RATE_LIMIT_BACKOFF[min(retry_count, len(self.RATE_LIMIT_BACKOFF)-1)]
-                logger.info(f"Retrying in {wait_time} seconds...")
+                logger.info("Retrying after request error", wait_time=wait_time)
                 time.sleep(wait_time)
                 return self._make_request(method, endpoint, params, retry_count + 1)
             else:
@@ -381,11 +455,23 @@ class ByBitClient:
                 }
 
         except Exception as e:
-            logger.error(f"Unexpected error (attempt {retry_count + 1}): {e}")
+            latency_ms = (time.time() - start_time) * 1000
+            logger.error("Unexpected error", attempt=retry_count + 1, error=str(e))
+            
+            if METRICS_AVAILABLE:
+                api_requests.labels(endpoint=endpoint, method=method, status="error").inc()
+                api_latency.labels(endpoint=endpoint, method=method, status="error").observe(latency_ms / 1000)
+                api_errors.labels(endpoint=endpoint, method=method, error_code="UNEXPECTED").inc()
+            
             return {
                 "retCode": -1,
                 "retMsg": f"Unexpected error: {str(e)}"
             }
+        
+        finally:
+            # Decrement active requests
+            if METRICS_AVAILABLE:
+                api_active_requests.labels(endpoint=endpoint, method=method).dec()
 
     def set_leverage(self, symbol: str, leverage: Union[str, int, float]) -> Dict[str, Any]:
         """

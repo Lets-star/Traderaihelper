@@ -13,7 +13,11 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, TYPE_CHECKING
+
+# Import Protocol types for better type safety
+if TYPE_CHECKING:
+    from trader_types.protocols import StreamlitComponent
 
 # =============================================================================
 # UI Constants
@@ -148,7 +152,7 @@ def num_int(
     max_v: Optional[int] = None,
     step: int = 1,
     key: Optional[str] = None,
-    ui: Optional[Any] = None,
+    ui: Optional["StreamlitComponent"] = None,
     help_text: Optional[str] = None,
     format_str: Optional[str] = "%d",
 ) -> int:
@@ -183,7 +187,7 @@ def num_float(
     max_v: Optional[float] = None,
     step: float = 0.1,
     key: Optional[str] = None,
-    ui: Optional[Any] = None,
+    ui: Optional["StreamlitComponent"] = None,
     help_text: Optional[str] = None,
     format_str: Optional[str] = None,
 ) -> float:

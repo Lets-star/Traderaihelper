@@ -3,6 +3,8 @@ Thread-safe UpdateBus for worker-to-main-thread communication.
 
 This pattern ensures no Streamlit API calls from worker threads.
 Workers publish Dict payloads with a "type" field; main thread drains and applies updates.
+
+This module provides both the legacy UpdateBus and a generic TypedUpdateBus for type safety.
 """
 
 from __future__ import annotations
@@ -10,7 +12,7 @@ from __future__ import annotations
 import logging
 import queue
 import threading
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Generic, List, Optional, TypeVar
 
 from logging_config import get_structured_logger
 
@@ -24,9 +26,17 @@ except ImportError:
 
 logger = get_structured_logger(__name__)
 
+# Type variable for generic UpdateBus
+T = TypeVar("T")
+
 
 class UpdateBus:
-    """Thread-safe message bus for worker-to-main-thread updates."""
+    """
+    Thread-safe message bus for worker-to-main-thread updates.
+    
+    This is the legacy non-generic version for backward compatibility.
+    For type-safe updates, use TypedUpdateBus[T] instead.
+    """
     
     def __init__(self, max_size: int = 1000) -> None:
         """
@@ -158,3 +168,97 @@ class UpdateBus:
             update_bus_queue_size.set(size)
         
         return size
+
+
+class TypedUpdateBus(Generic[T]):
+    """
+    Type-safe generic update bus for worker-to-main-thread communication.
+    
+    Type parameter T specifies the type of messages in the bus.
+    
+    Example:
+        from types import UpdateMessage
+        bus: TypedUpdateBus[UpdateMessage] = TypedUpdateBus()
+        bus.publish({"type": "EXECUTION_UPDATE", "status": "pending"})
+    """
+    
+    def __init__(self, max_size: int = 1000) -> None:
+        """
+        Initialize the typed update bus.
+        
+        Args:
+            max_size: Maximum queue size (prevents unbounded growth)
+        """
+        self._queue: queue.Queue[T] = queue.Queue(maxsize=max_size)
+        self._lock = threading.RLock()
+        self._dropped_count = 0
+    
+    def publish(self, update: T) -> bool:
+        """
+        Publish an update to the bus (called from worker threads).
+        
+        Args:
+            update: Update payload of type T
+            
+        Returns:
+            True if published successfully, False if queue is full
+        """
+        try:
+            self._queue.put_nowait(update)
+            return True
+        except queue.Full:
+            with self._lock:
+                self._dropped_count += 1
+            return False
+    
+    def drain(self, max_updates: Optional[int] = None) -> List[T]:
+        """
+        Drain updates from the bus (called from main thread).
+        
+        Args:
+            max_updates: Maximum number of updates to drain (None = drain all)
+            
+        Returns:
+            List of update payloads of type T
+        """
+        updates: List[T] = []
+        count = 0
+        
+        while True:
+            if max_updates is not None and count >= max_updates:
+                break
+            
+            try:
+                update = self._queue.get_nowait()
+                updates.append(update)
+                count += 1
+            except queue.Empty:
+                break
+        
+        return updates
+    
+    def has_updates(self) -> bool:
+        """Check if there are pending updates."""
+        return not self._queue.empty()
+    
+    def get_dropped_count(self) -> int:
+        """Get the number of dropped updates."""
+        with self._lock:
+            return self._dropped_count
+    
+    def reset_dropped_count(self) -> None:
+        """Reset the dropped update counter."""
+        with self._lock:
+            self._dropped_count = 0
+    
+    def clear(self) -> None:
+        """Clear all pending updates."""
+        while not self._queue.empty():
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                break
+    
+    def size(self) -> int:
+        """Get the current queue size."""
+        return self._queue.qsize()

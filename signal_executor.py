@@ -21,13 +21,16 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple, TYPE_CHECKING
 
 import requests
 
 from bybit_client import ByBitClient
 from update_bus import UpdateBus
 from logging_config import get_structured_logger
+from config import AppSettings
+from trader_types import SignalPayload, ExecutionResult, is_valid_signal
+from trader_types.enums import ExecutionStatus, SignalDirection
 
 # Optional metrics import
 try:
@@ -104,44 +107,18 @@ class SignalExecutor:
 
     def _get_api_credentials(self) -> tuple[str, str]:
         """
-        Securely get API credentials from st.secrets with fallback.
+        Securely get API credentials from Pydantic Settings with st.secrets fallback.
 
         Returns:
             Tuple of (api_key, api_secret)
         """
-        # Try to get from st.secrets first
-        try:
-            import streamlit as st
-
-            if hasattr(st, 'secrets') and st.secrets:
-                api_key = st.secrets.get("BYBIT_API_KEY")
-                api_secret = st.secrets.get("BYBIT_API_SECRET")
-
-                if api_key and api_secret:
-                    logger.info("Using ByBit credentials from st.secrets")
-                    return api_key, api_secret
-
-                # Try bybit section
-                api_key = st.secrets.get("bybit", {}).get("api_key")
-                api_secret = st.secrets.get("bybit", {}).get("api_secret")
-
-                if api_key and api_secret:
-                    logger.info("Using ByBit credentials from st.secrets[bybit]")
-                    return api_key, api_secret
-
-        except ImportError:
-            logger.debug("Streamlit not available, using environment variables")
-        except AttributeError:
-            logger.debug("st.secrets not available, using environment variables")
-        except Exception as e:
-            logger.warning(f"Error accessing st.secrets: {e}")
-
-        # Fallback to environment variables (always executed)
-        api_key = os.getenv("BYBIT_API_KEY")
-        api_secret = os.getenv("BYBIT_API_SECRET")
-
+        # Use Pydantic Settings (handles both st.secrets and environment variables)
+        settings = AppSettings.from_secrets()
+        
+        api_key, api_secret = settings.get_bybit_credentials()
+        
         if api_key and api_secret:
-            logger.info("Using ByBit credentials from environment variables")
+            logger.info("Using ByBit credentials from settings")
             return api_key, api_secret
 
         raise ValueError("API credentials not found in st.secrets or environment variables")
@@ -179,7 +156,7 @@ class SignalExecutor:
         Validate processed signal structure and content.
 
         Args:
-            signal: Signal dictionary to validate
+            signal: Signal dictionary to validate (SignalPayload structure)
 
         Returns:
             List of validation error messages (empty if valid)
@@ -190,7 +167,11 @@ class SignalExecutor:
             errors.append("Signal must be a non-empty dictionary")
             return errors
 
-        # Required fields
+        # Use TypeGuard for initial validation
+        if not is_valid_signal(signal):
+            errors.append("Signal does not match SignalPayload structure")
+
+        # Required fields (from SignalPayload)
         required_fields = ["signal_id", "symbol", "direction", "entry_price"]
         for field in required_fields:
             if field not in signal:
@@ -212,13 +193,16 @@ class SignalExecutor:
                 # Convert to uppercase
                 signal["symbol"] = symbol.upper()
 
-        # Validate direction
+        # Validate direction using Enum
         direction = signal.get("direction")
         if direction:
             if not isinstance(direction, str):
                 errors.append(f"Direction must be a string: {type(direction)}")
-            elif direction.upper() not in ["LONG", "SHORT"]:
-                errors.append(f"Invalid direction: {direction}. Must be LONG or SHORT")
+            else:
+                try:
+                    SignalDirection(direction.upper())
+                except ValueError:
+                    errors.append(f"Invalid direction: {direction}. Must be LONG or SHORT")
 
         # Validate numeric fields
         numeric_fields = ["entry_price", "take_profit", "stop_loss", "leverage", "quantity"]
@@ -317,15 +301,15 @@ class SignalExecutor:
                 logger.error(f"Unexpected error configuring executor: {e}", exc_info=True)
                 self.enabled = False
 
-    def _execute_signal_sync(self, signal: Dict[str, Any]) -> Dict[str, Any]:
+    def _execute_signal_sync(self, signal: Dict[str, Any]) -> ExecutionResult:
         """
         Execute signal synchronously with thread safety and validation.
 
         Args:
-            signal: Validated signal dictionary
+            signal: Validated signal dictionary (SignalPayload structure)
 
         Returns:
-            Execution result dictionary
+            Execution result dictionary (ExecutionResult structure)
         """
         thread_id = threading.current_thread().ident
 
@@ -601,19 +585,19 @@ class SignalExecutor:
         except Exception as e:
             logger.error(f"Failed to start execution thread: {e}")
 
-    def execute_signal_sync(self, signal: Dict[str, Any]) -> Dict[str, Any]:
+    def execute_signal_sync(self, signal: Dict[str, Any]) -> ExecutionResult:
         """
         Synchronous execution that waits for completion.
 
         Args:
-            signal: Signal dictionary to execute
+            signal: Signal dictionary to execute (SignalPayload structure)
 
         Returns:
-            Execution result
+            Execution result (ExecutionResult structure)
         """
         if not self.enabled:
             return {
-                "status": "disabled",
+                "status": ExecutionStatus.DISABLED.value,
                 "error": "Signal execution is disabled"
             }
 

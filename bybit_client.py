@@ -9,6 +9,7 @@ FEATURES:
 - Connection pooling for HTTP requests
 - Thread-safe CSV logging for all API operations
 - Improved logging and error handling
+- Type-safe Enums for OrderSide and OrderType
 """
 
 import time
@@ -27,6 +28,7 @@ from urllib3.util.retry import Retry
 from datetime import datetime
 
 from logging_config import get_structured_logger
+from trader_types.enums import OrderSide, OrderType, OrderStatus
 
 # Optional metrics import
 try:
@@ -182,20 +184,27 @@ class ByBitClient:
         if not symbol.isupper():
             symbol = symbol.upper()
 
-    def _validate_side(self, side: str) -> str:
-        """Validate and normalize order side."""
+    def _validate_side(self, side: Union[str, OrderSide]) -> str:
+        """Validate and normalize order side using OrderSide Enum."""
+        if isinstance(side, OrderSide):
+            return side.value
         if not side or not isinstance(side, str):
             raise ValueError("Side must be a non-empty string")
         side_normalized = side.capitalize()
-        if side_normalized not in ['Buy', 'Sell']:
-            raise ValueError("Side must be 'Buy' or 'Sell'")
-        return side_normalized
+        try:
+            # Validate using Enum
+            OrderSide(side_normalized)
+            return side_normalized
+        except ValueError:
+            raise ValueError(f"Side must be one of: {[s.value for s in OrderSide]}")
 
-    def _validate_order_type(self, order_type: str) -> None:
-        """Validate order type."""
-        valid_types = ['Market', 'Limit', 'Stop', 'StopMarket', 'TakeProfit', 'TakeProfitMarket', 'TrailingStop']
-        if order_type not in valid_types:
-            raise ValueError(f"Order type must be one of: {valid_types}")
+    def _validate_order_type(self, order_type: Union[str, OrderType]) -> str:
+        """Validate order type using OrderType Enum."""
+        if isinstance(order_type, OrderType):
+            return order_type.value
+        if order_type not in [t.value for t in OrderType]:
+            raise ValueError(f"Order type must be one of: {[t.value for t in OrderType]}")
+        return order_type
 
     def _validate_quantity(self, qty: Union[str, float, int]) -> str:
         """Validate order quantity and return as string."""
@@ -511,9 +520,9 @@ class ByBitClient:
     def place_order(
         self,
         symbol: str,
-        side: str,
+        side: Union[str, OrderSide],
         qty: Union[str, float, int],
-        order_type: str = "Market",
+        order_type: Union[str, OrderType] = OrderType.MARKET,
         price: Optional[Union[str, float, int]] = None,
         take_profit: Optional[Union[str, float, int]] = None,
         stop_loss: Optional[Union[str, float, int]] = None,
@@ -526,9 +535,9 @@ class ByBitClient:
 
         Args:
             symbol: Trading symbol (e.g., 'BTCUSDT')
-            side: Order side ('Buy' or 'Sell')
+            side: Order side ('Buy' or 'Sell') or OrderSide enum
             qty: Order quantity
-            order_type: Order type ('Market', 'Limit', etc.)
+            order_type: Order type ('Market', 'Limit', etc.) or OrderType enum
             price: Order price (required for Limit orders)
             take_profit: Take profit price
             stop_loss: Stop loss price

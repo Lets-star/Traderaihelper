@@ -1,124 +1,59 @@
 """
-Utility functions for secure credential management using st.secrets.
+Utility functions for secure credential management using Pydantic Settings.
 
 Provides fallback to environment variables when st.secrets is not available.
+This module is now a thin wrapper around the config module for backward compatibility.
 """
 
 import os
 import logging
 from typing import Optional, Dict, Any
 
+from config import AppSettings
+
 logger = logging.getLogger(__name__)
 
 
 class SecretManager:
     """
-    Manages secure access to credentials via st.secrets with environment fallback.
+    Manages secure access to credentials via Pydantic Settings with st.secrets fallback.
+    
+    This class is now a thin wrapper around the config.AppSettings class
+    for backward compatibility. New code should use AppSettings directly.
     """
 
     @staticmethod
     def get_bybit_credentials() -> tuple[Optional[str], Optional[str]]:
         """
-        Get ByBit API credentials from st.secrets or environment.
+        Get ByBit API credentials from Pydantic Settings.
 
         Returns:
             Tuple of (api_key, api_secret) or (None, None) if not found
         """
-        try:
-            import streamlit as st
-
-            # Try st.secrets first - direct keys
-            if hasattr(st, 'secrets') and st.secrets:
-                api_key = st.secrets.get("BYBIT_API_KEY")
-                api_secret = st.secrets.get("BYBIT_API_SECRET")
-
-                if api_key and api_secret:
-                    logger.info("Using ByBit credentials from st.secrets (direct)")
-                    return api_key, api_secret
-
-                # Try bybit section in secrets
-                api_key = st.secrets.get("bybit", {}).get("api_key")
-                api_secret = st.secrets.get("bybit", {}).get("api_secret")
-
-                if api_key and api_secret:
-                    logger.info("Using ByBit credentials from st.secrets[bybit]")
-                    return api_key, api_secret
-
-        except ImportError:
-            logger.debug("Streamlit not available, using environment variables")
-        except AttributeError:
-            logger.debug("st.secrets not available, using environment variables")
-        except KeyError:
-            logger.debug("ByBit credentials not in st.secrets, using environment variables")
-        except Exception as e:
-            logger.warning(f"Error accessing st.secrets: {e}")
-
-        # Fallback to environment variables
-        api_key = os.getenv("BYBIT_API_KEY")
-        api_secret = os.getenv("BYBIT_API_SECRET")
-
-        if api_key and api_secret:
-            logger.info("Using ByBit credentials from environment variables")
-            return api_key, api_secret
-
-        logger.warning("ByBit credentials not found in st.secrets or environment")
-        return None, None
+        settings = AppSettings.from_secrets()
+        return settings.get_bybit_credentials()
 
     @staticmethod
     def get_bybit_config() -> Dict[str, Any]:
         """
-        Get complete ByBit configuration from st.secrets or environment.
+        Get complete ByBit configuration from Pydantic Settings.
 
         Returns:
             Dictionary with configuration including api_key, api_secret, testnet, etc.
         """
-        config: Dict[str, Any] = {}
-
-        try:
-            import streamlit as st
-
-            if hasattr(st, 'secrets') and st.secrets:
-                # Try direct keys first
-                if "BYBIT_API_KEY" in st.secrets and "BYBIT_API_SECRET" in st.secrets:
-                    config["api_key"] = st.secrets["BYBIT_API_KEY"]
-                    config["api_secret"] = st.secrets["BYBIT_API_SECRET"]
-                    config["testnet"] = st.secrets.get("BYBIT_TESTNET", True)
-                    config["default_leverage"] = st.secrets.get("BYBIT_DEFAULT_LEVERAGE", 5)
-                    config["pos_size_multiplier"] = st.secrets.get("BYBIT_POS_SIZE_MULTIPLIER", 1.0)
-                    logger.info("Using ByBit config from st.secrets (direct)")
-                    return config
-
-                # Try bybit section
-                bybit_section = st.secrets.get("bybit")
-                if bybit_section and isinstance(bybit_section, dict):
-                    config["api_key"] = bybit_section.get("api_key")
-                    config["api_secret"] = bybit_section.get("api_secret")
-                    config["testnet"] = bybit_section.get("testnet", True)
-                    config["default_leverage"] = bybit_section.get("default_leverage", 5)
-                    config["pos_size_multiplier"] = bybit_section.get("pos_size_multiplier", 1.0)
-                    logger.info("Using ByBit config from st.secrets[bybit]")
-                    return config
-
-        except ImportError:
-            logger.debug("Streamlit not available, using environment variables")
-        except AttributeError:
-            logger.debug("st.secrets not available, using environment variables")
-        except Exception as e:
-            logger.warning(f"Error accessing st.secrets: {e}")
-
-        # Fallback to environment variables
-        config["api_key"] = os.getenv("BYBIT_API_KEY")
-        config["api_secret"] = os.getenv("BYBIT_API_SECRET")
-        config["testnet"] = os.getenv("BYBIT_TESTNET", "true").lower() == "true"
-        config["default_leverage"] = int(os.getenv("BYBIT_DEFAULT_LEVERAGE", "5"))
-        config["pos_size_multiplier"] = float(os.getenv("BYBIT_POS_SIZE_MULTIPLIER", "1.0"))
-
-        if config["api_key"] and config["api_secret"]:
-            logger.info("Using ByBit config from environment variables")
-            return config
-
-        logger.warning("ByBit configuration not found in st.secrets or environment")
-        return {}
+        settings = AppSettings.from_secrets()
+        
+        if not settings.is_bybit_configured():
+            logger.warning("ByBit configuration not found in settings")
+            return {}
+        
+        return {
+            "api_key": settings.bybit.api_key,
+            "api_secret": settings.bybit.api_secret,
+            "testnet": settings.bybit.testnet,
+            "default_leverage": settings.bybit.default_leverage,
+            "pos_size_multiplier": settings.bybit.pos_size_multiplier,
+        }
 
     @staticmethod
     def validate_credential_format(api_key: str, api_secret: str) -> bool:

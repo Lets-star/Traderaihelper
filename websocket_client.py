@@ -1,11 +1,21 @@
+"""
+Binance WebSocket Client with Protocol-based callbacks.
+
+This module provides a type-safe WebSocket client for Binance kline data
+with Protocol-based callback support.
+"""
+
 import json
 import logging
 import threading
 import time
+from typing import Any, Callable, Dict, Optional, Union
+
 import websocket
-from typing import Any, Callable, Dict, Optional
 
 from logging_config import get_structured_logger
+from trader_types import KlineCallback, KlineData
+from trader_types.enums import WebSocketStatus
 
 # Optional metrics import
 try:
@@ -24,8 +34,21 @@ except ImportError:
 
 logger = get_structured_logger(__name__)
 
+
 class BinanceWebSocketClient:
-    def __init__(self, symbol: str, interval: str, on_closed_bar: Optional[Callable[[Dict], None]] = None, on_forming_bar: Optional[Callable[[Dict], None]] = None):
+    """
+    Type-safe WebSocket client for Binance kline data.
+    
+    Uses Protocol-based callbacks for type safety.
+    """
+    
+    def __init__(
+        self,
+        symbol: str,
+        interval: str,
+        on_closed_bar: Optional[Union[KlineCallback, Callable[[Dict], None]]] = None,
+        on_forming_bar: Optional[Union[KlineCallback, Callable[[Dict], None]]] = None,
+    ):
         self.symbol = symbol.upper()
         self.interval = interval
         self.sock = None  # Initialize to None
@@ -38,6 +61,7 @@ class BinanceWebSocketClient:
         self.reconnect_count = 0
         self.max_reconnects = 10
         self.backoff_ms = 100
+        self._status = WebSocketStatus.DISCONNECTED
         
     def start(self):
         """Start WebSocket connection with error handling."""

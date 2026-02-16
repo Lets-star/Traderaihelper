@@ -21,31 +21,34 @@ _SERVER_TIME_FALLBACK_WARNED = False
 
 def floor_closed_bar(now_ms: int, tf_ms: int, tol_ms: int = 60_000) -> int:
     """
-    Calculate the timestamp of the last closed bar boundary.
-    
+    Calculate the close_time timestamp of the last closed bar.
+
+    Note: Returns close_time, not open_time. For a bar with open_time T
+    and timeframe tf_ms, close_time = T + tf_ms.
+
     Args:
         now_ms: Current time in milliseconds
         tf_ms: Timeframe interval in milliseconds
         tol_ms: Tolerance in milliseconds (default 60s)
-        
+
     Returns:
-        Timestamp of the last closed bar boundary in milliseconds
+        Close time of the last closed bar in milliseconds
     """
     if tf_ms <= 0:
         return now_ms
-    
-    # Floor to the current bar start
+
+    # Floor to the current bar start (open_time of current forming bar)
     current_bar_start = (now_ms // tf_ms) * tf_ms
-    
-    # Last closed bar is the bar before the current one
-    last_closed = current_bar_start - tf_ms
-    
-    # Ensure we're not too close to the boundary (within tolerance)
+
+    # The last closed bar's close_time is the current bar's open_time
+    last_closed_close = current_bar_start
+
+    # If we're too close to the current bar start (within tolerance),
+    # use the previous bar's close_time to ensure the bar is fully closed
     if (now_ms - current_bar_start) < tol_ms:
-        # We're too close to the current bar start, use the previous bar
-        last_closed = current_bar_start - tf_ms
-    
-    return last_closed
+        last_closed_close = current_bar_start - tf_ms
+
+    return last_closed_close
 
 
 def get_binance_server_time_ms(source: Optional[BinanceKlinesSource] = None) -> int:

@@ -100,8 +100,8 @@ class SignalExecutor:
         Returns:
             Tuple of (api_key, api_secret)
         """
+        # Try to get from st.secrets first
         try:
-            # Try to get from st.secrets first
             import streamlit as st
 
             if hasattr(st, 'secrets') and st.secrets:
@@ -127,7 +127,7 @@ class SignalExecutor:
         except Exception as e:
             logger.warning(f"Error accessing st.secrets: {e}")
 
-        # Fallback to environment variables
+        # Fallback to environment variables (always executed)
         api_key = os.getenv("BYBIT_API_KEY")
         api_secret = os.getenv("BYBIT_API_SECRET")
 
@@ -558,9 +558,20 @@ class SignalExecutor:
             return {"error": str(e)}
 
     def is_position_open(self, symbol: str) -> bool:
-        """Check if position is open for symbol."""
+        """
+        Check if position is open for symbol.
+
+        Args:
+            symbol: Trading symbol
+
+        Returns:
+            True if position is open, False otherwise
+        """
         result = self.get_position(symbol)
-        if result.get("retCode") != 0:
+
+        # Check for error response (retCode is not 0 or is None)
+        ret_code = result.get("retCode")
+        if ret_code is None or ret_code != 0:
             return False
 
         positions = result.get("result", {}).get("list", [])

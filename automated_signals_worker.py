@@ -193,6 +193,16 @@ class AutomatedSignalsWorker:
             macd_slow + macd_signal,
         )
 
+        # Validate we have enough data before running signal flow
+        available_candles = len(self.df) if self.df is not None else 0
+        if available_candles < min_candles:
+            logger.warning(
+                f"Insufficient candles for {self.symbol} {self.timeframe}: "
+                f"{available_candles} available, {min_candles} required. "
+                f"Skipping signal generation."
+            )
+            return
+
         # Run automated signal flow
         result = run_automated_signal_flow(
             self.symbol,

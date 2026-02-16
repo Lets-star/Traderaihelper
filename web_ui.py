@@ -301,17 +301,28 @@ def safe_float(value: Any, default: Optional[float] = None) -> Optional[float]:
 
 
 def sanitize_payload_for_real_data(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Remove known synthetic markers and enforce Binance metadata."""
+    """
+    Remove known synthetic markers and validate data source.
+
+    This function cleans synthetic markers from the payload but does NOT
+    unconditionally mark data as real. Data is only marked as real if it
+    passes validation checks.
+    """
     if not isinstance(payload, dict):
         return payload
 
+    # Track if we found any synthetic markers
+    found_synthetic_markers = False
+
     def _clean(obj: Any) -> Any:
+        nonlocal found_synthetic_markers
         if isinstance(obj, dict):
             keys_to_remove = []
             for key, value in obj.items():
                 key_lower = key.lower()
                 if key_lower in SYNTHETIC_FLAG_KEYS:
                     keys_to_remove.append(key)
+                    found_synthetic_markers = True
                     continue
 
                 if isinstance(value, (dict, list)):
@@ -319,9 +330,11 @@ def sanitize_payload_for_real_data(payload: Dict[str, Any]) -> Dict[str, Any]:
                 elif isinstance(value, str):
                     value_lower = value.lower()
                     if key_lower in {"source", "exchange"} and value_lower in SYNTHETIC_SOURCE_VALUES:
-                        obj[key] = "binance"
+                        obj[key] = ""
+                        found_synthetic_markers = True
                     elif any(marker in value_lower for marker in SYNTHETIC_MARKER_VALUES):
-                        obj[key] = "real_market_data"
+                        obj[key] = ""
+                        found_synthetic_markers = True
                     else:
                         obj[key] = value
                 else:
@@ -335,18 +348,30 @@ def sanitize_payload_for_real_data(payload: Dict[str, Any]) -> Dict[str, Any]:
         if isinstance(obj, str):
             value_lower = obj.lower()
             if any(marker in value_lower for marker in SYNTHETIC_MARKER_VALUES):
-                return "real_market_data"
+                found_synthetic_markers = True
+                return ""
         return obj
 
     _clean(payload)
 
+    # Set metadata based on actual validation, not blindly
     metadata = payload.setdefault("metadata", {})
-    metadata["source"] = "binance"
-    metadata["exchange"] = metadata.get("exchange", "binance") or "binance"
-    metadata["real_data"] = True
-    metadata["is_real_data"] = True
-    metadata["real_data_validated"] = True
-    metadata["data_quality"] = "validated_real_data"
+
+    # Only mark as real data if no synthetic markers were found
+    is_real_data = not found_synthetic_markers
+
+    metadata["real_data"] = is_real_data
+    metadata["is_real_data"] = is_real_data
+    metadata["real_data_validated"] = is_real_data
+    metadata["data_quality"] = "validated_real_data" if is_real_data else "unvalidated_data"
+
+    # Set source/exchange only if valid data
+    if is_real_data:
+        metadata["source"] = metadata.get("source", "binance") or "binance"
+        metadata["exchange"] = metadata.get("exchange", "binance") or "binance"
+    else:
+        metadata["source"] = metadata.get("source", "")
+        metadata["exchange"] = metadata.get("exchange", "")
 
     return payload
 

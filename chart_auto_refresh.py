@@ -88,7 +88,10 @@ class ChartDataStore:
         )
 
     def _rebuild_with_forming_locked(self) -> None:
-        if self._forming_raw_df is None or self._forming_raw_df.empty:
+        # Capture forming_raw_df reference under lock to prevent race condition
+        forming_df = None if self._forming_raw_df is None else self._forming_raw_df.copy(deep=True)
+
+        if forming_df is None or forming_df.empty:
             self._with_forming_df = None
             self._with_forming_indicators = None
             return
@@ -96,7 +99,7 @@ class ChartDataStore:
         frames = []
         if self._closed_df is not None and not self._closed_df.empty:
             frames.append(self._closed_df.copy(deep=True))
-        frames.append(self._forming_raw_df.copy(deep=True))
+        frames.append(forming_df)
         combined = pd.concat(frames, ignore_index=True)
         combined = self._dedupe_sort(combined)
         self._with_forming_df = combined

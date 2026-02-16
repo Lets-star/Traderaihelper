@@ -624,10 +624,34 @@ class ByBitClient:
         return self._make_request("GET", "/v5/order/history", params)
 
     def validate_credentials(self) -> bool:
-        """Validate that API credentials are properly configured."""
-        return bool(
-            self.api_key and
-            self.api_secret and
-            len(self.api_key) > 10 and
-            len(self.api_secret) > 10
-        )
+        """
+        Validate that API credentials are properly configured and work.
+
+        This method performs a test API call to verify credentials are valid.
+
+        Returns:
+            True if credentials are valid and work, False otherwise
+        """
+        # Basic format validation
+        if not self.api_key or not self.api_secret:
+            return False
+        if len(self.api_key) <= 10 or len(self.api_secret) <= 10:
+            return False
+
+        # Test credentials with actual API call
+        try:
+            result = self.get_wallet_balance(account_type="UNIFIED")
+
+            # Check if API call succeeded
+            ret_code = result.get("retCode")
+            if ret_code == 0:
+                logger.info("ByBit API credentials validated successfully")
+                return True
+            else:
+                ret_msg = result.get("retMsg", "Unknown error")
+                logger.warning(f"ByBit API credential validation failed: {ret_msg} (retCode: {ret_code})")
+                return False
+
+        except Exception as e:
+            logger.warning(f"ByBit API credential validation error: {e}")
+            return False

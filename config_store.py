@@ -15,11 +15,11 @@ DEFAULT_TOKEN = "BINANCE:BTCUSDT"
 DEFAULT_TIMEFRAME = "1h"
 
 _DEFAULT_WEIGHTS: Dict[str, float] = {
-    "technical": 0.3,
-    "volume": 0.2,
-    "sentiment": 0.15,
-    "market_structure": 0.2,
-    "multitimeframe": 0.15,
+    "technical": 0.4,
+    "volume": 0.3,
+    "sentiment": 0,
+    "market_structure": 0.1,
+    "multitimeframe": 0.05,
 }
 
 _DEFAULT_RISK: Dict[str, float] = {
